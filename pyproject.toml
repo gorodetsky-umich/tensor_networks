@@ -1,0 +1,158 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Python-Tensor-Solvers"
+description = "Tensor solvers in python"
+# readme = "README.org"
+requires-python = ">=3.10"
+# license = "MIT"
+version = "0.0.1"
+keywords = []
+authors = [
+  { name = "Alex Gorodetsky", email = "alex@alexgorodetsky.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+  "numpy",
+  "pydantic"
+]
+
+[project.urls]
+Documentation = "https://github.com/unknown/temporary#readme"
+Issues = "https://github.com/unknown/temporary/issues"
+Source = "https://github.com/unknown/temporary"
+
+
+[tool.pylint.main]
+analyse-fallback-blocks = false
+clear-cache-post-run = false
+confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE", "INFERENCE_FAILURE", "UNDEFINED"]
+disable = ["bad-inline-option", "deprecated-pragma", "file-ignored", "locally-disabled", "raw-checker-failed", "suppressed-message", "use-implicit-booleaness-not-comparison-to-string", "use-implicit-booleaness-not-comparison-to-zero", "use-symbolic-message-instead", "useless-suppression", "too-few-public-methods"]
+enable = []
+evaluation = "max(0, 0 if fatal else 10.0 - ((float(5 * error + warning + refactor + convention) / statement) * 10))"
+exit-zero = false
+extension-pkg-allow-list = []
+extension-pkg-whitelist = []
+fail-on = []
+fail-under = 10
+ignore = ["CVS"]
+ignore-paths = []
+ignore-patterns = ["^\\.#"]
+ignored-modules = []
+limit-inference-results = 100
+load-plugins = []
+msg-template = ""
+# output-format =
+persistent = true
+py-version = 3.8
+recursive = false
+reports = false
+score = true
+source-roots = []
+
+[tool.mypy]
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+untyped_calls_exclude = 'torch.utils.tensorboard'
+# packages = ['evidential']
+files = ['pytens/*.py', 'pytens/*.py']
+
+[[tool.mypy.overrides]]
+module = [
+       # 'torch',
+       # 'torchvision',
+       # 'torch.utils.tensorboard',
+       'h5py',
+       'matplotlib',
+       'matplotlib.pyplot',
+       'pydantic'
+       ]
+ignore_missing_imports = true
+
+
+[tool.ruff]
+include = ["pyproject.toml", "pytens/**/*.py", "pytens/**/*.py"]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+
+# Same as Black.
+line-length = 88
+indent-width = 4
+
+# Assume Python 3.12
+target-version = "py312"
+
+[tool.ruff.lint]
+# Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
+# Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
+# McCabe complexity (`C901`) by default.
+select = ["E4", "E7", "E9", "F"]
+ignore = []
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+# Enable auto-formatting of code examples in docstrings. Markdown,
+# reStructuredText code/literal blocks and doctests are all supported.
+#
+# This is currently disabled by default, but it is planned for this
+# to be opt-out in the future.
+docstring-code-format = false
+
+# Set the line length limit used when formatting code snippets in
+# docstrings.
+#
+# This only has an effect when the `docstring-code-format` setting is
+# enabled.
+docstring-code-line-length = "dynamic"
