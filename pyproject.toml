@@ -19,8 +19,11 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-  "numpy",
-  "pydantic"
+  "numpy ~=2.1.0",
+  "opt_einsum",
+  "networkx",
+  "pydantic",
+  "matplotlib", # for plotting
 ]
 
 [project.urls]

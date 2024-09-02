@@ -621,7 +621,7 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     if val1.ndim == 3:
         # print("val1.shape = ", val1.shape)
         r, n, b = val1.shape
-        val1 = np.reshape(val1, (r, n*b), 'F')
+        val1 = np.reshape(val1, (r, n*b), order='F')
         # print("val1.T.shape = ", val1.T.shape)
         q, R = np.linalg.qr(val1.T, mode='reduced')
         if q.shape[1] < r:
@@ -636,7 +636,7 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
         # print("r.shape = ", R.shape)
         # print("r = ", r)
         # print("q shape = ", q.shape)
-        new_val = np.reshape(q.T, (r, n, b), 'F')
+        new_val = np.reshape(q.T, (r, n, b), order='F')
         tn.network.nodes[node]['tensor'].update_val_size(new_val)
     else:
         q, R = np.linalg.qr(val1.T)

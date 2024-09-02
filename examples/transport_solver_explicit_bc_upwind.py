@@ -272,14 +272,14 @@ if __name__ == "__main__":
     round_eps = 1e-5
     # num_steps = 2230
     # num_steps = 5230
-    # num_steps = 400
+    num_steps = 400
     # num_steps = 200
     # num_steps = 80
     # num_steps = 120  
     # num_steps = 10
-    num_steps = 50
+    # num_steps = 50
     
-    problem = Problem([x, u, v], dtscale=2)
+    problem = Problem([x, u, v], dtscale=0.8)
 
     final_time = num_steps * problem.dt
     print("final time = ", final_time)
@@ -311,7 +311,8 @@ if __name__ == "__main__":
     fig, axs = plt.subplots(4, 1)
     problem.plot_slices(problem.u0, axs)
 
-    use_source = True
+    run_explicit = True
+    use_source = False
     solve = True
     if solve:
         d = 100
@@ -323,36 +324,37 @@ if __name__ == "__main__":
             ######
             # Explicit
             ####
-            # op1 = ttop_apply(problem.ttop, copy.deepcopy(sol[ii-1]))
-            # op2 = op1 * problem.omega
-            # op = op2.scale(-problem.dt * problem.c)
-            # sol[ii] = sol[ii-1] + op            
-            # if use_source is True:
-            #     source = source_term([x, u, v], sol[ii-1], problem.disc)
-            #     source = source.scale(-problem.dt * d)
-            #     sol[ii] = sol[ii] + source
+            if run_explicit is True:
+                op1 = ttop_apply(problem.ttop, copy.deepcopy(sol[ii-1]))
+                op2 = op1 * problem.omega
+                op = op2.scale(-problem.dt * problem.c)
+                sol[ii] = sol[ii-1] + op            
+                if use_source is True:
+                    source = source_term([x, u, v], sol[ii-1], problem.disc)
+                    source = source.scale(-problem.dt * d)
+                    sol[ii] = sol[ii] + source
             #####
             # Implicit
             #####
-            def op(ttin):
-            
-                o = ttop_apply(problem.ttop, copy.deepcopy(ttin))
-                o = o * problem.omega
-                o = o.scale(problem.dt)
-                o = ttin + o
+            else:
+                def op(ttin):
 
-                if use_source is True:
-                    source =  source_term([x, u, v], ttin, problem.disc).scale(problem.dt * d)
-                    o = o + source
+                    o = ttop_apply(problem.ttop, copy.deepcopy(ttin))
+                    o = o * problem.omega
+                    o = o.scale(problem.dt)
+                    o = ttin + o
 
-                return o
-            x0 = copy.deepcopy(sol[ii-1])
-            xf, resid = gmres(op, sol[ii-1], x0, 1e-10, round_eps, maxiter=20) 
+                    if use_source is True:
+                        source =  source_term([x, u, v], ttin, problem.disc).scale(problem.dt * d)
+                        o = o + source
+
+                    return o
+                x0 = copy.deepcopy(sol[ii-1])
+                xf, resid = gmres(op, sol[ii-1], x0, 1e-10, round_eps, maxiter=20) 
             # xf, resid = gmres(op, sol[ii-1], x0, 1e-10, round_eps, maxiter=40)
 
-            print(f"Iteration {ii}, gmres resid = {resid}")            
-
-            sol[ii] = xf
+                print(f"Iteration {ii}, gmres resid = {resid}")            
+                sol[ii] = xf
 
 
 
