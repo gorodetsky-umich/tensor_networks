@@ -3,6 +3,7 @@ from pytens.algs2 import *
 import copy
 import numpy as np
 import matplotlib.pyplot as plt
+
 import networkx as nx
 
 
@@ -150,7 +151,7 @@ if __name__ == "__main__":
     num_steps = 240
     
     # problem = Problem([x, u, v], kscale=0.5, dtscale=0.8)
-    problem = Problem([x, u, v], kscale=0.5, dtscale=0.2)
+    problem = Problem([x, u, v], kscale=0.5, dtscale=0.8)
     # problem = Problem([x, u, v], kscale=0.5, dtscale=0.2)
     # plt.figure()
     final_time = num_steps * problem.dt
@@ -240,8 +241,9 @@ if __name__ == "__main__":
         axs[0].legend()
 
 
+    plt.savefig('last_step.pdf')
     val = source_term_just_integral([x, u, v], sol[-1], problem.disc)
-
+    
     plt.figure()
     plt.plot(problem.disc[0], val, label='numeric')
     analytic = 0.5 * (1.0 - problem.disc[0] / final_time)
