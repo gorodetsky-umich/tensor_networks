@@ -1,0 +1,21 @@
+geometry:
+  dimension: 1
+  lb: 0
+  ub: 1
+  n: 10
+
+angles:
+  n_theta: 100
+  n_psi: 99
+
+equations:
+  source: 'none'  # or isotropic scattering
+
+solver:
+  cfl: 0.8
+  stencil: 'upwind' # or 'rusanov' or 'jiang'
+  method: 'forward euler'
+
+saving:
+  directory: 'results'
+

@@ -1,0 +1,4 @@
+geometry:
+  dimension: 2
+  lb: [0, 0]
+  ub: [1, 1]

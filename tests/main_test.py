@@ -1,10 +1,11 @@
 """Tensor Network Solvers."""
-from pytens.algs import *
+
 import copy
-import numpy as np
-import matplotlib.pyplot as plt
-import networkx as nx
 import unittest
+
+import numpy as np
+
+from pytens.algs import *
 
 np.random.seed(4)
 
@@ -24,7 +25,7 @@ class TestTT(unittest.TestCase):
         self.x = Index('x', 5)
         self.u = Index('u', 10)
         self.v = Index('v', 20)
-        self.tt_ranks = [2, 2] 
+        self.tt_ranks = [2, 2]
         self.TT = rand_tt([self.x, self.u, self.v], self.tt_ranks)
         self.tt_ranks2 = [3, 4]
         self.TT2 = rand_tt([self.x, self.u, self.v], self.tt_ranks2)
@@ -58,18 +59,27 @@ class TestTT(unittest.TestCase):
         out1 = self.TT.contract().value
         out2 = self.TT2.contract().value
 
-        self.assertTrue(np.allclose(inner_val, np.sum(out1*out2), atol=1e-14, rtol=1e-14))
+        self.assertTrue(
+            np.allclose(inner_val, np.sum(out1*out2), atol=1e-14, rtol=1e-14)
+        )
 
     def test_integrate(self):
-        integral = self.TT.integrate([self.x, self.u, self.v], np.ones(3)).contract().value
+        integral = self.TT.integrate(
+            [self.x, self.u, self.v], np.ones(3)
+        ).contract().value
         ttarr = self.TT.contract().value
-        self.assertTrue(np.allclose(integral, np.sum(ttarr), atol=1e-14, rtol=1e-14))
+        self.assertTrue(
+            np.allclose(integral, np.sum(ttarr), atol=1e-14, rtol=1e-14)
+        )
 
         int_partial = self.TT.integrate([self.v], np.ones(1)).contract().value
         self.assertEqual(int_partial.ndim, 2)
         self.assertEqual(int_partial.shape[0], self.x.size)
         self.assertEqual(int_partial.shape[1], self.u.size)
-        self.assertTrue(np.allclose(int_partial, np.sum(ttarr, axis=2), atol=1e-14, rtol=1e-14))
+        self.assertTrue(
+            np.allclose(int_partial,
+                        np.sum(ttarr, axis=2),
+                        atol=1e-14, rtol=1e-14))
 
     def test_addition(self):
         # print("ADD")
@@ -85,7 +95,7 @@ class TestTT(unittest.TestCase):
         ranks = tt_add.ranks()
         self.assertEqual(ranks[0], self.tt_ranks[0] + self.tt_ranks2[0])
         self.assertEqual(ranks[1], self.tt_ranks[1] + self.tt_ranks2[1])
-        
+
     def test_multiplication(self):
 
         # print("\n MULTIPLICATION")
@@ -96,7 +106,7 @@ class TestTT(unittest.TestCase):
         out1 = self.TT.contract().value
         out2 = self.TT2.contract().value
         self.assertTrue(np.allclose(mult1, out1 * out2, atol=1e-14, rtol=1e-14))
-        
+
         ranks = tt_mult.ranks()
         self.assertEqual(2, len(ranks))
         self.assertEqual(ranks[0], self.tt_ranks[0] * self.tt_ranks2[0])
@@ -105,10 +115,10 @@ class TestTT(unittest.TestCase):
     def test_right_orthogonalization(self):
         TTc = copy.deepcopy(self.TT)
         arr1 = TTc.contract().value
-        
+
         TTc = tt_right_orth(TTc, 2)
-        node = TTc.value(2)    
-        
+        node = TTc.value(2)
+
         check = np.dot(node, node.T)
         should_be = np.eye(self.tt_ranks[1])
 
@@ -118,7 +128,7 @@ class TestTT(unittest.TestCase):
         self.assertTrue(np.allclose(arr1, arr2, atol=1e-14, rtol=1e-14))
 
         TTc = tt_right_orth(TTc, 1)
-        node = TTc.value(1)        
+        node = TTc.value(1)
         check = np.dot(node[:, 0, :], node[:, 0, :].T)
         for ii in range(1, node.shape[1]):
             check += np.dot(node[:, ii, :], node[:, ii, :].T)
@@ -133,7 +143,7 @@ class TestTT(unittest.TestCase):
         # print("\nROUNDING")
         TTadd = self.TT + self.TT
         # TTadd = TTadd.rename('added')
-        
+
         # print(TTadd)
         ttadd = TTadd.contract().value
         TTadd =  tt_round(TTadd, 1e-10)
@@ -144,7 +154,9 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14))
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14)
+        )
 
     def test_scale(self):
 
@@ -153,7 +165,7 @@ class TestTT(unittest.TestCase):
 
         tt_arr1 = self.TT.contract().value
         tt_arr2 = TT.contract().value
-  
+
         self.assertTrue(np.allclose(2*tt_arr1, tt_arr2, atol=1e-14, rtol=1e-14))
 
     def test_ttop(self):
@@ -174,7 +186,7 @@ class TestTT(unittest.TestCase):
 
         ttop_arr = ttop.contract().value
         # print(ttop_arr.shape)
-        
+
         tt = rand_tt([x, y, z], [3, 2])
         tt_arr = tt.contract().value
         # print(tt_arr.shape)
@@ -192,15 +204,15 @@ class TestTT(unittest.TestCase):
         e2 = np.random.randn(5, 5)
         f1 = np.eye(3, 3)
         f2 = np.random.randn(3, 3)
-        
+
         ttop = ttop_rank2(indices_in, indices_out,
                           [A1, e1, f1],
                           [A2, e2, f2],
                           "A")
-        
+
         ttop_arr = ttop.contract().value
         # print(ttop_arr.shape)
-        
+
         tt = rand_tt([x, y, z], [3, 2])
         tt_arr = tt.contract().value
         # print(tt_arr.shape)
@@ -211,7 +223,7 @@ class TestTT(unittest.TestCase):
         err = np.linalg.norm(should_be - check)
         # print("error = ", err)
         self.assertTrue(np.allclose(check, should_be,
-                                    atol=1e-14, rtol=1e-14))        
+                                    atol=1e-14, rtol=1e-14))
 
     # @unittest.skip('other stuff first')
     def test_gmres(self):
@@ -226,13 +238,14 @@ class TestTT(unittest.TestCase):
         indices_in = [x, y, z]
         indices_out = [xp, yp, zp]
         A = np.random.randn(10, 10)
-        ttop = ttop_rank1(indices_in, indices_out, [A, np.eye(5, 5), np.eye(3, 3)],
+        ttop = ttop_rank1(indices_in, indices_out,
+                          [A, np.eye(5, 5), np.eye(3, 3)],
                           "A")
         tt = rand_tt([x, y, z], [3, 2])
 
         x0 = rand_tt([x, y, z], [3, 2])
         op = lambda ttin: ttop_apply(ttop, ttin)
-        xf, resid = gmres(op, tt, x0, 1e-5, 1e-10, maxiter=30)
+        _, resid = gmres(op, tt, x0, 1e-5, 1e-10, maxiter=30)
         # print("resid = ", resid)
         self.assertTrue(resid < 1e-5)
 
@@ -242,8 +255,6 @@ class TestTT(unittest.TestCase):
 
     #     self.assertTrue(np.allclose(check, should_be,
     #                                 atol=1e-5, rtol=1e-5))
-        
 
-        
 if __name__ == "__main__":
     unittest.main()

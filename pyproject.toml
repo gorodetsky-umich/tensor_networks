@@ -24,6 +24,7 @@ dependencies = [
   "networkx",
   "pydantic",
   "matplotlib", # for plotting
+  "pyyaml", # for apps
 ]
 
 [project.urls]

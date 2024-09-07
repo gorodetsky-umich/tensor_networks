@@ -1,8 +1,10 @@
-
 *~
 *egg*
 *pycache*
 *#*
+
+local_scratch/*
+apps/transport_solver/results/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
