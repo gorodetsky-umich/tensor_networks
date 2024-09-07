@@ -1,5 +1,7 @@
-import numpy as np
-import typing
-import numpy.typing as npt
+"""Some types we are using."""
+# import typing
+# import numpy as np
+# import numpy.typing as npt
 
-type DoubleArr2D = npt.NDArray[np.float64]
+
+# FArray2D = npt.NDArray[npt.DTypeLike,

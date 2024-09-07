@@ -1,6 +1,9 @@
+"""Some utility functions."""
+from typing import Tuple
 import numpy as np
 
-def deltaSVD(data, delta):
+def delta_svd(data: np.ndarray, delta: float) \
+    -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Performs delta-truncated SVD similar to that of the `TTSVD`_ algorithm.
 
@@ -11,20 +14,13 @@ def deltaSVD(data, delta):
 
     Parameters
     ----------
-    data:obj:`numpy.array`
-        Matrix for which the truncated SVD will be performed.
-    dataNorm:obj:`float`
-        Norm of the matrix. This parameter is used to determine the truncation bound.
-    dimensions:obj:`int`
-        Number of dimensions of the original tensor. This parameter is used to determine
-        the truncation bound.
-    eps:obj:`float`, optional
-        Relative error upper bound for TT-decomposition.
+    data: Matrix for which the truncated SVD will be performed.
+    delta: threshold for singular values
 
     Returns
     -------
     u:obj:`numpy.ndarray`
-        Column-wise orthonormal matrix of left-singular vectors. _Truncated_
+        Column-wise orthonormal matrix of left-singular vectors. _Truncate d_
     s:obj:`numpy.array`
         Array of singular values. _Truncated_
     v:obj:`numpy.ndarray`
@@ -32,9 +28,11 @@ def deltaSVD(data, delta):
 
     .. _TTSVD:
         https://epubs.siam.org/doi/epdf/10.1137/090752286
-    """
 
-    # TODO: input checking
+    Todo
+    ----
+    - input checking
+    """
 
     # delta = (eps / ((dimensions - 1) ** (0.5))) * dataNorm
     try:
@@ -49,5 +47,5 @@ def deltaSVD(data, delta):
     truncpost = [
         idx for idx, element in enumerate(np.cumsum(slist)) if element <= delta**2
     ]
-    truncationRank = max(len(s) - len(truncpost), 1)
-    return u[:, :truncationRank], s[:truncationRank], v[:truncationRank, :]
+    truncation_rank = max(len(s) - len(truncpost), 1)
+    return u[:, :truncation_rank], s[:truncation_rank], v[:truncation_rank, :]

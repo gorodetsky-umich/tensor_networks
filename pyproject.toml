@@ -63,21 +63,25 @@ source-roots = []
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-untyped_calls_exclude = 'torch.utils.tensorboard'
+untyped_calls_exclude = ['opt_einsum', 'networkx']
 # packages = ['evidential']
-files = ['pytens/*.py', 'pytens/*.py']
+files = ['pytens/*.py']
+plugins = 'numpy.typing.mypy_plugin'
 
 [[tool.mypy.overrides]]
 module = [
        # 'torch',
        # 'torchvision',
        # 'torch.utils.tensorboard',
+       'opt_einsum',
+       'networkx',
        'h5py',
        'matplotlib',
        'matplotlib.pyplot',
        'pydantic'
        ]
 ignore_missing_imports = true
+
 
 
 [tool.ruff]

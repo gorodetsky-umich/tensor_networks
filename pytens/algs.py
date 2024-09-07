@@ -1,388 +1,498 @@
-"""Algorithms for coupling random variables and sampling them."""
-
-import abc
+"""Algorithms for tensor networks."""
 import copy
+import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
 from collections import Counter
-from typing import Dict, Any, TypeVar, Generic, Optional, Callable, Union, List, Tuple, Self
 from dataclasses import dataclass
-from collections import namedtuple
+import typing
+from typing import Dict, Optional, Union, List, Self, Tuple
 import numpy as np
 import opt_einsum as oe
 import networkx as nx
-from .utils import deltaSVD
+from .utils import delta_svd
 
-import logging
+IntOrStr = Union[str, int]
+
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+NodeName = IntOrStr
 
 @dataclass(frozen=True, eq=True)
 class Index:
     """Class for denoting an index."""
     name: Union[str, int]
-    size: Union[int, List[int]]
-    ndim: int
+    size: int
 
-@dataclass(frozen=True, eq=True)
+    def with_new_size(self, new_size: int) -> 'Index':
+        """Create a new index with same name but new size"""
+        return Index(self.name, new_size)
+
+    def with_new_name(self, name: IntOrStr) -> 'Index':
+        """Create a new index with same size but new name"""
+        return Index(name, self.size)
+
+@dataclass# (frozen=True, eq=True)
+class Tensor:
+    """Base class for a tensor."""
+    value: np.ndarray
+    indices: List[Index]
+
+    def update_val_size(self, value: np.ndarray) -> Self:
+        """Update the tensor with a new value."""
+        assert value.ndim == len(self.indices)
+        self.value = value
+        for ii, index in enumerate(self.indices):
+            self.indices[ii] = index.with_new_size(value.shape[ii])
+        return self
+
+    def rename_indices(self, rename_map: Dict[IntOrStr, str]) -> Self:
+        """Rename the indices of the tensor."""
+        for ii, index in enumerate(self.indices):
+            self.indices[ii] = index.with_new_name(rename_map[index.name])
+
+        return self
+
+    def concat_fill(self, other: Self, indices_common: List[Index]) -> 'Tensor':
+        """Concatenate two arrays.
+
+        keep dimensions corresponding to indices_common the same.
+        pad zeros on all other dimensions. new dimensions retain
+        index names currently used, but have updated size
+        """
+        shape_here = self.value.shape
+        shape_other = other.value.shape
+
+        assert len(shape_here) == len(shape_other)
+
+        new_shape = []
+        new_indices = []
+        for index_here, index_other in zip(self.indices, other.indices):
+            if index_here in indices_common:
+                assert index_here.size == index_other.size
+                new_indices.append(index_here)
+                new_shape.append(index_here.size)
+            else:
+                new_shape.append(index_here.size + index_other.size)
+                new_index = Index(f"{index_here.name}",
+                                  index_here.size + index_other.size)
+                new_indices.append(new_index)
+
+        # print("new shape = ", new_shape)
+        # print("new_indices = ", new_indices)
+        new_val = np.zeros(new_shape)
+
+        ix1 = []
+        ix2 = []
+        for index_here in self.indices:
+            if index_here in indices_common:
+                ix1.append(slice(None))
+                ix2.append(slice(None))
+            else:
+                ix1.append(slice(0, index_here.size, 1))
+                ix2.append(slice(index_here.size, None, 1))
+        new_val[*ix1] = self.value
+        new_val[*ix2] = other.value
+        # print(slice(1,2,4))
+        # exit(1)
+        tens = Tensor(new_val, new_indices)
+        return tens
+
+    def mult(self, other: Self, indices_common: List[Index]) -> 'Tensor':
+        """Outer product of two tensors except at common indices
+
+        retain naming of self
+        """
+        shape_here = self.value.shape
+        shape_other = other.value.shape
+
+        assert len(shape_here) == len(shape_other)
+
+        new_shape = []
+        new_indices = []
+        str1 = ''
+        str2 = ''
+        output_str = ''
+        on_index = 97
+        for index_here, index_other in zip(self.indices, other.indices):
+            if index_here in indices_common:
+                assert index_here.size == index_other.size
+                new_indices.append(index_here)
+                new_shape.append(index_here.size)
+                new_char = chr(on_index)
+                str1 += new_char
+                str2 += new_char
+                output_str += new_char
+                on_index += 1
+            else:
+                new_shape.append(index_here.size * index_other.size)
+                new_index = Index(f"{index_here.name}",
+                                  index_here.size * index_other.size)
+                new_indices.append(new_index)
+                c1 = chr(on_index)
+                str1 += c1
+                output_str += c1
+                on_index += 1
+
+                c2 = chr(on_index)
+                str2 += c2
+                output_str += c2
+                on_index += 1
+
+        # print("shape here", shape_here)
+        # print("shape there", shape_other)
+        # print("new_shape = ", new_shape)
+
+        # print("mult string 1 = ", str1)
+        # print("mult string 2 = ", str2)
+        # print("output_str = ", output_str)
+        # print("new_indices = ", new_indices)
+        estr = str1 + ',' + str2 + '->'+ output_str
+        # print("estr", estr)
+
+
+        new_val = np.einsum(estr, self.value, other.value)
+        new_val = np.reshape(new_val, new_shape)
+        tens = Tensor(new_val, new_indices)
+        return tens
+
+
+# @dataclass(frozen=True, eq=True)
+@dataclass(eq=True)
 class EinsumArgs:
     """Represent information about contraction in einsum list format"""
-    input_str_map: Dict[Union[str, int], str]
+    input_str_map: Dict[NodeName, str]
     output_str: str
-    # arr_list: List[np.ndarray]
-    node_list: Optional[List[Union[str, int]]] # names of nodes in input arguments
-    free_index_map: Dict[str, Index]
-    
-def compute_einsum_str(network: nx.DiGraph) -> EinsumArgs:
-    """Compute the einsum contraction string.
+    output_str_index_map: Dict[str, Index]
 
-    VERY IMPORTANT: assumes only one dimension contracted along each edge
-    """
+    def replace_char(self, value: str, replacement: str) -> None:
+        """Replace a character in the einsum string."""
+        for _, vals in self.input_str_map.items():
+            vals = vals.replace(value, replacement)
+        self.output_str = self.output_str.replace(value, replacement)
 
-    logger.debug(f"---In compute_einsum_str---")
-    edge_names = []
-    free_edge = []
-    free_node_indices = {}
-    for u, v, d in network.edges(data=True):
-        logger.debug(f"Edge: {u} -> {v}; Data = {d}")
-        edge_names.append(d['name'].name)
-        # print(f"v = {network.nodes(data=True)[v]}")
-        if network.nodes(data=True)[v]['free_node'] is not None:
-            free_edge.append(d['name'].name)
-            free_node_indices[d['name'].name] = network.nodes(data=True)[v]['free_node']
-
-    mapping = {name: chr(i+97) for i, name in enumerate(edge_names)}
-    
-    logger.debug("edge names = ", edge_names)
-    logger.debug("free_node_indices = ", free_node_indices)
-    logger.debug("mapping = ", mapping)
-        # if data['free_node'] = False:
-        #     names += data['mode_names']
-    einsum_str_map = {node: [''] * data['ndim'] for node, data in network.nodes(data=True) if not data['free_node']}
-    # output_index_map = {val: free_node_indices[key] for key, val in mapping.items() if key in free_node_indices}
-    output_index_map = {val: free_node_indices[key] for key, val in mapping.items() if key in free_node_indices}
-    logger.debug("output_index_map = ", output_index_map)
-    # print(list(network.nodes(data=True)))
-    # print(network.nodes(data=True)['x'])
-    
-    for node, data in network.nodes(data=True):        
-        if not data['free_node']:
-            # print(f"Node {node}")
-            for neighbor in network[node]:
-                edge = network.edges[node, neighbor]
-                index = edge['name']
-                for modes_involved in edge['dims']:  # assumes only loops once because same index used!
-                    einsum_str_map[node][modes_involved[0]] = mapping[index.name]
-                    if neighbor in einsum_str_map:
-                        einsum_str_map[neighbor][modes_involved[1]] = mapping[index.name]
-                    
-
-    input_str_map = {}
-    node_list = []
-    for node, data in network.nodes(data=True):
-        if not data['free_node']:
-            input_str_map[node] = ''.join(einsum_str_map[node])
-            node_list.append(node)
-
-
-
-    
-    # einsum_str = ','.join(einsum_str_lst) + '->'
-    logger.debug("einsum_str_map = ", einsum_str_map)
-    # Calculate the output subscript        
-    s = ''.join([''.join(v) for v in list(einsum_str_map.values())])
-    char_count = Counter(s)
-    output_indices = [char for char in s if char_count[char] == 1]
-    output_str = ''.join(output_indices)
-    # einsum_str += output_subscript
-
-    # print("einsum_str = ", einsum_str)
-    # print("output_indices = ", output_indices)
-    output_indices = {ind:output_index_map[ind] for ind in output_indices}
-    # print("output_indices = ", index_list)
-
-    # exit(1)
-
-    # print("einsum_str", einsum_str)
-    return EinsumArgs(input_str_map, output_str, node_list, output_indices)
 
 class TensorNetwork:
-    """Tensor Network Class."""
+    """Tensor Network Base Class."""
 
-    def __init__(self, network, free_nodes) -> None:
-        """Initialization."""
-        self.network = network
-        self.free_nodes = free_nodes
+    def __init__(self) -> None:
+        """Initialize the network."""
+        self.network = nx.Graph()
 
-    def copy(self) -> Self:
-        """Shallow copy."""
-        return TensorNetwork(self.network, self.free_nodes)
-    
-    @classmethod
-    def create_empty(cls) -> Self:
-        network = nx.DiGraph()
-        free_nodes = []
-        return cls(network, free_nodes)
+    def add_node(self, name: NodeName, tensor: Tensor) -> None:
+        """Add a node to the network."""
+        self.network.add_node(name, tensor=tensor)
 
-    def add_node(self, name: Union[str, int], value: np.ndarray, free_node: Optional[Index] = None) -> None:
-        if free_node:
-            self.free_nodes.append(free_node)
-            self.network.add_node(free_node.name, value=None, ndim=None, free_node=free_node)
-        else:
-            self.network.add_node(name, value=value, ndim=value.ndim, free_node=free_node)
-            
-    
-    def add_edge(self,
-                 name1: Union[str, int],
-                 name2: Union[str, int],
-                 matched_dims:List[Tuple[int, int]],
-                 name: Optional[Index] = None) -> None: 
-        data = self.network.nodes(data=True)        
-        if name is None:           
-            size = [data[name1]['value'].shape[dim] for dim, dim2 in matched_dims]
-            name_is = Index(f"r{name1}-{name2}", size, len(matched_dims))
-        else:
-            name_is = name
+    def add_edge(self, name1: NodeName, name2: NodeName) -> None:
+        """Add an edget to the network."""
+        self.network.add_edge(name1, name2)
 
-        # print(f"ADDING EDGE: {name1} -> {name2}")
-        # print(f"data = {data[name1]['free_node'] == None} and {data[name2]['free_node'] is None}")
-        free_edge = True
-        if (data[name1]['free_node'] is None) and (data[name2]['free_node'] is None):
-            free_edge = False
-        # print(f"free_edge = {free_edge}")
-            
-        self.network.add_edge(name1, name2, dims=matched_dims, name=name_is, free_edge=free_edge)
+    def value(self, node_name: NodeName) -> np.ndarray:
+        """Get the value of a node."""
+        val: np.ndarray = self.network.nodes[node_name]['tensor'].value
+        return val
 
-    def value(self, node_name: Union[str, int]):
-        return self.network.nodes(data=True)[node_name]['value']
-        
-    def inspect(self):
-        for node, data in self.network.nodes(data=True):
-            print(f"Node: {node}, Data: {dict((k,v) for k, v in data.items() if k != 'value')}")
-        for u, v, data in self.network.edges(data=True):
-            print(f"Edge from {u} to {v}, Data: {data}")
+    def all_indices(self) -> Counter:
+        """Get all indices in the network."""
+        indices = []
+        for _, data in self.network.nodes(data=True):
+            indices += data['tensor'].indices
+        cnt = Counter(indices)
+        return cnt
 
-    def attach(self, other: Self) -> Self:
-        """Combine two tensor networks.
+    def rename_indices(self, rename_map: Dict[IntOrStr, IntOrStr]) -> Self:
+        """Rename the indices in the network."""
+        for _, data in self.network.nodes(data=True):
+            data['tensor'].rename_indices(rename_map)
+        return self
 
-        Networks are attached at the free indices .
+    def free_indices(self) -> List[Index]:
+        """Get the free indices."""
+        icount = self.all_indices()
+        free_indices = [i for i, v in icount.items() if v == 1]
+        return free_indices
+
+    def get_contraction_index(
+            self, node1: NodeName, node2:NodeName
+    ) -> List[Index]:
+        """Get the contraction indices."""
+        ind1 = self.network.nodes[node1]['tensor'].indices
+        ind2 = self.network.nodes[node2]['tensor'].indices
+        inds = list(ind1) + list(ind2)
+        cnt = Counter(inds)
+        indices = [i for i, v in cnt.items() if v > 1]
+        return indices
+
+    def inner_indices(self) -> List[Index]:
+        """Get hte interior indices."""
+        icount = self.all_indices()
+        free_indices = [i for i, v in icount.items() if v > 1]
+        return free_indices
+
+    def ranks(self) -> List[int]:
+        """Get the ranks."""
+        inner_indices = self.inner_indices()
+        return [r.size for r in inner_indices]
+
+    def einsum_args(self) -> EinsumArgs:
+        """Compute einsum args.
+
+        Need to respect the edges, currently not using edges
         """
+        all_indices = self.all_indices()
+        free_indices = [i for i, v in all_indices.items() if v == 1]
 
-        new_network = nx.compose(self.network, other.network)
-        # new_network = nx.union(self.network, other.network)
-        new_tens = TensorNetwork.create_empty()
-        new_tens.network = new_network        
-        for free_node in self.free_nodes:
+        mapping = {name: chr(i+97) for i, name in enumerate(all_indices.keys())}
+        input_str_map = {}
+        for node, data in self.network.nodes(data=True):
+            input_str_map[node] = ''.join(
+                [mapping[ind] for ind in data['tensor'].indices]
+            )
+        output_str = ''.join([mapping[ind] for ind in free_indices])
+        output_str_index_map = {}
+        for ind in free_indices:
+            output_str_index_map[mapping[ind]] = ind
 
-            if free_node in other.free_nodes:
-                # print("free_node = ", free_node)
-                node_to_attach_here = list(self.network.predecessors(free_node.name))[0]
-                # print("node_to-attach_here", node_to_attach_here)
-                edge_data_here = self.network.edges[node_to_attach_here, free_node.name]
+        return EinsumArgs(input_str_map, output_str, output_str_index_map)
 
-                node_to_attach_there = list(other.network.predecessors(free_node.name))[0]
-                edge_data_there = other.network.edges[node_to_attach_there, free_node.name]
+    def contract(self, eargs: Optional[EinsumArgs] = None) -> Tensor:
+        """Contract the tensor."""
+        if eargs is None:
+            eargs = self.einsum_args()
 
-                loc_here = edge_data_here['dims'][0][0]
-                loc_there = edge_data_there['dims'][0][0]
-                new_tens.network.remove_node(free_node.name)
-                new_tens.add_edge(node_to_attach_here, node_to_attach_there, [(loc_here, loc_there)],
-                                  name=edge_data_here['name'])
-                
-    
-        new_tens.free_nodes = list(set(self.free_nodes + other.free_nodes))
-        return new_tens
+        estr_l = []
+        arrs = []
+        for key, val in eargs.input_str_map.items():
+            arrs.append(self.network.nodes[key]['tensor'].value)
+            estr_l.append(val)
+        estr = ','.join(estr_l) + '->' + eargs.output_str # explicit
+        # print(estr)
+        # estr = ','.join(estr)
+        logger.debug("Contraction string = %s", estr)
+        out = oe.contract(estr, *arrs, optimize='auto')
+        indices = [eargs.output_str_index_map[s] for s in eargs.output_str]
+        tens = Tensor(out, indices)
+        return tens
 
-    def contract_along_edge(self, name1, name2):
-        pass
-    
-    def _contract(self,
-                  name: Union[str, int],
-                  einsum_args: EinsumArgs,
-                  arrs: Sequence[np.ndarray]) -> Self:
-        
-        input_str = ','.join([''.join(v) for v in list(einsum_args.input_str_map.values())])
-        ein_str = input_str + '->' + einsum_args.output_str
-        out = oe.contract(ein_str, *arrs, optimize='auto')
-        # out = oe.contract(ein_str, *arrs, optimize='greedy')
-        # out = oe.contract(ein_str, *arrs, optimize='dp')
-        # out = oe.contract(ein_str, *arrs, optimize='auto-hq')
-    
-        return tensor(name, [einsum_args.free_index_map[node] for node in einsum_args.output_str], out)
-               
-    def contract(self, name) -> Self:
-        """Reconstruct the tensor. Very expensive."""
+    @typing.no_type_check
+    def __getitem__(self, ind: slice) -> 'Tensor':
+        """Evaluate at some elements.
 
-        einsum_args = compute_einsum_str(self.network)
-        # print("einsum_args = ", einsum_args)
-        
-        arrs = [self.network.nodes[node]['value'] for node in einsum_args.node_list]
-        return self._contract(name, einsum_args, arrs)
+        Assumes indices are provided in the order retrieved by
+        TensorNetwork.free_indices()
+        """
+        free_indices = self.free_indices()
 
-    def integrate(self, indices: Sequence[Index], weights: Sequence[float]) -> Self:
+        new_network = TensorNetwork()
+        for node, data in self.network.nodes(data=True):
+            tens = data['tensor']
+            ix = []
+            new_indices = []
+            for _, local_ind in enumerate(tens.indices):
+                try:
+                    dim = free_indices.index(local_ind)
+                    ix.append(ind[dim])
+                    if not isinstance(ind[dim], int):
+                        new_indices.append(local_ind)
+
+                except ValueError: # no dimension is in a free index
+                    ix.append(slice(None))
+                    new_indices.append(local_ind)
+
+            new_arr = tens.value[*ix]
+            new_tens = Tensor(new_arr, new_indices)
+            new_network.add_node(node, new_tens)
+
+        for u, v in self.network.edges():
+            new_network.add_edge(u, v)
+
+        return new_network.contract()
+
+    def attach(self, other: 'TensorNetwork',
+               rename: Tuple[str, str]=("G", "H")) -> 'TensorNetwork':
+        """Attach two tensor networks together."""
+        # U = nx.union(copy.deepcopy(self.network),
+        #              copy.deepcopy(other.network),
+        #              rename=rename)
+
+        new_self = copy.deepcopy(self)
+        new_other = copy.deepcopy(other)
+
+        u = nx.union(new_self.network,
+                     new_other.network,
+                     rename=rename)
+
+        for n1, d1 in self.network.nodes(data=True):
+            for n2, d2 in other.network.nodes(data=True):
+                total_dim = len(d1['tensor'].indices) + \
+                    len(d2['tensor'].indices)
+                if len(set(list(d1['tensor'].indices) +
+                           list(d2['tensor'].indices))) < total_dim:
+                    u.add_edge(f'{rename[0]}{n1}', f'{rename[1]}{n2}')
+
+        tn = TensorNetwork()
+        tn.network = u
+
+        all_indices = self.all_indices()
+        free_indices = self.free_indices()
+        rename_ix = {}
+        for index in all_indices:
+            if index in free_indices:
+                rename_ix[index.name] = index.name
+            else:
+                rename_ix[index.name] = f"{rename[0]}{index.name}"
+
+        # print("rename_ix = ", rename_ix)
+        for n in self.network.nodes():
+            u.nodes[f"{rename[0]}{n}"]['tensor'].rename_indices(rename_ix)
+
+        all_indices = other.all_indices()
+        free_indices = other.free_indices()
+        rename_ix_o = {}
+        for index in all_indices:
+            if index in free_indices:
+                rename_ix_o[index.name] = index.name
+            else:
+                rename_ix_o[index.name] = f"{rename[1]}{index.name}"
+
+        for n in other.network.nodes():
+            u.nodes[f"{rename[1]}{n}"]['tensor'].rename_indices(rename_ix_o)
+        # print("ATTACH TN: ", tn)
+        # print("self is: ", self)
+        return tn
+
+    def dim(self) -> int:
+        """Number of dimensions in equivalent tensor"""
+        return len(self.free_indices())
+
+    def scale(self, scale_factor: float) -> Self:
+        """Scale the tensor network."""
+        for _, data in self.network.nodes(data=True):
+            data['tensor'].value *= scale_factor
+            break
+        return self
+
+    def inner(self, other: 'TensorNetwork') -> np.ndarray:
+        """Compute the inner product."""
+        value = self.attach(other).contract().value
+        return value
+
+    def norm(self) -> float:
+        """Compute a norm of the tensor network"""
+        # return np.sqrt(np.abs(self.inner(copy.deepcopy(self))))
+        val = float(self.inner(self))
+        out: float = np.sqrt(np.abs(val))
+        return out
+
+    def integrate(self, indices: Sequence[Index], weights: Sequence[
+            Union[np.ndarray, float]]) -> 'TensorNetwork':
         """Integrate over the chosen indices. So far just uses simpson rule."""
 
         out = self
         for weight, index in zip(weights, indices):
-            # print("\n\n")
-            assert index.ndim == 1
-            v = np.ones(index.size) * weight
+            if isinstance(weight, float):
+                v = np.ones(index.size) * weight
+            else:
+                v = weight
             tens = vector(f'w_{index.name}', index, v)
-            # print("Attaching: ")
-            # tens.inspect()
-            out = out.attach(tens)
-            # print("Result: ")
-            # out.inspect()
+            out = out.attach(tens, rename=('', ''))
 
         return out
-        # return out.contract('integral')
 
-    def rename(self, prefix) -> Self:
-        new_labels = {}
-        for node, data in self.network.nodes(data=True):
-            # print(self.network.nodes(node))
-            if data['free_node'] is None:
-                new_labels[node] = f"{prefix}{node}"
-            else:
-                new_labels[node] = node
-                
-        # print("new_labels = ", new_labels)
-        # NEED TO COPY TO KEEP NODE ORDERING
-        self.network = nx.relabel_nodes(self.network, new_labels, copy=True)
-        # self.network = nx.relabel_nodes(self.network, new_labels, copy=False)
-        for u, v, d in self.network.edges(data=True):
-            if d['free_edge'] is False:
-                new_name = f"{prefix}{d['name'].name}"
-                d['name'] = Index(new_name, d['name'].size, d['name'].ndim)
-            
-        return self
+    def __add__(self, other: Self) -> Self:
+        """Add two tensor trains.
 
-    def rename_free_nodes(self, free_nodes_map) -> Self:
-        new_labels = {}
-        for node, data in self.network.nodes(data=True):
-            # print(self.network.nodes(node))
-            if data['free_node'] is None:
-                new_labels[node] = node 
-            else:
-                new_labels[node] = free_nodes_map[node]
-                
-        # print("new_labels = ", new_labels)
-        # NEED TO COPY TO KEEP NODE ORDERING
-        self.network = nx.relabel_nodes(self.network, new_labels, copy=True)
-        # self.network = nx.relabel_nodes(self.network, new_labels, copy=False)
-        for u, v, d in self.network.edges(data=True):
-            if d['free_edge'] is True:
-                new_name = free_nodes_map[d['name']]
-                d['name'] = new_name
-            
-        return self    
-        
-    def scale(self, scale_factor) -> Self:
-        for node, data in self.network.nodes(data=True):
-            data['value'] *= scale_factor
-            break
-        return self
-
-    def inner(self, other) -> float:
-        """Compute inner product."""
-        value = self.attach(other).contract('a').value('a')
-        return value
-
-    def ranks(self) -> List[int]:
-        """Return ranks.
-
-        Assumes one rank per edge
+        New tensor has same names as self
         """
-        ranks = []
-        for _, _, data in self.network.edges(data=True):
-            if data['free_edge'] == False:
-                size = data['name'].size
-                if isinstance(size, int):
-                    ranks.append(size)
-                else:
-                    ranks += size
-                    
-        return ranks
-            
+        assert nx.is_isomorphic(self.network, other.network)
 
-    def __getitem__(self, ind) -> Self:
-        """Evaluate at some elements.
+        new_tens = copy.deepcopy(self)
+        free_indices = self.free_indices()
+        for _, (node1, node2) in enumerate(zip(self.network.nodes,
+                                                other.network.nodes)):
+            logger.debug("Adding: Node %r and Node %r", node1, node2)
 
-        Assumes each free-edge is only over 1 dimension.
+            tens1 = self.network.nodes[node1]['tensor']
+            tens2 = other.network.nodes[node2]['tensor']
+            new_tens.network.nodes[node1]['tensor'] = \
+                tens1.concat_fill(tens2, free_indices)
+
+        return new_tens
+
+    def __mul__(self, other: Self) -> Self:
+        """Multiply two tensor trains.
+
+        New tensor has same names as self
         """
-        # assert len(ind) == len(self.free_nodes)
+        assert nx.is_isomorphic(self.network, other.network)
 
-        logger.debug(f"---In GetItem---: {ind}")
+        new_tens = copy.deepcopy(self)
+        free_indices = self.free_indices()
+        for _, (node1, node2) in enumerate(zip(self.network.nodes,
+                                                other.network.nodes)):
+            logger.debug("Multiplying: Node %r and Node %r", node1, node2)
 
-        # cop = self.copy()
-        # print("cop = ", cop)
-        con_args = compute_einsum_str(self.network)
-        new_output_str = con_args.output_str
-        new_str_map = con_args.input_str_map
-        new_free_index_map = con_args.free_index_map
-        arr_map = {}
-        for ii, (element, index)  in enumerate(zip(ind, self.free_nodes)):
-            logger.debug(f"\n{ii}: {index}")
+            tens1 = self.network.nodes[node1]['tensor']
+            tens2 = other.network.nodes[node2]['tensor']
+            new_tens.network.nodes[node1]['tensor'] = \
+                tens1.mult(tens2, free_indices)
 
-            # if isinstance(element, int):
-            #     print("---> Dimension will be removed!")
-            
-            parents = self.network.predecessors(index.name)
-            for parent in parents:
-                # print(f"Parent = {parent}")
-                edge = self.network.edges[parent, index.name]
-                # print(f"edge = {edge}")
-                dim = edge['dims'][0][0]
-                arr = self.network.nodes(data=True)[parent]['value']
+        return new_tens
 
-                # https://stackoverflow.com/a/41418649
-                indices = {dim: element}
-                ix = [indices.get(d, slice(None)) for d in range(arr.ndim)]
-                
-                # print(f"\tix = {ix}")
-                arr_map[parent] = arr[*ix]
-                # print("arr = ", arr.shape)
-                
-                elem_char = con_args.input_str_map[parent][dim]                
-                if isinstance(element, int):  # modify the contraction string
-                    # print(f"Need to remove element {elem_char}")                    
-                    new_str_map[parent] = new_str_map[parent].replace(elem_char, '')
-                    # print(f"\t {new_str_map[parent]}")
-                    # print(f"updated input map = {new_str_map}")
-                    new_output_str = new_output_str.replace(elem_char, '')
-                    del new_free_index_map[elem_char]
-                else:
-                    old_index = new_free_index_map[elem_char]
-                    new_free_index_map[elem_char] = Index(old_index.name,  arr.shape[dim], old_index.ndim)
-                
-        # print("new_output_str = ", new_output_str)
-        # print("new_input_map = ", new_str_map)
-        # print("new_free_index_map = ", new_free_index_map)
+    def __str__(self) -> str:
+        """Convert to string."""
+        out  = "Nodes:\n"
+        out += "------\n"
+        for node, data in self.network.nodes(data=True):
+            out += (
+                f"\t{node}: shape = {data['tensor'].value.shape},"
+                f"indices = {[i.name for i in data['tensor'].indices]}\n"
+            )
 
-        new_args = EinsumArgs(new_str_map, new_output_str, None, new_free_index_map)
-        node_list = [arr_map[node] for node in new_str_map.keys()]
-        return self._contract("eval", new_args, node_list)
+        out += "Edges:\n"
+        out += "------\n"
+        for node1, node2, data in self.network.edges(data=True):
+            out += f"\t{node1} -> {node2}\n"
 
-        
-    def draw_nodes(self, pos, ax=None):
+        return out
+
+    @typing.no_type_check
+    def draw(self, ax=None):
+        """Draw a networkx representation of the network."""
+
         # Define color and shape maps
         color_map = {'A':'lightblue', 'B':'lightgreen'}
         shape_map = {'A':'o', 'B':'s'}
         size_map = {'A': 300, 'B': 100}
         node_groups = {'A': [], 'B': []}
 
-        with_label = {'A': True, 'B': False}
+        # with_label = {'A': True, 'B': False}
+
+        free_indices = self.free_indices()
+
+        free_graph = nx.Graph()
+        for index in free_indices:
+            free_graph.add_node(f'{index.name}-f')
+
+        new_graph = nx.compose(self.network, free_graph)
+        for index in free_indices:
+            name1 = f'{index.name}-f'
+            for node, data in self.network.nodes(data=True):
+                if index in data['tensor'].indices:
+                    new_graph.add_edge(node, name1)
+
+        pos = nx.planar_layout(new_graph)
+
 
         for node, data in self.network.nodes(data=True):
-            if data['value'] is not None:
-                node_groups['A'].append(node)
-            else:
-                node_groups['B'].append(node)
+            node_groups['A'].append(node)
+
+        for node in free_graph.nodes():
+            node_groups['B'].append(node)
 
         for group, nodes in node_groups.items():
 
-            nx.draw_networkx_nodes(self.network, pos,
+            nx.draw_networkx_nodes(new_graph, pos,
                                    ax=ax,
                                    nodelist=nodes,
                                    node_color=color_map[group],
@@ -392,381 +502,404 @@ class TensorNetwork:
                                    )
             if group == 'A':
                 node_labels = {node: node for node in node_groups['A']}
-                nx.draw_networkx_labels(self.network,
+                nx.draw_networkx_labels(new_graph,
                                         pos,
                                         ax=ax,
                                         labels=node_labels,
                                         font_size=12)
             if group == 'B':
                 node_labels = {node: node for node in node_groups['B']}
-                nx.draw_networkx_labels(self.network, pos,
+                nx.draw_networkx_labels(new_graph,
+                                        pos,
                                         ax=ax,
                                         labels=node_labels,
                                         font_size=12)
 
-    def draw_edges(self, pos, ax=None):
-        edge_indices = nx.get_edge_attributes(self.network, 'name')
-        # print("edge_indices = ", edge_indices)
         edge_labels = {}
-        for key, val in edge_indices.items():
-            # print("key = ", key, "val = ", val)
-            edge_labels[key] = val.name
-        nx.draw_networkx_edges(self.network, pos, ax=ax)
-        nx.draw_networkx_edge_labels(self.network, pos, ax=ax, edge_labels=edge_labels)
-    
-
-    def draw(self, pos=None, ax=None):
-        if pos is None:
-            # pos = nx.spring_layout(self.network)
-            pos = nx.planar_layout(self.network)
-        self.draw_nodes(pos, ax=ax)
-        self.draw_edges(pos, ax=ax)
-
-    def as_tt(self):
-        return TensorTrain(self.network, self.free_nodes)
-    
-
-    @property
-    def num_tensors(self):
-        num = 0
-        for node, data in self.network.nodes(data=True):
-            if data['value'] is not None:
-                num += 1
-        return num
-
-    @property
-    def dim(self):
-        return len(self.free_nodes)
-    
-    @property
-    def nodes(self):
-        return list(self.network.nodes)
-
-    @property
-    def edge_names(self):
-        return self._edge_names
-
-        
-class TensorTrain(TensorNetwork):
-
-    def __init__(self, network, free_nodes):
-        super().__init__(network, free_nodes)
-
-    def __add__(self, other: Self) -> Self:
-        """Add two tensor trains."""
-        assert nx.is_isomorphic(self.network, other.network)
-
-        logger.info("---In add---")
-        out = copy.deepcopy(self)
-        dim = len(self.free_nodes)
-        for ii, (node1, node2) in enumerate(zip(self.network.nodes, other.network.nodes)):
-
-            logger.debug(f"node1, node2 = {node1}, {node2}")
-            val1 = self.network.nodes[node1]['value']
-            val2 = other.network.nodes[node2]['value']
-            if val1 is not None:
-                logger.debug("val1 shape = ", val1.shape)
-                logger.debug("val2 shape = ", val2.shape)
-                if ii == 0:                    
-                    out.network.nodes[node1]['value'] = np.block([val1, val2])
-                elif ii == dim-1:
-                    out.network.nodes[node1]['value'] = np.block([[val1], [val2]])
-                else:
-                    a, b, c = val1.shape
-                    d, e, f = val2.shape
-                    out.network.nodes[node1]['value'] = np.zeros((a + d, b, c + f))
-
-                    out.network.nodes[node1]['value'][:a, :, :c] = val1
-                    out.network.nodes[node1]['value'][a:a+d, :, c:c+f] = val2
-                    
-        for u, v, d in out.network.edges(data=True):
-            if d['free_edge'] is False:
-                ind = d['name']
-                new_size = out.network.nodes[u]['value'].shape[d['dims'][0][0]]
-                new_ind = Index(ind.name, new_size, ind.ndim)
-                d['name'] = new_ind
-        
-
-        return out
-
-    def __mul__(self, other: Self) -> Self:
-        """Multiply two tensor trains."""
-        assert nx.is_isomorphic(self.network, other.network)
-
-        out = copy.deepcopy(self)
-        dim = len(self.free_nodes)
-        for ii, (node1, node2) in enumerate(zip(self.network.nodes, other.network.nodes)):
-
-            val1 = self.network.nodes[node1]['value']
-            val2 = other.network.nodes[node2]['value']
-
-            if val1 is not None:
-
-                if ii == 0:
-                    n = val1.shape[0]
-                    out.network.nodes[node1]['value'] = np.einsum('ij,ik->ijk', val1, val2).reshape(n, -1)
-                elif ii == dim-1:
-                    n = val1.shape[1]
-                    out.network.nodes[node1]['value'] = np.einsum('ji,ki->jki', val1, val2).reshape(-1, n)
-                else:
-                    n = val1.shape[1]
-                    r1 = val1.shape[0] * val2.shape[0]
-                    out.network.nodes[node1]['value'] = np.einsum('ijk,ljm->iljkm', val1, val2).reshape(r1, n, -1)
-
-                    
-        for u, v, d in out.network.edges(data=True):
-            if d['free_edge'] is False:
-                ind = d['name']
-                new_size = out.network.nodes[u]['value'].shape[d['dims'][0][0]]
-                new_ind = Index(ind.name, new_size, ind.ndim)
-                d['name'] = new_ind
-        
-
-        return out    
-
-    def right_orthogonalize(self, node) -> Self:
-        """Right orthogonalize all but first core.
-
-        A right orthogonal core has the r_{k-1} x nk r_k matrix
-        R(Gk(ik)) = ( Gk(1) Gk(2) · · · Gk(nk) )
-        having orthonormal rows so that
-
-        sum G_k(i) G_k(i)^T  = I
-
-        Leverages the fact that one parent is predecessor
-        """
-        val1 = self.network.nodes[node]['value']
-        if val1.ndim == 3:
-            # print("val1.shape = ", val1.shape)
-            r, n, b = val1.shape
-            val1 = np.reshape(val1, (r, n*b), order='F')
-            # print("val1.T.shape = ", val1.T.shape)
-            q, R = np.linalg.qr(val1.T, mode='reduced')
-            if q.shape[1] < r:
-                newq = np.zeros((q.shape[0], r))
-                newq[:, :q.shape[1]] = q
-                q = newq
-                newr = np.zeros((r, R.shape[1]))
-                newr[:R.shape[0], :] = R
-                R = newr
-            
-            # print("q.shape = ", q.shape)
-            # print("r.shape = ", R.shape)
-            # print("r = ", r)
-            # print("q shape = ", q.shape)
-            new_val = np.reshape(q.T, (r, n, b), order='F')
-            self.network.nodes[node]['value'] = new_val
-        else:
-            q, R = np.linalg.qr(val1.T)
-            new_val = q.T
-            self.network.nodes[node]['value'] = new_val
-
-
-        predecessor = list(self.network.predecessors(node))
-        assert len(predecessor) == 1
-        pred = predecessor[0]
-        
-        val2 = self.network.nodes[pred]['value']
-        new_val2 = np.einsum('...i,ij->...j', val2, R.T)
-        self.network.nodes[pred]['value'] = new_val2
-                        
-        return self
-
-    def norm(self, tol=1e-13) -> float:
-        t2 = copy.deepcopy(self)
-        t2 = t2.rename('t')
-        inner = self.inner(t2)
-        if np.abs(inner) < tol:
-            return np.sqrt(np.abs(inner))
-        else:
-            # if inner < 0:
-            #     print("inner = ", inner)
-            return np.sqrt(inner + tol)
-        
-    def round(self, eps: float) -> Self:
-        
-        norm2 = self.norm()
-        dim = self.num_tensors      
-        delta = eps / np.sqrt(dim-1) * norm2
-
-        cores = []
-        for node, data in self.network.nodes(data=True):
-            if data['free_node'] is None:
-                cores.append(node)
-                
-        # print("DIM = ", dim)
-        out = self.right_orthogonalize(cores[dim-1])
-        for jj in range(dim-2, 0, -1):
-            # print(f"orthogonalizing core {cores[jj]}")
-            out = out.right_orthogonalize(cores[jj])
-
-        ii = 0
-        # print("ON FORWARD SWEEP")
-        for node, data in out.network.nodes(data=True):
-
-            # print(f"Forward sweep: {node}")
-            if not data['free_node']:
-                value = data['value']
-                if value.ndim == 3:
-                    r1, n, r2a = value.shape
-                    val = np.reshape(value, (r1*n, r2a))
-                    u, s, v = deltaSVD(val, delta)
-                    # print("u shape = ", u.shape)
-                    # print("s shape = ", s.shape)
-                    # print("v shape = ", v.shape)
-                    v = np.dot(np.diag(s), v)
-                    r2 = u.shape[1]
-                    new_core = np.reshape(u, (r1, n, r2))
-                else:
-                    n, r2a = value.shape
-                    u, s, v = deltaSVD(value, delta)
-                    v = np.dot(np.diag(s), v)
-                    r2 = u.shape[1]
-                    new_core = np.reshape(u, (n, r2))
-
-                data['value'] = new_core
-                    # ASSUMES ONLY 1 NODE NEDS MODIFICATION (TT Structure)
-                for neighbor in out.network[node]:
-                    # print("neighbor = ", neighbor)
-                    if not out.network.nodes[neighbor]['free_node']:
-                        # print("In here")
-                        val_old = out.network.nodes[neighbor]['value']
-                        # print("val_old shape =", val_old.shape)
-                        # print("v.shape = ", v.shape)
-                        next_val = np.einsum('ij,jk...->ik...', v, val_old)
-                        out.network.nodes[neighbor]['value'] = next_val
-                        
-                        break 
-                ii += 1
-                if ii == dim-1:
-                    break
-
-        # make this its own code
-        for u, v, d in out.network.edges(data=True):
-            if d['free_edge'] is False:
-                ind = d['name']
-                new_size = out.network.nodes[u]['value'].shape[d['dims'][0][0]]
-                new_ind = Index(ind.name, new_size, ind.ndim)
-                d['name'] = new_ind
-        self.network = out.network
-
-        return self
-    
-    def draw_layout(self):
-        """Get a gridded layout for the graph."""
-        pos = {}
-        cols = self.num_tensors
-        row = 0        
-        col = 0
-        switched = False
-        for ii, node in enumerate(self.network.nodes()):
-            # row = (ii - 1) // cols
-            # col = (ii - 1) % cols
-            if ii == cols and switched is False:
-                col = 0
-                row = 1
-                switched = True
-            col += 1
-            pos[node] = (col, -row)  # Negate row to flip the y-axis for better visualization
-        return pos
-
-# def Vector(Index, value):
+        for u, v in self.network.edges():
+            indices = self.get_contraction_index(u,v)
+            labels = [i.name for i in indices]
+            label = '-'.join(labels)
+            edge_labels[(u,v)] = label
+        nx.draw_networkx_edges(new_graph, pos, ax=ax)
+        nx.draw_networkx_edge_labels(new_graph, pos,
+                                     ax=ax, edge_labels=edge_labels)
 
 def vector(name: Union[str, int],
            index: Index,
-           value: np.ndarray,
-           ) -> TensorNetwork:
-    vec = TensorNetwork.create_empty()
-    vec.add_node(name, value)
-    vec.add_node(index.name, None, free_node=index)
-    vec.add_edge(name, index.name, [(0,)], name=index)
+           value: np.ndarray
+           ) -> 'TensorNetwork':
+    """Convert a vector to a tensor network."""
+    vec = TensorNetwork()
+    vec.add_node(name, Tensor(value, [index]))
     return vec
 
 
-def tensor(name: Union[str, int],
-           indices: List[Index],
-           value: np.ndarray,
-           ) -> TensorNetwork:
-    tensor = TensorNetwork.create_empty()
-    tensor.add_node(name, value)
+def rand_tt(indices: List[Index],
+            ranks: List[int]) -> TensorNetwork:
+    """Return a random tt."""
+
+    dim = len(indices)
+    assert len(ranks)+1 == len(indices)
+
+    tt = TensorNetwork()
+
+    r = [Index('r1', ranks[0])]
+    tt.add_node(0, Tensor(
+        np.random.randn(indices[0].size, ranks[0]),
+        [indices[0], r[0]]
+    ))
+
+    core = 1
+    for ii, index in enumerate(indices[1:-1]):
+        r.append(Index(f'r{ii+2}', ranks[ii+1]))
+        tt.add_node(core, Tensor(
+            np.random.randn(ranks[ii], index.size, ranks[ii+1]),
+            [r[ii], index, r[ii+1]]
+        ))
+        core += 1
+        tt.add_edge(ii, ii+1)
+
+
+    tt.add_node(dim-1, Tensor(
+        np.random.randn(ranks[-1], indices[-1].size),
+        [r[-1], indices[-1]]
+    ))
+    tt.add_edge(dim-2, dim-1)
+
+    return tt
+
+
+def tt_rank1(indices: List[Index],
+             vals: List[np.ndarray]) -> TensorNetwork:
+    """Return a random rank 1 TT tensor."""
+
+    dim = len(indices)
+
+    tt = TensorNetwork()
+
+    r = [Index('r1', 1)]
+    # print("vals[0] ", vals[0][:, np.newaxis])
+    new_tens = Tensor(vals[0][:, np.newaxis], [indices[0], r[0]])
+    tt.add_node(0, new_tens)
+    # print("new_tens = ", new_tens.indices)
+
+    core = 1
+    for ii, index in enumerate(indices[1:-1]):
+        r.append(Index(f'r{ii+2}', 1))
+        new_tens = Tensor(vals[ii+1][np.newaxis, :, np.newaxis],
+                          [r[ii], index, r[ii+1]])
+        tt.add_node(core, new_tens)
+        tt.add_edge(core-1, core)
+        core += 1
+
+
+    tt.add_node(dim-1, Tensor(vals[-1][np.newaxis, :],
+                              [r[-1], indices[-1]]))
+    tt.add_edge(dim-2, dim-1)
+    # print("tt_rank1 = ", tt)
+    return tt
+
+def tt_separable(indices: List[Index],
+                 funcs: List[np.ndarray]) -> TensorNetwork:
+    """Rank 2 function formed by sums of functions of individual dimensions.
+    """
+
+    dim = len(indices)
+
+    tt = TensorNetwork()
+    ranks = []
     for ii, index in enumerate(indices):
-        tensor.add_node(index.name, None, free_node=index)
-        tensor.add_edge(name, index.name, [(ii,)], name=index)
-    return tensor
 
-class TensorTrainOp(TensorNetwork):
+        ranks.append(Index(f"r_{ii+1}", 2))
+        if ii == 0:
+            val = np.ones((index.size, 2))
+            val[:, 0] = funcs[ii]
 
-    def __init__(self, network, indices_in: List[Index], indices_out: List[Index]):
-        super().__init__(network, indices_in + indices_out)
-        self.indices_in = indices_in
-        self.indices_out = indices_out
+            tt.add_node(ii, Tensor(val, [index, ranks[-1]]))
+        elif ii < dim-1:
+            val = np.zeros((2, index.size, 2))
+            val[0, :, 0] = 1.0
+            val[1, :, 0] = funcs[ii]
+            val[1, :, 1] = 1.0
+            tt.add_node(ii, Tensor(val,
+                                   [ranks[-2], index, ranks[-1]]))
+        else:
+            val = np.ones((2, index.size))
+            val[1, :] = funcs[ii]
+            tt.add_node(ii, Tensor(val,
+                                   [ranks[-2], index]))
 
-    @classmethod
-    def create_empty(cls) -> Self:
-        network = nx.DiGraph()
-        free_nodes = []
-        return cls(network, [], [])
+        if ii > 0:
+            tt.add_edge(ii-1, ii)
 
-    def apply(self, tt_in: TensorTrain) -> TensorTrain:
-        """Assumes common ordering!
-        """
-        tt = copy.deepcopy(tt_in)
-        dim = tt.dim
-        for ii, (node_op, node_tt) in enumerate(zip(self.network.nodes(), tt.network.nodes())):
-            if tt.network.nodes[node_tt]['free_node'] is None:
+    return tt
 
-                op = self.network.nodes[node_op]['value']
-                v = tt.network.nodes[node_tt]['value']
-                # print("op shape ", op.shape)
-                # print("v shape ", v.shape)
-                if ii == 0:
-                    new_core = np.einsum('ijk,jl->ikl', op, v)
-                    n = v.shape[0]
-                    new_core = np.reshape(new_core, (n,-1))
-                elif ii < dim-1:
-                    new_core = np.einsum('ijkl,mkp->mijlp', op, v)
-                    shape = new_core.shape
-                    new_core = np.reshape(new_core, (shape[0]*shape[1],
-                                                     shape[2],
-                                                     shape[3]*shape[4]))
-                else:
-                    new_core = np.einsum('ijk,mk->mij', op, v)
-                    shape = new_core.shape
-                    new_core = np.reshape(new_core, (shape[0]*shape[1], -1))
-                tt.network.nodes[node_tt]['value'] = new_core
-                
-        for u, v, d in tt.network.edges(data=True):
-            # if d['free_edge'] is False:
-            ind = d['name']
-            new_size = tt.network.nodes[u]['value'].shape[d['dims'][0][0]]
-            new_ind = Index(ind.name, new_size, ind.ndim)
-            d['name'] = new_ind
-        return tt
+def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
+    """Right orthogonalize all but first core.
 
-        
+    Tree tensor network as a TT and right orthogonalize
+
+    A right orthogonal core has the r_{k-1} x nk r_k matrix
+    R(Gk(ik)) = ( Gk(1) Gk(2) · · · Gk(nk) )
+    having orthonormal rows so that
+
+    sum G_k(i) G_k(i)^T  = I
+
+    Modifies the input tensor network
+
+    Assumes nodes have integer names
+    """
+    # pylint: disable=C0103
+    # above disables the snake case complaints for variables like R
+    val1 = tn.network.nodes[node]['tensor'].value
+    if val1.ndim == 3:
+        # print("val1.shape = ", val1.shape)
+        r, n, b = val1.shape
+        val1 = np.reshape(val1, (r, n*b), order='F')
+        # print("val1.T.shape = ", val1.T.shape)
+        q, R = np.linalg.qr(val1.T, mode='reduced')
+        if q.shape[1] < r:
+            newq = np.zeros((q.shape[0], r))
+            newq[:, :q.shape[1]] = q
+            q = newq
+            newr = np.zeros((r, R.shape[1]))
+            newr[:R.shape[0], :] = R
+            R = newr
+
+        # print("q.shape = ", q.shape)
+        # print("r.shape = ", R.shape)
+        # print("r = ", r)
+        # print("q shape = ", q.shape)
+        new_val = np.reshape(q.T, (r, n, b), order='F')
+        tn.network.nodes[node]['tensor'].update_val_size(new_val)
+    else:
+        q, R = np.linalg.qr(val1.T)
+        new_val = q.T
+        tn.network.nodes[node]['tensor'].update_val_size(new_val)
+
+
+    val2 = tn.network.nodes[node-1]['tensor'].value
+    new_val2 = np.einsum('...i,ij->...j', val2, R.T)
+    tn.network.nodes[node-1]['tensor'].update_val_size(new_val2)
+
+    return tn
+
+def tt_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
+    """Round a tensor train.
+
+    Nodes should be integers 0,1,2,...,dim-1
+    """
+    # pylint: disable=C0103
+    # above disables the snake case complaints for variables like R
+    norm2 = tn.norm()
+    dim = tn.dim()
+    delta = eps / np.sqrt(dim-1) * norm2
+
+    # cores = []
+    # for node, data in tn.network.nodes(data=True):
+    #     cores.append(node)
+
+    # print("DIM = ", dim)
+    out = tt_right_orth(tn, dim-1)
+    for jj in range(dim-2, 0, -1):
+        # print(f"orthogonalizing core {cores[jj]}")
+        out = tt_right_orth(out, jj)
+
+    # print("ON FORWARD SWEEP")
+    for node, data in out.network.nodes(data=True):
+
+        value = data['tensor'].value
+        if value.ndim == 3:
+            r1, n, r2a = value.shape
+            val = np.reshape(value, (r1*n, r2a))
+            u, s, v = delta_svd(val, delta)
+            # print("u shape = ", u.shape)
+            # print("s shape = ", s.shape)
+            # print("v shape = ", v.shape)
+            v = np.dot(np.diag(s), v)
+            r2 = u.shape[1]
+            new_core = np.reshape(u, (r1, n, r2))
+        else:
+            n, r2a = value.shape
+            u, s, v = delta_svd(value, delta)
+            v = np.dot(np.diag(s), v)
+            r2 = u.shape[1]
+            new_core = np.reshape(u, (n, r2))
+
+        data['tensor'].update_val_size(new_core)
+
+        # print("In here")
+        val_old = out.network.nodes[node+1]['tensor'].value
+        next_val = np.einsum('ij,jk...->ik...', v, val_old)
+        out.network.nodes[node+1]['tensor'].update_val_size(next_val)
+
+        if node == dim-2:
+            break
+
+
+    return out
+
+def ttop_rank1(indices_in: List[Index], indices_out: List[Index],
+               cores: List[np.ndarray],
+               rank_name_prefix: str) -> TensorNetwork:
+    """Rank 1 TT-op with op in the first dimension.
+
+    """
+    assert len(indices_in) == len(indices_out)
+    dim = len(indices_in)
+    tt_op = TensorNetwork()
+
+    rank_indices = [Index(f'{rank_name_prefix}_r1', 1)]
+    a1_tens = Tensor(cores[0][:, :, np.newaxis],
+                    [indices_out[0],
+                     indices_in[0],
+                     rank_indices[0]])
+    tt_op.add_node(0, a1_tens)
+    for ii in range(1, dim):
+        rank_indices.append(Index(f'{rank_name_prefix}_r{ii+1}', 1))
+        if ii < dim-1:
+            eye = cores[ii][np.newaxis, :, :, np.newaxis]
+            eye_tens = Tensor(eye,
+                              [rank_indices[ii-1],
+                               indices_out[ii],
+                               indices_in[ii],
+                               rank_indices[ii]])
+            tt_op.add_node(ii, eye_tens)
+        else:
+            eye = cores[ii][np.newaxis, :, :]
+            eye_tens = Tensor(eye, [rank_indices[ii-1],
+                                    indices_out[ii],
+                                    indices_in[ii]])
+            tt_op.add_node(ii, eye_tens)
+        if ii == 1:
+            tt_op.add_edge(ii-1, ii)
+        else:
+            tt_op.add_edge(ii-1, ii)
+
+    return tt_op
+
+
+def ttop_rank2(indices_in: List[Index], indices_out: List[Index],
+               cores_r1: List[np.ndarray],
+               cores_r2: List[np.ndarray],
+               rank_name_prefix: str) -> TensorNetwork:
+    """Rank 1 TT-op with op in the first dimension.
+
+    """
+    assert len(indices_in) == len(indices_out)
+    dim = len(indices_in)
+    tt_op = TensorNetwork()
+
+    rank_indices = [Index(f'{rank_name_prefix}_r1', 2)]
+
+    core = np.zeros((indices_out[0].size, indices_in[0].size, 2))
+    core[:, :, 0] = cores_r1[0]
+    core[:, :, 1] = cores_r2[0]
+
+    a1_tens = Tensor(core, [indices_out[0],
+                           indices_in[0],
+                           rank_indices[0]])
+
+    tt_op.add_node(0, a1_tens)
+    for ii in range(1, dim):
+        rank_indices.append(Index(f'{rank_name_prefix}_r{ii+1}', 2))
+        if ii < dim-1:
+
+            core = np.zeros((2, indices_out[ii].size,
+                             indices_in[ii].size, 2))
+            core[0, :, :, 0] = cores_r1[ii]
+            core[1, :, :, 1] = cores_r2[ii]
+
+            ai_tens = Tensor(core,
+                            [rank_indices[ii-1],
+                             indices_out[ii],
+                             indices_in[ii],
+                             rank_indices[ii]])
+            tt_op.add_node(ii, ai_tens)
+        else:
+
+            core = np.zeros((2, indices_out[ii].size, indices_in[ii].size))
+            core[0, :, :] = cores_r1[ii]
+            core[1, :, :] = cores_r2[ii]
+            ai_tens = Tensor(core, [rank_indices[ii-1],
+                                    indices_out[ii],
+                                    indices_in[ii]])
+            tt_op.add_node(ii, ai_tens)
+        tt_op.add_edge(ii-1, ii)
+
+    return tt_op
+
+
+def ttop_apply(ttop: TensorNetwork, tt_in: TensorNetwork) -> TensorNetwork:
+    """Apply a ttop to a tt tensor.
+
+    # tt overwritten, same free_indices as before
+    """
+    tt = copy.deepcopy(tt_in)
+    dim = tt.dim()
+    for ii, (node_op, node_tt) in enumerate(zip(ttop.network.nodes(),
+                                                tt.network.nodes())):
+
+
+        op = ttop.network.nodes[node_op]['tensor'].value
+        v = tt.network.nodes[node_tt]['tensor'].value
+        # print(f"op shape: {node_op}", op.shape)
+        # print(f"v shape: {node_tt}", v.shape)
+        if ii == 0:
+            new_core = np.einsum('ijk,jl->ilk', op, v)
+            n = v.shape[0]
+            new_core = np.reshape(new_core, (n,-1))
+        elif ii < dim-1:
+            new_core = np.einsum('ijkl,mkp->mijpl', op, v)
+            shape = new_core.shape
+            new_core = np.reshape(new_core, (shape[0]*shape[1],
+                                             shape[2],
+                                             shape[3]*shape[4]))
+        else:
+            new_core = np.einsum('ijk,mk->mij', op, v)
+            shape = new_core.shape
+            new_core = np.reshape(new_core, (shape[0]*shape[1], -1))
+
+        tt.network.nodes[node_tt]['tensor'] =  \
+            tt.network.nodes[node_tt]['tensor'].update_val_size(new_core)
+
+    # print("After op = ")
+    # print(tt)
+    return tt
+
+@typing.no_type_check
 def gmres(op, # function from in to out
-          rhs: TensorTrain,
-          x0: TensorTrain,
+          rhs: TensorNetwork,
+          x0: TensorNetwork,
           eps: float = 1e-5,
           round_eps: float=1e-10,
-          maxiter:int = 100) -> TensorTrain:
+          maxiter:int = 100) -> TensorNetwork:
     """Perform GMRES.
     VERY HACKY
     """
-
-    r0 = rhs + op(x0).scale(-1)
-    r0 = r0.round(round_eps)
+    # pylint: disable=C0103
+    # above disables the snake case complaints for variables like R
+    r0 = rhs + op(x0).scale(-1.0)
+    r0 = tt_round(r0, round_eps)
     beta = r0.norm()
 
-    v1 = r0.scale(1.0 / beta)
-    v = [v1]
+    r0.scale(1.0 / beta)
+    # print("r0 norm = ", r0.norm())
+
+    v = [r0]
+
+    # print("beta = ", beta)
+    # print("v0 norm = ", v[0].norm())
+
     y = []
     H = None
     for jj in range(maxiter):
         # print(f"jj = {jj}")
         delta = round_eps
 
-        w = op(v[jj]).round(delta)
+        w = op(v[-1])
+        w = tt_round(w, delta)
 
         if H is None:
             H = np.zeros((jj+2, jj+1))
@@ -776,180 +909,57 @@ def gmres(op, # function from in to out
             newH[:m, :n] = H
             H = newH
         # print(f"H shape = {H.shape}")
+        # print("inner w = ", w.inner(v[0]))
+        # # print("w = ", w)
+        # warr = w.contract().value.flatten()
+        # varr = v[0].contract().value.flatten()
+        # warr_next = warr - np.dot(warr, varr) * varr
+        # print("check inner =", np.dot(warr, warr), w.inner(w))
+        # print("H should be = ", np.dot(warr, varr), w.inner(v[0]))
+        # # exit(1)
+        # print("in arrays = ", np.dot(varr, varr), np.dot(warr_next, varr))
         for ii in range(jj+1):
-            H[ii, jj] = w.inner(v[ii].rename('t-'))
-            vv = copy.deepcopy(v[ii]).rename('t-')
-            w = w + vv.scale(-H[ii, jj])
+            # print("ii = ", ii)
+            H[ii, jj] = w.inner(v[ii])
+            vv = copy.deepcopy(v[ii])
+            vv.scale(-H[ii, jj])
+            w = w + vv
+        # print("inner w = ", w.inner(v[0]), w.inner(w))
         # print("H = ", H)
-        # w.inspect()
-        w = w.round(round_eps)
+        # exit(1)
+        w = tt_round(w, round_eps)
         H[jj+1, jj] = w.norm()
-        v.append(w.scale(1.0 / H[jj+1,jj]))
+        v.append(w.scale(1.0 / H[jj+1, jj]))
+        # for ii in range(jj+2):
+        #     print(f"inner {-1, ii} = ", v[-1].inner(v[ii]))
+
+        # exit(1)
+        # + 1e-14
+
+        # print(H)
+
 
         e = np.zeros((H.shape[0]))
         e[0] = beta
         yy, resid, _, _ = np.linalg.lstsq(H, e)
-        # print(f"Iteration {jj}: resid = {resid}")
         y.append(yy)
-        # if resid < eps:                
+        # print(f"Iteration {jj}: resid = {resid}")
+        if np.abs(resid) < eps:
+            break
+
+
+
+        # if resid < eps:
         #     break
-
+    # exit(1)
     x = copy.deepcopy(x0)
-    for ii in range(jj):
-        x = x + v[ii].scale(y[-1][ii])
-    x = x.round(round_eps)
-    r0 = rhs + op(x).scale(-1)
+    # print("len y = ", len(y[-1]))
+    # print("len v = ", len(v))
+    for ii, (vv, yy) in enumerate(zip(v, y[-1])):
+        x = x + vv.scale(yy)
+    x = tt_round(x, round_eps)
+    r0 = rhs + op(x).scale(-1.0)
     resid = r0.norm()
+    # print("resid = ", resid)
+    # exit(1);
     return x, resid
-
-    
-def rand_tt(name: Union[str, int],
-            indices: List[Index],
-            ranks: List[int]) -> TensorTrain:
-    """Return a random tt."""
-
-    dim = len(indices)
-
-    tt = TensorTrain.create_empty()
-    core_names = []
-    for ii, index in enumerate(indices):
-
-        core_name = f"{name}_{ii+1}"
-        core_names.append(core_name)
-        if ii == 0:
-            tt.add_node(core_name, np.random.randn(index.size, ranks[1]))
-        elif ii < dim-1:
-            tt.add_node(core_name, np.random.randn(ranks[ii], index.size, ranks[ii+1]))
-        else:
-            tt.add_node(core_name, np.random.randn(ranks[ii], index.size))
-            
-        if ii == 1:
-            tt.add_edge(core_names[ii-1], core_names[ii], [(1, 0)])
-        elif ii > 1:
-            tt.add_edge(core_names[ii-1], core_names[ii], [(2, 0)])
-
-    for ii, (index, core_name) in enumerate(zip(indices, core_names)):
-        tt.add_node(index.name, None, free_node=index)
-        if ii == 0:
-            tt.add_edge(core_name, index.name, [(0,)], name=index)
-        else:
-            tt.add_edge(core_name, index.name, [(1,)], name=index)
-
-    return tt
-
-
-def tt_separable(name: Union[str, int],
-                 indices: List[Index],
-                 funcs: List[np.ndarray]) -> TensorTrain:
-    """Rank 2 function formed by summation of functoins of individual dimensions"""
-
-    dim = len(indices)
-
-    tt = TensorTrain.create_empty()
-    core_names = []
-    for ii, index in enumerate(indices):
-
-        core_name = f"{name}_{ii+1}"
-        core_names.append(core_name)
-        if ii == 0:
-            val = np.ones((index.size, 2))
-            val[:, 0] = funcs[ii]
-            tt.add_node(core_name, val)
-        elif ii < dim-1:
-            val = np.zeros((2, index.size, 2))
-            val[0, :, 0] = 1.0
-            val[1, :, 0] = funcs[ii]
-            val[1, :, 1] = 1.0
-            tt.add_node(core_name, val)
-        else:
-            val = np.ones((2, index.size))
-            val[1, :] = funcs[ii]
-            tt.add_node(core_name, val)
-            
-        if ii == 1:
-            tt.add_edge(core_names[ii-1], core_names[ii], [(1, 0)])
-        elif ii > 1:
-            tt.add_edge(core_names[ii-1], core_names[ii], [(2, 0)])
-
-    for ii, (index, core_name) in enumerate(zip(indices, core_names)):
-        tt.add_node(index.name, None, free_node=index)
-        if ii == 0:
-            tt.add_edge(core_name, index.name, [(0,)], name=index)
-        else:
-            tt.add_edge(core_name, index.name, [(1,)], name=index)
-
-    return tt
-
-def tt_rank1(name: Union[str, int],
-             indices: List[Index],
-             funcs: List[np.ndarray]) -> TensorTrain:
-    """Rank 2 function formed by summation of functoins of individual dimensions"""
-
-    dim = len(indices)
-
-    tt = TensorTrain.create_empty()
-    core_names = []
-    for ii, index in enumerate(indices):
-
-        core_name = f"{name}_{ii+1}"
-        core_names.append(core_name)
-        if ii == 0:
-            val = np.ones((index.size, 1))
-            val[:, 0] = funcs[ii]
-            tt.add_node(core_name, val)
-        elif ii < dim-1:
-            val = np.zeros((1, index.size, 1))
-            val[0, :, 0] = funcs[ii]
-            tt.add_node(core_name, val)
-        else:
-            val = np.ones((1, index.size))
-            val[0, :] = funcs[ii]
-            tt.add_node(core_name, val)
-            
-        if ii == 1:
-            tt.add_edge(core_names[ii-1], core_names[ii], [(1, 0)])
-        elif ii > 1:
-            tt.add_edge(core_names[ii-1], core_names[ii], [(2, 0)])
-
-    for ii, (index, core_name) in enumerate(zip(indices, core_names)):
-        tt.add_node(index.name, None, free_node=index)
-        if ii == 0:
-            tt.add_edge(core_name, index.name, [(0,)], name=index)
-        else:
-            tt.add_edge(core_name, index.name, [(1,)], name=index)
-
-    return tt
-
-
-def ttop_1dim(indices_in: List[Index], indices_out: List[Index], A1d):
-    """Rank 1 TT-op with op in the first dimension."""
-    assert len(indices_in) == len(indices_out)
-    dim = len(indices_in)
-    TTop = TensorTrainOp.create_empty()
-    
-    TTop.add_node(0, A1d[:, :, np.newaxis])
-    for ii in range(1, dim):
-        if ii < dim-1:
-            TTop.add_node(ii, np.eye(indices_in[ii].size)[np.newaxis, :, :, np.newaxis])
-        else:
-            TTop.add_node(ii, np.eye(indices_in[ii].size)[np.newaxis, :, :])
-        if ii == 1:
-            TTop.add_edge(ii-1, ii, [(2, 0)])
-        else:
-            TTop.add_edge(ii-1, ii, [(3, 0)])
-            
-    ## Add freenodes to hold output edges
-    for ii, (index_in, index_out) in enumerate(zip(indices_in, indices_out)):
-        TTop.add_node(index_in.name, None, free_node=index_in)
-        TTop.add_node(index_out.name, None, free_node=index_out)
-        if ii == 0:
-            TTop.add_edge(ii, index_in.name, [(1,)], name = index_in)
-            TTop.add_edge(ii, index_out.name, [(0,)], name = index_out)
-        else:
-            TTop.add_edge(ii, index_in.name, [(2,)], name = index_in)
-            TTop.add_edge(ii, index_out.name, [(1,)], name = index_out)
-            
-    TTop.indices_in = indices_in
-    TTop.indices_out = indices_out
-    return TTop
-    

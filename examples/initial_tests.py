@@ -1,5 +1,7 @@
-"""Tensor Network Solver capbailities and test"""
-from pytens import *
+"""Tensor Network Solver Capabilities and Test"""
+# from pytens import *
+from pytens.algs2 import *
+import pytens.algs as algs_old
 import copy
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,142 +11,158 @@ np.random.seed(4)
 
 if __name__ == "__main__":
     
-    x = Index('x', 5, 1)
-    u = Index('u', 10, 1)
-    v = Index('v', 20, 1)
-    
-    tt_ranks = [1, 2, 2, 1]    
-    TT = rand_tt('A', [x, u, v], tt_ranks)
-    TT.inspect()
+    x = Index('x', 5)
+    u = Index('u', 10)
+    v = Index('v', 20)
 
+    TT = rand_tt([x, u, v], [2, 2])
+    
+    print(TT)
+    indices = TT.all_indices()
+    # print(indices)
+    free_indices = TT.free_indices()
+    print("Full indices = ", free_indices)
+    print("TT ranks = ", TT.ranks())
 
     fig, axs = plt.subplots(1, 1)    
-    pos = TT.draw_layout()
-    TT.draw_nodes(pos, ax=axs)
-    TT.draw_edges(pos, ax=axs)
+    TT.draw(ax=axs)
 
+    # ttcon = TT.contract()
+    val = TT[2:4, 5, 3]
+    print(val)
 
-    print("\n---------------\n")
-    print("CONTRACTION EXAMPLE")
-    
-    # example of contracting, yields a tensor
-    ttcon = TT.contract('o')
-    ttcon.inspect()
-
-    fig, axs = plt.subplots(1, 1)
-    ttcon.draw(ax=axs)
-
-    print("\n---------------\n")
-    print("Vector example")
-    w = vector('w', x, np.random.randn(x.size))
-    fig, axs = plt.subplots(1, 1)        
-    w.draw(ax=axs)
-    
-    print("\n---------------\n")
-    print("Attaching example")
-
-    # Another TT
-    tt_ranks2 = [1, 3, 4, 1]
-    TT2 = rand_tt('B', [x, u, v], tt_ranks2)
+    tt_ranks2 = [3, 4]    
+    TT2 = rand_tt([x, u, v], tt_ranks2)
     TT3 = TT.attach(TT2)
-    TT3.inspect()
+    print(TT3)
     
     fig, axs = plt.subplots(1, 1)
-    pos = nx.planar_layout(TT3.network)    
-    TT3.draw_nodes(pos, ax=axs)
-    TT3.draw_edges(pos, ax=axs)
+    TT3.draw(ax=axs)
 
-    print("\n---------------\n")
-    print("Partial Integration")
-    int_partial = TT.integrate([v], np.ones(1)).as_tt()
-    int_partial.draw()
+    integrate = TT.integrate([x], [1.0])
+    print(integrate)
+    
+    fig, axs = plt.subplots(1, 1)
+    integrate.draw(ax=axs)
+    
+    print("\n\n\n")
 
     print("\n---------------\n")
     print("Addition ")
     tt_add = TT + TT2
-    tt_add.inspect()
-
+    print(tt_add)
 
     print("\n---------------\n")
     print("Elementwise multiplication ")
     tt_mult = TT * TT2
-    tt_mult.inspect()
-
-
-    print("\n---------------\n")
-    print("Right orthogonalization")
-    TTc = copy.deepcopy(TT)
-    arr1 = TTc.contract('e').value('e')
-
-    TTc = TTc.right_orthogonalize('A_3')
-    node = TTc.value('A_3')    
-    TTc.inspect()
-    TTc = TTc.right_orthogonalize('A_2')
-    
-
-    print("\n---------------\n")
-    print("Renaming")
-    TT1_renamed = copy.deepcopy(TT)
-    TT1_renamed.rename('t')
-    TT1_renamed.inspect()
-
-    # print(np.sum(arr * arr))
-    print("\n---------------\n")
-    print("Rounding")
-    TTadd = TT + TT1_renamed
-    TTadd = TTadd.rename('added')
-    TTadd.round(1e-10)
+    print(tt_mult)
 
 
     print("\n---------------\n")
     print("TTop")
-    x = Index('x', 10, 1)
-    xp = Index('xp', 10, 1)
-    y = Index('y', 5, 1)
-    yp = Index('yp', 5, 1)
-    z = Index('z', 3, 1)
-    zp = Index('zp', 3, 1)
+    x = Index('x', 10)
+    xp = Index('xp', 10)
+    y = Index('y', 5)
+    yp = Index('yp', 5)
+    z = Index('z', 3)
+    zp = Index('zp', 3)
+
+    xo = algs_old.Index('x', 10, 1)
+    xpo = algs_old.Index('xp', 10, 1)
+    yo = algs_old.Index('y', 5, 1)
+    ypo = algs_old.Index('yp', 5, 1)
+    zo = algs_old.Index('z', 3, 1)
+    zpo = algs_old.Index('zp', 3, 1)    
 
     indices_in = [x, y, z]
-    indices_out = [xp, yp, zp]
+    indices_out = [xp, yp, zp]    
     A = np.random.randn(10, 10)
-    ttop = ttop_1dim(indices_in, indices_out, A)
+    B = np.eye(5, 5)
+    C = np.eye(3, 3)
+    ttop = ttop_rank1(indices_in, indices_out, [A, B, C], "A")
 
-    tt = rand_tt('A', [x, y, z], [1, 3, 2, 1])
-
-    plt.close('all')
+    print(ttop)
     fig, axs = plt.subplots(1, 1)
     ttop.draw(ax=axs)
 
-    combined = ttop.attach(tt)
-    fig, axs = plt.subplots(1, 1)
-    combined.draw(ax=axs)
-    
-    ttout = ttop.apply(tt)
+    tt = rand_tt([x, y, z], [3, 2])    
+    ttout = ttop_apply(ttop, copy.deepcopy(tt))
+    print(ttout)
     fig, axs = plt.subplots(1, 1)
     ttout.draw(ax=axs)
-    ttout.inspect()
 
 
-    print("\n---------------\n")
+    print("\n\n\n---------------\n")
     print("GMRES")
+
+    indices_in_o = [xo, yo, zo]
+    indices_out_o = [xpo, ypo, zpo]    
+    ttop = ttop_rank1(indices_in, indices_out, [A, B, C], "A")
+    ttop_old = algs_old.ttop_1dim(indices_in_o, indices_out_o, A)
+
+    ttop_arr = ttop.contract().value
+    ttop_old_arr = ttop_old.contract('o').value('o')
+    err = np.linalg.norm(ttop_arr - ttop_old_arr)
+    assert err < 1e-10, f"Error = {err}"
+
+
+    ff_rand = [np.random.randn(10), np.random.randn(5), np.random.randn(3)]
+    tt_rand = tt_separable([x, y, z], ff_rand)
+    tt_rand_old = algs_old.tt_separable("f", [xo, yo, zo], ff_rand)
+
+    tt_rand_arr = tt_rand.contract().value
+    tt_rand_old_arr = tt_rand_old.contract('o').value('o')
+    err = np.linalg.norm(tt_rand_arr - tt_rand_old_arr)
+    assert err < 1e-10, f"Error = {err}"
+
+    ttop_new_apply = ttop_apply(ttop, tt_rand)
+    ttop_old_apply = ttop_old.apply(tt_rand_old)
+
+    arr1 = ttop_new_apply.contract().value
+    arr2 = ttop_old_apply.contract('o').value('o')
+
+    err = np.linalg.norm(arr1 - arr2)
+    print(err)
+    assert err < 1e-10, f"Error = {err}"
+
     
-    x0 = rand_tt('x0', [x, y, z], [1, 3, 2, 1])
-    op = lambda ttin: ttop.apply(ttin)
-    xf, resid = gmres(op, tt, x0, 1e-5, 1e-5, maxiter=20)
-    print("resid = ", resid)
-    assert resid < 1e-5
-    xf.inspect()
+    
+    # exit(1)
+    # print("err = ", np.linalg.norm(err))
+    # exit(1)
+    
+    x0 = rand_tt([x, y, z], [3, 2])
+    op = lambda ttin: ttop_apply(ttop, ttin)
+    # rhs = op(x0)
+    rhs = tt
+    rhs_arr = rhs.contract().value
+    xf, resid = gmres(op, rhs, x0, 1e-8, 1e-12, maxiter=20)
+    # print("resid = ", resid)
+    # assert resid < 1e-5
 
-    check = ttop.apply(xf).contract('o').value('o')
-    should_be = tt.contract('o').value('o')
+    xff = copy.deepcopy(xf)
+    resid_tt = rhs + op(xff).scale(-1.0)
+    print("resid norm = ", resid_tt.norm())
+    
+    check = op(xf).contract().value
 
+    should_be = rhs.contract().value
+    print("did rhs change = ", np.linalg.norm(rhs_arr - should_be))
+    
     err = check - should_be
+    resid_tt_arr = resid_tt.contract().value
+    print("is resid correct = ", np.linalg.norm(resid_tt_arr - err))
+
+    print("resid_tt norm = ", resid_tt.norm())
+    print("err norm = ", np.linalg.norm(err))
+    
+    
     print("error = ", np.linalg.norm(err))
+    print("should_be = ", np.linalg.norm(should_be))
+    assert np.linalg.norm(err) < 1e-10
     
     # plt.show()
 
-    
 
     
 
