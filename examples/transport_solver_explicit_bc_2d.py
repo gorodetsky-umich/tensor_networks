@@ -253,9 +253,9 @@ if __name__ == "__main__":
     round_eps = 1e-5
     # num_steps = 2230
     # num_steps = 5230
-    num_steps = 120
+    num_steps = 30
     
-    problem = Problem([x, u, v], kscale=0.5, dtscale=0.2)
+    problem = Problem([x, u, v], kscale=0.5, dtscale=0.8)
     # plt.figure()
     final_time = num_steps * problem.dt
     print("final time = ", final_time)
@@ -343,6 +343,7 @@ if __name__ == "__main__":
     plt.ylabel('x')
     plt.xlabel('y')
     plt.legend()
+    plt.savefig('last_step.pdf')
 
     plt.show()
     
