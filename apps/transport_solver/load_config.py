@@ -1,6 +1,6 @@
 import pathlib
 from enum import Enum
-from typing import List, Union
+from typing import List, Union, Literal
 
 import pydantic as pd
 import yaml
@@ -48,6 +48,9 @@ class Solver(pd.BaseModel):
     cfl: float = pd.Field(gt=0.0)
     stencil: Stencil
     method: SolverMethod
+    num_steps: int = pd.Field(gt=0)
+    round_tol: float = pd.Field(gt=0.0)
+    round_freq: int
 
     class Config:
         use_enum_values = True
@@ -67,9 +70,11 @@ class Equations(pd.BaseModel):
 class Saving(pd.BaseModel):
 
     directory: str
+    plot_freq: int
 
 class Config(pd.BaseModel):
     """CLI config class."""
+    problem: Literal['hohlraum']
     geometry: Geometry
     angles: Angles
     solver: Solver
@@ -78,7 +83,7 @@ class Config(pd.BaseModel):
     # add validation
 
 
-def load_yml_config(path:pathlib.Path):
+def load_yml_config(path:pathlib.Path, logger):
     """Return Config."""
     try:
         return yaml.safe_load(path.read_text())

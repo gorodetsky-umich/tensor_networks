@@ -1,4 +1,237 @@
 """Solver utilities."""
+from typing import Dict, Any, Optional
+import copy
+from dataclasses import dataclass
 
-def check():
-    print("Hello world")
+import matplotlib.pyplot as plt
+import numpy as np
+
+from load_config import Config
+import pytens
+
+@dataclass
+class Indices:
+    """Indices involved in the problem"""
+    dimension: int
+    space: pytens.Index
+    theta: pytens.Index
+    psi: pytens.Index
+
+    @classmethod
+    def from_config(cls, config: Config) -> 'Indices':
+        """Build indices from config."""
+
+        n = np.prod(config.geometry.n)
+        pos = pytens.Index('x', n)
+        theta = pytens.Index('theta', config.angles.n_theta)
+        psi = pytens.Index('psi', config.angles.n_psi)
+        out = cls(config.geometry.dimension, pos,
+                  theta, psi)
+        return out
+
+    def __repr__(self) -> str:
+        out = (f"Indices({self.dimension!r},"
+               f"{self.space!r}, {self.theta!r}, {self.psi})")
+        return out
+
+
+class Solution:
+
+    time: float
+    sol: Optional[pytens.TensorNetwork]
+    aux: Dict[Any, Any]
+
+    def __init__(self, time, sol) -> None:
+        self.time = time
+        self.sol = sol
+        self.aux = {}
+
+@dataclass
+class Discretization:
+
+    dimension: int
+    theta: np.ndarray
+    psi: np.ndarray
+    x: np.ndarray
+    y: Optional[np.ndarray] = None
+
+    @classmethod
+    def from_config(cls, config: Config) -> 'Discretization':
+
+        x = np.linspace(
+            config.geometry.lb[0],
+            config.geometry.ub[0],
+            config.geometry.n[0]
+        )
+
+        theta = np.linspace(0, np.pi, config.angles.n_theta)
+        psi = np.linspace(0, 2*np.pi, config.angles.n_psi)
+        if config.geometry.dimension == 2:
+            y = np.linspace(
+                config.geometry.lb[1],
+                config.geometry.ub[1],
+                config.geometry.n[1]
+            )
+            return cls(2, theta, psi, x, y)
+        else:
+            return cls(1, theta, psi, x, None)
+
+
+    def get_min_h(self) -> float:
+
+        if self.dimension == 1:
+            return self.x[1] - self.x[0]
+        elif self.dimension == 2:
+            dx = self.x[1] - self.x[0]
+            dy = self.y[1] - self.y[0]
+            if dx < dy:
+                return dx
+            return dy
+
+def get_ic(indices: Indices,
+           discretization: Discretization,
+           config: Config):
+
+    if config.problem == 'hohlraum':
+        if indices.dimension == 1:
+            x = np.zeros((config.geometry.n[0]))
+            x[0] = 1
+            theta = np.ones((config.angles.n_theta))
+            psi = np.ones((config.angles.n_psi))
+            ind = [indices.space, indices.theta, indices.psi]
+            f = pytens.tt_rank1(ind, [x, theta, psi])
+        else:
+            raise NotImplementedError("2D hohlraum")
+    else:
+        raise NotImplementedError("2D hohlraum")
+
+    return Solution(0.0, f)
+
+
+def get_rhs(indices: Indices,
+            discretization: Discretization,
+            config: Config):
+
+    h = discretization.get_min_h()
+    ones = np.ones(indices.space.size)
+    sin_theta = np.sin(discretization.theta)
+    cos_psi = np.cos(discretization.psi)
+
+    ind = [indices.space, indices.theta, indices.psi]
+    omega = pytens.tt_rank1(ind, [ones, sin_theta, cos_psi])
+    if config.solver.stencil == 'upwind':
+
+        # def stencil_vel_pos(x):
+        #     out = np.zeros(x.shape[0])
+        #     out[1:] = x[1:] - x[0:-1]
+        #     out /= h
+        #     return out
+        # def stencil_vel_neg(x):
+        #     out = np.zeros(x.shape[0])
+        #     out[:-1] = -x[0:-1] + x[1:]
+        #     out /= h
+        from old_stuff import old_upwind
+        ttop = old_upwind(indices, h, cos_psi)
+        def op(time, sol):
+            op1 = pytens.ttop_apply(ttop, copy.deepcopy(sol))
+            op2 = op1 * omega
+            return op2
+            # return  op2
+
+    return op
+
+def mean_intensity(indices: Indices,
+                   disc: Discretization,
+                   sol: Solution):
+
+    sint = np.sin(disc.theta) / disc.theta.shape[0] * np.pi
+    one =  np.ones((disc.psi.shape[0]))/ disc.psi.shape[0] * 2 * np.pi
+    # print("tt = ", tt)
+    integral = sol.sol.integrate(
+        [indices.theta, indices.psi],
+        [sint, one]
+    ).contract().value
+
+    norm = np.sum(np.sin(disc.theta))* \
+           np.sum(np.ones((disc.psi.shape[0]))) / \
+           disc.theta.shape[0] / disc.psi.shape[0] * \
+           np.pi * 2 * np.pi
+
+    integral /=  norm
+
+    # print("integral = ", integral)
+    return integral
+
+def get_timestep_plot(disc: Discretization,
+                      config: Config):
+
+    if config.problem == 'hohlraum':
+        if disc.dimension == 1:
+            def plot_intensity(ax, sol):
+                y = sol.aux['mean_intensity']
+                ax.plot(disc.x, y, '--')
+                ax.set_xlabel('x')
+                ax.set_ylabel('mean intensity')
+                return ax
+
+            return plot_intensity
+        else:
+            raise NotImplementedError("2D Hohlraum")
+    else:
+        raise NotImplementedError('Cannot plot for other problems')
+    pass
+
+def main_loop(config: Config, logger):
+
+    sol = [None] * config.solver.num_steps
+
+    indices = Indices.from_config(config)
+    disc = Discretization.from_config(config)
+    dt = config.solver.cfl * disc.get_min_h()
+    logger.info("dt = %f", dt)
+    rhs = get_rhs(indices, disc, config)
+
+    sol[0] = get_ic(indices, disc, config)
+
+    sol[0].aux['mean_intensity'] = mean_intensity(
+        indices, disc, sol[0]
+    )
+
+    time_step_plot = get_timestep_plot(disc, config)
+    fig, axs = plt.subplots(1, 1)
+    axs = time_step_plot(axs, sol[0])
+
+    # print(sol[0])
+    time = 0.0
+    for ii in range(1, config.solver.num_steps):
+        if ii % 10 == 0:
+            print(f"On step {ii}")
+
+        if config.solver.method == 'forward euler':
+            sol[ii] = Solution(
+                sol[ii-1].time + dt,
+                sol[ii-1].sol + rhs(
+                    sol[ii-1].time,
+                    sol[ii-1].sol
+                ).scale(-dt)
+            )
+        else:
+            raise NotImplementedError("This solver not implemented")
+
+        if ii % config.solver.round_freq == 0:
+            sol[ii].sol = pytens.tt_round(
+                sol[ii].sol,
+                config.solver.round_tol
+            )
+
+        if ii % config.saving.plot_freq == 0:
+            sol[ii].aux['mean_intensity'] = mean_intensity(
+                indices, disc, sol[ii]
+            )
+            axs = time_step_plot(axs, sol[ii])
+            logger.info("\tRounded Sol[%d] ranks = %r", ii, sol[ii].sol.ranks())
+            # print(sol[ii].aux['mean_intensity'])
+            # print("Need to plot")
+
+    plt.show()
+    print("Need to do final plot")

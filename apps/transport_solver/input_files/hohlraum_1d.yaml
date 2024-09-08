@@ -1,8 +1,9 @@
+problem: hohlraum
 geometry:
   dimension: 1
   lb: 0
   ub: 1
-  n: 10
+  n: 160
 
 angles:
   n_theta: 100
@@ -15,7 +16,10 @@ solver:
   cfl: 0.8
   stencil: 'upwind' # or 'rusanov' or 'jiang'
   method: 'forward euler'
+  num_steps: 100
+  round_tol: 1e-5
+  round_freq: 1
 
 saving:
   directory: 'results'
-
+  plot_freq: 10

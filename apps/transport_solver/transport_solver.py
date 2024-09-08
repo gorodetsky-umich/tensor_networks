@@ -17,17 +17,19 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger.info('started')
 
-    yml_dict = load_yml_config(pathlib.Path(args.input_file))
-    settings = Config(**yml_dict)
+    # Load inputs
+    yml_dict = load_yml_config(pathlib.Path(args.input_file), logger)
+    config = Config(**yml_dict)
+    logger.info("config:\n%r", config)
 
-    logger.info("settings:\n%r", settings)
-
-    save_dir = pathlib.Path(settings.saving.directory)
+    # Get directory set up
+    save_dir = pathlib.Path(config.saving.directory)
     save_dir.mkdir(exist_ok=True)
-
     with open(save_dir / 'input.yaml', 'w') as f:
-        yaml.dump(settings.model_dump(), f)
+        yaml.dump(config.model_dump(), f)
 
+    # Start Create STUFF!!
+    solver.main_loop(config, logger)
     # solver.check()
 
     logger.info('Finished')

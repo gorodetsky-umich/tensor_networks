@@ -1,5 +1,5 @@
 """An explicit solver for transport."""
-from pytens.algs2 import *
+from pytens.algs import *
 import copy
 import numpy as np
 import matplotlib.pyplot as plt
@@ -272,7 +272,7 @@ if __name__ == "__main__":
     round_eps = 1e-5
     # num_steps = 2230
     # num_steps = 5230
-    num_steps = 400
+    num_steps = 100
     # num_steps = 200
     # num_steps = 80
     # num_steps = 120  
