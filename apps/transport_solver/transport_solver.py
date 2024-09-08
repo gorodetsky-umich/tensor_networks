@@ -14,13 +14,10 @@ if __name__ == "__main__":
     parser.add_argument("input_file", help="input file")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
-    logger.info('started')
 
     # Load inputs
     yml_dict = load_yml_config(pathlib.Path(args.input_file), logger)
     config = Config(**yml_dict)
-    logger.info("config:\n%r", config)
 
     # Get directory set up
     save_dir = pathlib.Path(config.saving.directory)
@@ -28,8 +25,12 @@ if __name__ == "__main__":
     with open(save_dir / 'input.yaml', 'w') as f:
         yaml.dump(config.model_dump(), f)
 
+    logging.basicConfig(filename= save_dir/ 'log.log', level=logging.INFO)
+    logger.info('started')
+    logger.info("config:\n%r", config)
+
     # Start Create STUFF!!
-    solver.main_loop(config, logger)
+    solver.main_loop(config, logger, save_dir)
     # solver.check()
 
     logger.info('Finished')

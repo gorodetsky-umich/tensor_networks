@@ -16,10 +16,10 @@ solver:
   cfl: 0.8
   stencil: 'upwind' # or 'rusanov' or 'jiang'
   method: 'forward euler'
-  num_steps: 100
+  num_steps: 200
   round_tol: 1e-5
   round_freq: 1
 
 saving:
   directory: 'results'
-  plot_freq: 10
+  plot_freq: 5

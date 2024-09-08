@@ -25,6 +25,7 @@ dependencies = [
   "pydantic",
   "matplotlib", # for plotting
   "pyyaml", # for apps
+  "tqdm", # for apps
 ]
 
 [project.urls]
