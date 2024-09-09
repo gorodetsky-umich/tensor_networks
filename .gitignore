@@ -5,6 +5,7 @@
 
 local_scratch/*
 apps/transport_solver/results/*
+apps/transport_solver/results_2d/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

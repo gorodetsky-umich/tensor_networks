@@ -9,6 +9,10 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.rcParams['mathtext.fontset'] = 'stix'
 matplotlib.rcParams['font.family'] = 'STIXGeneral'
+matplotlib.rcParams['font.size'] = 14
+# font = {'family' : 'normal',
+#         'weight' : 'bold',
+#         'size'   : 22}
 # from matplotlib import rc
 # rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
 # ## for Palatino and other serif fonts use:
@@ -112,7 +116,14 @@ def get_ic(indices: Indices,
             ind = [indices.space, indices.theta, indices.psi]
             f = pytens.tt_rank1(ind, [x, theta, psi])
         else:
-            raise NotImplementedError("2D hohlraum")
+            xy = np.zeros((config.geometry.n[0], config.geometry.n[1]))
+            xy[0, :] = 1.0
+            xy[:, 0] = 1.0
+            xy = xy.flatten()
+            theta = np.ones((config.angles.n_theta))
+            psi = np.ones((config.angles.n_psi))
+            ind = [indices.space, indices.theta, indices.psi]
+            f = pytens.tt_rank1(ind, [xy, theta, psi])
     else:
         raise NotImplementedError("2D hohlraum")
 
@@ -129,25 +140,31 @@ def get_rhs(indices: Indices,
     cos_psi = np.cos(discretization.psi)
 
     ind = [indices.space, indices.theta, indices.psi]
-    omega = pytens.tt_rank1(ind, [ones, sin_theta, cos_psi])
+    omega_x = pytens.tt_rank1(ind, [ones, sin_theta, cos_psi])
     if config.solver.stencil == 'upwind':
 
-        # def stencil_vel_pos(x):
-        #     out = np.zeros(x.shape[0])
-        #     out[1:] = x[1:] - x[0:-1]
-        #     out /= h
-        #     return out
-        # def stencil_vel_neg(x):
-        #     out = np.zeros(x.shape[0])
-        #     out[:-1] = -x[0:-1] + x[1:]
-        #     out /= h
-        from old_stuff import old_upwind
-        ttop = old_upwind(indices, h, cos_psi)
-        def op(time, sol):
-            op1 = pytens.ttop_apply(ttop, copy.deepcopy(sol))
-            op2 = op1 * omega
-            return op2
-            # return  op2
+        if discretization.dimension == 1:
+            from old_stuff import old_upwind_1d
+            ttop = old_upwind_1d(indices, h, cos_psi)
+            def op(time, sol):
+                op1 = pytens.ttop_apply(ttop, copy.deepcopy(sol))
+                op2 = op1 * omega_x
+                return op2
+        else:
+            from old_stuff import old_upwind_2d
+            sin_psi = np.sin(discretization.psi)
+            omega_y = pytens.tt_rank1(ind, [ones, sin_theta, sin_psi])
+            tt_op_x, tt_op_y = old_upwind_2d(discretization, indices)
+            def op(time, sol):
+                op1_x = pytens.ttop_apply(tt_op_x, copy.deepcopy(sol))
+                op2_x = op1_x * omega_x
+                op1_y = pytens.ttop_apply(tt_op_y, copy.deepcopy(sol))
+                op2_y = op1_y * omega_y
+                return op2_x + op2_y
+    else:
+        raise NotImplementedError(
+            'Stencil other than upwind is not yet implemented'
+        )
 
     return op
 
@@ -242,10 +259,72 @@ def get_plots(disc: Discretization,
 
             return plot_intensity, plot_all_sols
         else:
-            raise NotImplementedError("2D Hohlraum")
+            def plot_intensity(ax, sol):
+                y = sol.aux['mean_intensity']
+                out = y.reshape((disc.x.shape[0],
+                                 disc.y.shape[0]))
+                pos = ax.contourf(out.T)
+                # ax.plot(disc.x[1:],
+                #         y[1:], '-', color='gray', alpha=0.2)
+                ax.set_xlabel(r'$x$')
+                ax.set_ylabel(r'$y$')
+                # ax.colorbar()
+                # ax.set_ylabel(r'Mean intensity $J$')
+                # fig.colorbar(pos, ax=ax)
+                return ax
+
+            return plot_intensity, None
     else:
         raise NotImplementedError('Cannot plot for other problems')
     pass
+
+def plot_ranks_compressions(disc: Discretization, sols: List[Solution]):
+    """Plot the ranks assuming a TT compression.
+
+    TODO:
+    Add general function to tensor network to get number of parmeters!
+    """
+
+    max_ranks = [np.max(s.sol.ranks()) for s in sols]
+    mean_ranks = [np.mean(s.sol.ranks()) for s in sols]
+
+    dim = disc.dimension
+    if dim == 1:
+        total_unknowns = disc.x.shape[0] * disc.theta.shape[0] \
+            * disc.psi.shape[0]
+    elif dim == 2:
+        total_unknowns = disc.x.shape[0] * disc.y.shape[0] * \
+            disc.theta.shape[0] * disc.psi.shape[0]
+
+
+    storage = [None] * len(sols)
+    for ii, sol in enumerate(sols):
+        ranks = sol.sol.ranks()
+        num_params = ranks[0] * disc.x.shape[0] + \
+            ranks[0] * ranks[1] * disc.theta.shape[0] + \
+            ranks[1] * disc.psi.shape[0]
+        storage[ii] = num_params
+
+    compression_ratio = total_unknowns / np.array(storage)
+    inds = np.arange(1, len(sols)+1)
+    cumulative_unknowns = total_unknowns * inds
+    cumulative_storage = np.cumsum(storage)
+    cumulative_compression = cumulative_unknowns / cumulative_storage
+
+    fig, axs = plt.subplots(1, 2)
+    axs[0].plot(max_ranks, '--k', label='max')
+    axs[0].plot(mean_ranks, '-k', label='mean')
+    axs[0].set_xlabel('Iteration')
+    axs[0].set_ylabel('Rank')
+    axs[0].legend()
+
+    axs[1].semilogy(compression_ratio, '--k', label='per step')
+    axs[1].semilogy(cumulative_compression, '-k', label='cumulative')
+    axs[1].set_xlabel('Iteration')
+    axs[1].set_ylabel('Compression Ratio')
+    axs[1].legend()
+    plt.tight_layout()
+    return fig, axs
 
 def main_loop(config: Config, logger, save_dir: pathlib.Path):
 
@@ -254,6 +333,7 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
     indices = Indices.from_config(config)
     disc = Discretization.from_config(config)
     dt = config.solver.cfl * disc.get_min_h()
+    logger.info("min_h = %f", disc.get_min_h())
     logger.info("dt = %f", dt)
     rhs = get_rhs(indices, disc, config)
 
@@ -267,16 +347,21 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
     fig, axs = plt.subplots(1, 1)
     axs = time_step_plot(axs, sol[0])
 
+    # plt.show()
+    # plt.exit(1)
+
     # print(sol[0])
     time = 0.0
     for ii in (pbar := tqdm(range(1, config.solver.num_steps))):
 
-        if ii % 10 == 0 and ii > 0:
-            # print(sol[ii])
+        if ii % 1 == 0 and ii > 0:
             pbar.set_postfix(
-                {"ranks": sol[ii-1].sol.ranks()}
+                {
+                    "time": sol[ii-1].time,
+                    "ranks": sol[ii-1].sol.ranks()
+                }
             )
-            # print(f"On step {ii}")
+        if ii % 1 == 0:
             logger.info("Step %d, ranks = %r", ii-1, sol[ii-1].sol.ranks())
 
         if config.solver.method == 'forward euler':
@@ -302,12 +387,13 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
             )
             axs = time_step_plot(axs, sol[ii])
 
-            # print(sol[ii].aux['mean_intensity'])
-            # print("Need to plot")
-
     plt.savefig(save_dir / f'{config.problem}_per_step_plot.pdf')
 
-    fig, axs = final_plot(sol)
-    plt.savefig(save_dir / f'{config.problem}_comparison_to_analytical.pdf')
+    logger.info("Final time: %r",sol[-1].time)
+    plot_ranks_compressions(disc, sol)
+    plt.savefig(save_dir / f'{config.problem}_ranks_compression.pdf')
+
+    if final_plot is not None:
+        fig, axs = final_plot(sol)
+        plt.savefig(save_dir / f'{config.problem}_comparison_to_analytical.pdf')
     plt.show()
-    print("Need to do final plot")

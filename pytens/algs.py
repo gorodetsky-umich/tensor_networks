@@ -784,7 +784,7 @@ def ttop_rank2(indices_in: List[Index], indices_out: List[Index],
                cores_r1: List[np.ndarray],
                cores_r2: List[np.ndarray],
                rank_name_prefix: str) -> TensorNetwork:
-    """Rank 1 TT-op with op in the first dimension.
+    """Rank 2 Sum of two ttops
 
     """
     assert len(indices_in) == len(indices_out)
@@ -822,6 +822,62 @@ def ttop_rank2(indices_in: List[Index], indices_out: List[Index],
             core = np.zeros((2, indices_out[ii].size, indices_in[ii].size))
             core[0, :, :] = cores_r1[ii]
             core[1, :, :] = cores_r2[ii]
+            ai_tens = Tensor(core, [rank_indices[ii-1],
+                                    indices_out[ii],
+                                    indices_in[ii]])
+            tt_op.add_node(ii, ai_tens)
+        tt_op.add_edge(ii-1, ii)
+
+    return tt_op
+
+def ttop_sum(indices_in: List[Index], indices_out: List[Index],
+             cores: List[List[np.ndarray]],
+             rank_name_prefix: str) -> TensorNetwork:
+    """Sum of ttops
+
+    """
+    assert len(indices_in) == len(indices_out)
+    dim = len(indices_in)
+    tt_op = TensorNetwork()
+
+    num_sum = len(cores)
+    rank_indices = [Index(f'{rank_name_prefix}_r1', num_sum)]
+
+    core = np.zeros((indices_out[0].size, indices_in[0].size, num_sum))
+    for ii in range(num_sum):
+        core[:, :, ii] = cores[ii][0]
+
+    a1_tens = Tensor(core, [indices_out[0],
+                           indices_in[0],
+                           rank_indices[0]])
+
+    tt_op.add_node(0, a1_tens)
+    for ii in range(1, dim):
+        rank_indices.append(Index(f'{rank_name_prefix}_r{ii+1}', num_sum))
+        if ii < dim-1:
+
+            core = np.zeros((num_sum,
+                             indices_out[ii].size,
+                             indices_in[ii].size,
+                             num_sum))
+            for jj in range(num_sum):
+                core[jj, :, :, jj] = cores[jj][ii]
+
+
+            ai_tens = Tensor(core,
+                            [rank_indices[ii-1],
+                             indices_out[ii],
+                             indices_in[ii],
+                             rank_indices[ii]])
+            tt_op.add_node(ii, ai_tens)
+        else:
+
+            core = np.zeros((num_sum,
+                             indices_out[ii].size,
+                             indices_in[ii].size))
+            for jj in range(num_sum):
+                core[jj, :, :] = cores[jj][ii]
+
             ai_tens = Tensor(core, [rank_indices[ii-1],
                                     indices_out[ii],
                                     indices_in[ii]])
