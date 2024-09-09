@@ -84,53 +84,91 @@ def old_upwind_2d(disc, indices):
     cos_psi = np.cos(disc.psi)
     sin_psi = np.sin(disc.psi)
 
-    stencil_right = np.einsum('ij,kl->ikjl', get_1d_stencil_plus(nx, dx), eyey)
-    stencil_right = np.reshape(stencil_right, (indices.space.size,
-                                               indices.space.size))
-    stencil_left = np.einsum('ij,kl->ikjl', get_1d_stencil_minus(nx, dx), eyey)
-    stencil_left = np.reshape(stencil_left, (indices.space.size,
-                                             indices.space.size))
+    # stencil_right = np.einsum('ij,kl->ikjl', get_1d_stencil_plus(nx, dx), eyey)
+    # stencil_right = np.reshape(stencil_right, (indices.space.size,
+    #                                            indices.space.size))
 
-    eye_right = copy.deepcopy(eye_psi)
-    eye_right[cos_psi < 0.0 + 1e-15] = 0.0
+    # stencil_left = np.einsum('ij,kl->ikjl', get_1d_stencil_minus(nx, dx), eyey)
+    # stencil_left = np.reshape(stencil_left, (indices.space.size,
+    #                                          indices.space.size))
+    
+    stenc_right_x = get_1d_stencil_plus(nx, dx)
+    def stencil_right(v):
+        o = np.reshape(v, (nx, -1))
+        o = np.dot(stenc_right_x, o)
+        return o.reshape(v.shape)
 
-    eye_left = copy.deepcopy(eye_psi)
-    eye_left[cos_psi > 0.0] = 0.0
+    stenc_left_x = get_1d_stencil_minus(nx, dx)
+    def stencil_left(v):
+        o = np.reshape(v, (nx, -1))
+        o = np.dot(stenc_left_x, o)
+        return o.reshape(v.shape)    
+        
+    
 
-    stencil_up = np.einsum('ij,kl->ikjl', eyex, get_1d_stencil_plus(ny, dy))
-    stencil_up = np.reshape(stencil_up, (indices.space.size,
-                                            indices.space.size))
-    stencil_down = np.einsum('ij,kl->ikjl', eyex, get_1d_stencil_minus(ny, dy))
-    stencil_down = np.reshape(stencil_down, (indices.space.size,
-                                             indices.space.size))
 
-    eye_up = copy.deepcopy(eye_psi)
-    eye_up[sin_psi < 0.0 + 1e-15] = 0.0
+    # eye_right = copy.deepcopy(eye_psi)
+    # eye_right[cos_psi < 0.0 + 1e-15] = 0.0
 
-    eye_down = copy.deepcopy(eye_psi)
-    eye_down[sin_psi > 0.0] = 0.0
+    # eye_left = copy.deepcopy(eye_psi)
+    # eye_left[cos_psi > 0.0] = 0.0
 
-    eye_theta = np.eye(indices.theta.size)
+    
+    ind_plus = cos_psi < 0.0 + 1e-14
+    def eye_right(v):
+        o = copy.deepcopy(v)
+        o[:, ind_plus] = 0.0
+        return o
+    ind_minus = cos_psi > 0.0
+    def eye_left(v):
+        o = copy.deepcopy(v)
+        o[:, ind_minus] = 0.0
+        return o
+
+    # stencil_up = np.einsum('ij,kl->ikjl', eyex, get_1d_stencil_plus(ny, dy))
+    # stencil_up = np.reshape(stencil_up, (indices.space.size,
+    #                                         indices.space.size))
+    # stencil_down = np.einsum('ij,kl->ikjl', eyex, get_1d_stencil_minus(ny, dy))
+    # stencil_down = np.reshape(stencil_down, (indices.space.size,
+    #                                          indices.space.size))
+
+    stenc_up_y = get_1d_stencil_plus(ny, dy)
+    def stencil_up(v):
+        o = np.reshape(v, (nx, ny, -1))
+        o = np.einsum('ij,kjm->kim', stenc_up_y, o)
+        # o = np.dot(stenc_right_x, o)
+        return o.reshape(v.shape)
+    
+    stenc_down_y = get_1d_stencil_minus(ny, dy)
+    def stencil_down(v):
+        o = np.reshape(v, (nx, ny, -1))
+        o = np.einsum('ij,kjm->kim', stenc_down_y, o)
+        return o.reshape(v.shape)
+
+
+    
+    # eye_up = copy.deepcopy(eye_psi)
+    # eye_up[sin_psi < 0.0 + 1e-15] = 0.0
+
+    # eye_down = copy.deepcopy(eye_psi)
+    # eye_down[sin_psi > 0.0] = 0.0
+
+    ind_up = sin_psi < 0.0 + 1e-14
+    def eye_up(v):
+        o = copy.deepcopy(v)
+        o[:, ind_up] = 0.0
+        return o
+    ind_down = sin_psi > 0.0
+    def eye_down(v):
+        o = copy.deepcopy(v)
+        o[:, ind_down] = 0.0
+        return o
+    
+    # eye_theta = np.eye(indices.theta.size)
 
     ind = [indices.space, indices.theta, indices.psi]
     ind_out = [pytens.Index(f'{i.name}p', i.size) for i in ind]
-    # ttop_x = pytens.ttop_sum(
-    #     ind,
-    #     ind_out,
-    #     [
-    #         [
-    #             stencil_right,
-    #             eye_theta,
-    #             eye_right
-    #         ],
-    #         [
-    #             stencil_left,
-    #             eye_theta,
-    #             eye_left,
-    #         ],
-    #     ],
-    #     "A",
-    # )
+
     def ttop_x(tt_in: pytens.TensorNetwork):
         return pytens.ttop_sum_apply(
             tt_in,
@@ -138,35 +176,23 @@ def old_upwind_2d(disc, indices):
             ind_out,
             [
                 [
+                    # lambda v: np.dot(stencil_right, v),
                     stencil_right,
-                    eye_theta,
-                    eye_right
+                    lambda v: v,
+                    eye_right,
+                    # lambda v: np.einsum('ij,mj->mi', eye_right, v),
                 ],
                 [
+                    # lambda v: np.dot(stencil_left, v),
                     stencil_left,
-                    eye_theta,
+                    lambda v: v,
                     eye_left,
+                    # lambda v: np.einsum('ij,mj->mi', eye_left, v),
                 ],
             ],
             "A",
         )
-    # ttop_y = pytens.ttop_sum(
-    #     ind,
-    #     ind_out,
-    #     [
-    #         [
-    #             stencil_up,
-    #             eye_theta,
-    #             eye_up,
-    #         ],
-    #         [
-    #             stencil_down,
-    #             eye_theta,
-    #             eye_down,
-    #         ],
-    #     ],
-    #     "B"
-    # )
+
     def ttop_y(tt_in: pytens.TensorNetwork):
         return pytens.ttop_sum_apply(
             tt_in,
@@ -174,14 +200,18 @@ def old_upwind_2d(disc, indices):
             ind_out,
             [
                 [
+                    # lambda v: np.dot(stencil_up, v),
                     stencil_up,
-                    eye_theta,
+                    lambda v: v,
                     eye_up,
+                    # lambda v: np.einsum('ij,mj->mi', eye_up, v),
                 ],
                 [
+                    # lambda v: np.dot(stencil_down, v),
                     stencil_down,
-                    eye_theta,
+                    lambda v: v,
                     eye_down,
+                    # lambda v: np.einsum('ij,mj->mi', eye_down, v),
                 ],
             ],
             "B"
