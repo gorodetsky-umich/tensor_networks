@@ -28,6 +28,10 @@ dependencies = [
   "tqdm", # for apps
 ]
 
+[tool.setuptools]
+packages = ["pytens"]
+
+
 [project.urls]
 Documentation = "https://github.com/unknown/temporary#readme"
 Issues = "https://github.com/unknown/temporary/issues"
@@ -66,7 +70,7 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 untyped_calls_exclude = ['opt_einsum', 'networkx']
-# packages = ['evidential']
+# packages = ['pytens']
 files = ['pytens/*.py']
 plugins = 'numpy.typing.mypy_plugin'
 

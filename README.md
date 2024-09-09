@@ -22,7 +22,7 @@ A library for python solvers
 Using -e flag tells pip install to read package in an editable mode, which means you don't need to reinstall the package after making your changes. They get detected automatically. 
 
 ## Immediate
-1. GMRES
+1. Applying the operator is currently most expensive. Get this down. First by exploiting the summation aspect. Second by exploiting sparsity patterns.
 
 ## Next
 3. ALS 
@@ -37,3 +37,8 @@ Using -e flag tells pip install to read package in an editable mode, which means
 
 ## To test 
 <!-- python -m unittest tests/test_something.py -->
+
+## To profile 
+python -m cProfile -o output.prof transport_solver.py input_files/hohlraum_2d.yaml
+pip install snakeviz
+snakeviz output.prof
