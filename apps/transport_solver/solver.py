@@ -147,7 +147,8 @@ def get_rhs(indices: Indices,
             from old_stuff import old_upwind_1d
             ttop = old_upwind_1d(indices, h, cos_psi)
             def op(time, sol):
-                op1 = pytens.ttop_apply(ttop, copy.deepcopy(sol))
+                # op1 = pytens.ttop_apply(ttop, copy.deepcopy(sol))
+                op1 = ttop(sol)
                 op2 = op1 * omega_x
                 return op2
         else:
@@ -156,9 +157,11 @@ def get_rhs(indices: Indices,
             omega_y = pytens.tt_rank1(ind, [ones, sin_theta, sin_psi])
             tt_op_x, tt_op_y = old_upwind_2d(discretization, indices)
             def op(time, sol):
-                op1_x = pytens.ttop_apply(tt_op_x, copy.deepcopy(sol))
+                # op1_x = pytens.ttop_apply(tt_op_x, copy.deepcopy(sol))
+                op1_x = tt_op_x(sol)
                 op2_x = op1_x * omega_x
-                op1_y = pytens.ttop_apply(tt_op_y, copy.deepcopy(sol))
+                op1_y = tt_op_y(sol)
+                # op1_y = pytens.ttop_apply(tt_op_y, copy.deepcopy(sol))
                 op2_y = op1_y * omega_y
                 return op2_x + op2_y
     else:

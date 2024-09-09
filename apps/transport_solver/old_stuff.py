@@ -5,54 +5,48 @@ import pytens
 def old_upwind_1d(indices, h, cos_psi):
     """Only valid for 1D!"""
 
-    def get_1d_stencil_plus(N: int):
-        """1D stencil."""
-        A = np.zeros((N, N))
-        for ii in range(1, N-1):
-            A[ii, ii] = 1
-            A[ii, ii-1] = -1
+    def stencil_plus_op(v):
+        o = np.zeros(v.shape)
+        o[1:, :] = (v[1:, :] - v[:-1, :]) / h
+        return o
 
-        A /= h
-        return A
-
-    def get_1d_stencil_minus(N: int):
-        """1D stencil."""
-        A = np.zeros((N, N))
-        for ii in range(1, N-1):
-            A[ii, ii+1] = 1
-            A[ii, ii] = -1
-        A /= h
-        return A
-
-
-    stencil_plus = get_1d_stencil_plus(indices.space.size)
-    stencil_minus = get_1d_stencil_minus(indices.space.size)
-
-
-    eyev = np.eye(cos_psi.shape[0])
-    eyev_plus = copy.deepcopy(eyev)
-    eyev_plus[cos_psi < 0.0 + 1e-14, :] = 0.0
-    eyev_minus = copy.deepcopy(eyev)
-    eyev_minus[cos_psi > 0.0, :] = 0.0
-
+    def stencil_minus_op(v):
+        o = np.zeros(v.shape)
+        o[1:-1, :] = (-v[1:-1, :] + v[2:, :]) / h
+        return o    
+    
+    ind_plus = cos_psi < 0.0+1e-14
+    def ev_plus(v):
+        o = copy.deepcopy(v)
+        o[:, ind_plus] = 0.0
+        return o
+    ind_minus = cos_psi > 0.0
+    def ev_minus(v):
+        o = copy.deepcopy(v)
+        o[:, ind_minus] = 0.0
+        return o    
+    
     ind = [indices.space, indices.theta, indices.psi]
     ind_out = [pytens.Index(f'{i.name}p', i.size) for i in ind]
-    ttop = pytens.ttop_sum(
-        ind,
-        ind_out,
-        [
+
+    def ttop(tt_in: pytens.TensorNetwork):
+        return pytens.ttop_sum_apply(
+            tt_in,
+            ind,
+            ind_out,
             [
-                stencil_plus,
-                np.eye(indices.theta.size),
-                eyev_plus
+                [
+                    stencil_plus_op,
+                    lambda v: v,
+                    ev_plus,
+                ],
+                [
+                    stencil_minus_op,
+                    lambda v: v,
+                    ev_minus
+                ],
             ],
-            [
-                stencil_minus,
-                np.eye(indices.theta.size),
-                eyev_minus
-            ],
-        ],
-        "A")
+            "A")
     return ttop
 
 
@@ -120,38 +114,76 @@ def old_upwind_2d(disc, indices):
 
     ind = [indices.space, indices.theta, indices.psi]
     ind_out = [pytens.Index(f'{i.name}p', i.size) for i in ind]
-    ttop_x = pytens.ttop_sum(
-        ind,
-        ind_out,
-        [
+    # ttop_x = pytens.ttop_sum(
+    #     ind,
+    #     ind_out,
+    #     [
+    #         [
+    #             stencil_right,
+    #             eye_theta,
+    #             eye_right
+    #         ],
+    #         [
+    #             stencil_left,
+    #             eye_theta,
+    #             eye_left,
+    #         ],
+    #     ],
+    #     "A",
+    # )
+    def ttop_x(tt_in: pytens.TensorNetwork):
+        return pytens.ttop_sum_apply(
+            tt_in,
+            ind,
+            ind_out,
             [
-                stencil_right,
-                eye_theta,
-                eye_right
+                [
+                    stencil_right,
+                    eye_theta,
+                    eye_right
+                ],
+                [
+                    stencil_left,
+                    eye_theta,
+                    eye_left,
+                ],
             ],
+            "A",
+        )
+    # ttop_y = pytens.ttop_sum(
+    #     ind,
+    #     ind_out,
+    #     [
+    #         [
+    #             stencil_up,
+    #             eye_theta,
+    #             eye_up,
+    #         ],
+    #         [
+    #             stencil_down,
+    #             eye_theta,
+    #             eye_down,
+    #         ],
+    #     ],
+    #     "B"
+    # )
+    def ttop_y(tt_in: pytens.TensorNetwork):
+        return pytens.ttop_sum_apply(
+            tt_in,
+            ind,
+            ind_out,
             [
-                stencil_left,
-                eye_theta,
-                eye_left,
+                [
+                    stencil_up,
+                    eye_theta,
+                    eye_up,
+                ],
+                [
+                    stencil_down,
+                    eye_theta,
+                    eye_down,
+                ],
             ],
-        ],
-        "A",
-    )
-    ttop_y = pytens.ttop_sum(
-        ind,
-        ind_out,
-        [
-            [
-                stencil_up,
-                eye_theta,
-                eye_up,
-            ],
-            [
-                stencil_down,
-                eye_theta,
-                eye_down,
-            ],
-        ],
-        "B"
-    )
+            "B"
+        )
     return ttop_x, ttop_y

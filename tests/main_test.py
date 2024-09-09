@@ -225,6 +225,27 @@ class TestTT(unittest.TestCase):
         self.assertTrue(np.allclose(check, should_be,
                                     atol=1e-14, rtol=1e-14))
 
+        out = ttop_sum_apply(tt, indices_in, indices_out,
+                             [
+                                 [
+                                     lambda v: np.dot(A1, v),
+                                     lambda v: np.einsum('jk,mkp->mjp', e1, v),
+                                     lambda v: np.einsum('ij,mj->mi', f1, v),
+                                 ],
+                                 [
+                                     lambda v: np.dot(A2, v),
+                                     lambda v: np.einsum('jk,mkp->mjp', e2, v),
+                                     lambda v: np.einsum('ij,mj->mi', f2, v),
+                                 ],
+                             ],
+                             "A")
+        check2 = out.contract().value
+        err2 = np.linalg.norm(should_be - check2)
+        # print("err = ", err2)
+        self.assertTrue(np.allclose(check2, should_be,
+                                    atol=1e-14, rtol=1e-14))
+        # print("out = ", out)
+
     # @unittest.skip('other stuff first')
     def test_gmres(self):
 

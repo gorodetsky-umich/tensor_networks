@@ -887,6 +887,81 @@ def ttop_sum(indices_in: List[Index], indices_out: List[Index],
     return tt_op
 
 
+def ttop_sum_apply(tt_in: TensorNetwork,
+                   indices_in: List[Index], indices_out: List[Index],
+                   cores: List[List[np.ndarray]],
+                   rank_name_prefix: str) -> TensorNetwork:
+    """Apply sum of rank1 tt ops to a tt.
+
+    """
+    assert len(indices_in) == len(indices_out)
+    dim = len(indices_in)
+    tt_out = TensorNetwork()
+    num_sum = len(cores)
+    for ii, node_tt in enumerate(tt_in.network.nodes()):
+
+        v = tt_in.network.nodes[node_tt]['tensor'].value
+        if ii == 0:
+            rank_indices = [Index(f'{rank_name_prefix}_r1', num_sum * v.shape[1])]
+            
+        if ii > 0 and ii < dim-1:
+            rank_indices.append(Index(f'{rank_name_prefix}_r{ii+1}', v.shape[2] * num_sum))
+        
+        if ii == 0:
+            core = np.zeros((indices_out[ii].size,
+                             v.shape[1] * num_sum))
+            indices = [indices_out[ii], rank_indices[ii]]
+            on_ind = 0
+            for jj in range(num_sum):
+                new_core = cores[jj][ii](v)
+                # new_core = np.einsum('ij,jl->il', cores[jj][ii], v)
+                n = v.shape[0]
+                new_core = np.reshape(new_core, (n, -1))
+                core[:, on_ind:on_ind + new_core.shape[1]] = new_core
+                on_ind += new_core.shape[1]
+        elif ii < dim-1:
+            core = np.zeros((num_sum * v.shape[0],
+                             indices_out[ii].size,
+                             num_sum * v.shape[2]))
+
+            indices = [rank_indices[ii-1], indices_out[ii], rank_indices[ii]]
+            on_ind1 = 0
+            on_ind2 = 0
+            for jj in range(num_sum):
+                # new_core = np.einsum('jk,mkp->mjp', cores[jj][ii], v)
+                new_core = cores[jj][ii](v)
+                shape = new_core.shape
+                new_core = np.reshape(new_core, (shape[0],
+                                                 shape[1],
+                                                 shape[2]))
+                n1 = new_core.shape[0]
+                n2 = new_core.shape[2]
+                core[on_ind1:on_ind1 + n1, :, on_ind2:on_ind2 + n2] = new_core
+                on_ind1 += n1
+                on_ind2 += n2
+        else:
+            core = np.zeros((num_sum * v.shape[0], indices_out[ii].size))
+            indices = [rank_indices[ii-1], indices_out[ii]]
+            on_ind = 0
+            for jj in range(num_sum):
+                # new_core = np.einsum('ij,mj->mi', cores[jj][ii], v)
+                new_core = cores[jj][ii](v)
+                # shape = new_core.shape
+                # new_core = np.reshape(new_core, (shape[0]*shape[1], -1))
+                core[on_ind:on_ind + new_core.shape[0], :] = new_core
+                on_ind += new_core.shape[0]
+                
+
+        new_tensor =  Tensor(core, indices)
+
+        tt_out.add_node(ii, new_tensor)
+        
+        if ii > 0:
+            tt_out.add_edge(ii-1, ii)
+
+    return tt_out
+
+
 def ttop_apply(ttop: TensorNetwork, tt_in: TensorNetwork) -> TensorNetwork:
     """Apply a ttop to a tt tensor.
 
