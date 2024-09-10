@@ -273,8 +273,8 @@ def get_plots(disc: Discretization,
                 
                 y = sol.aux['mean_intensity']
                 xx, yy = np.meshgrid(disc.x, disc.y)
-                print("xx shape = ", xx.shape)
-                print("yy shape = ", yy.shape)
+                # print("xx shape = ", xx.shape)
+                # print("yy shape = ", yy.shape)
                 out = y.reshape((disc.x.shape[0],
                                  disc.y.shape[0]))
                 levels = np.linspace(0, 1, 10)
