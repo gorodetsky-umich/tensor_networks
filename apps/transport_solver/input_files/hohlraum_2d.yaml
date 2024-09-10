@@ -3,7 +3,7 @@ geometry:
   dimension: 2
   lb: [0, 0]
   ub: [1, 1]
-  n: [64, 64]
+  n: [64, 65]
 
 angles:
   n_theta: 100
@@ -16,7 +16,7 @@ solver:
   cfl: 0.5
   stencil: 'upwind' # or 'rusanov' or 'jiang'
   method: 'forward euler'
-  num_steps: 96
+  num_steps: 96 # 96
   round_tol: 1e-3
   round_freq: 1
 

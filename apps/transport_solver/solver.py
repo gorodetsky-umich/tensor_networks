@@ -260,23 +260,83 @@ def get_plots(disc: Discretization,
                 fig.colorbar(pos, cax=axs['color2'])
                 return fig, axs
 
-            return plot_intensity, plot_all_sols
+            return None, plot_intensity, plot_all_sols
         else:
-            def plot_intensity(ax, sol):
+            def plot_intensity(sol):
+                fig, axs = plt.subplot_mosaic(
+                    [
+                        ['numerical', 'analytical', 'color'],
+                        ['error', 'error', 'color2']
+                    ],
+                    width_ratios = [0.45, 0.45, 0.1],
+                    layout='constrained')
+                
                 y = sol.aux['mean_intensity']
+                xx, yy = np.meshgrid(disc.x, disc.y)
+                print("xx shape = ", xx.shape)
+                print("yy shape = ", yy.shape)
                 out = y.reshape((disc.x.shape[0],
                                  disc.y.shape[0]))
-                pos = ax.contourf(out.T)
+                levels = np.linspace(0, 1, 10)
+                pos = axs['numerical'].contourf(xx[1:, 1:],
+                                                yy[1:, 1:],
+                                                out.T[1:, 1:],
+                                                levels=levels)
                 # ax.plot(disc.x[1:],
                 #         y[1:], '-', color='gray', alpha=0.2)
-                ax.set_xlabel(r'$x$')
-                ax.set_ylabel(r'$y$')
-                # ax.colorbar()
-                # ax.set_ylabel(r'Mean intensity $J$')
-                # fig.colorbar(pos, ax=ax)
-                return ax
+                axs['numerical'].set_xlabel(r'$x$')
+                axs['numerical'].set_ylabel(r'$y$')
 
-            return plot_intensity, None
+                jleft = np.zeros((disc.y.shape[0], disc.x.shape[0]))
+                jbottom = np.zeros((disc.y.shape[0], disc.x.shape[0]))
+                dt = sol.time**2.0 - xx**2
+                dt[dt < 1e-15] = 1e-14
+                diff1 = yy / np.sqrt(dt)
+                diff1[diff1 < 1] = 1
+                eta_x = np.arccos(diff1)
+
+                dt = sol.time**2.0 - yy**2
+                dt[dt < 1e-14] = 1e-14
+                diff2 = xx / np.sqrt(dt)
+                diff2[diff2 < 1] = 1
+                eta_y = np.arccos(diff2)
+
+
+                # print(disc.x.shape)
+                # print(disc.y.shape)
+                # print(eta_x.shape)
+                # print(eta_y.shape)
+                ind_x = disc.x < sol.time
+                jleft[:, ind_x] = 0.5 - \
+                    (np.pi - eta_x[:, ind_x]) * xx[:, ind_x] / (2 * np.pi * sol.time) \
+                    - 0.5 / np.pi * np.arcsin(xx[:, ind_x] * np.sin(eta_x[:, ind_x]) / np.sqrt(xx[:, ind_x]**2 + yy[:, ind_x]**2))
+
+                ind_y = disc.y < sol.time
+                jbottom[ind_y, :] = 0.5 - \
+                    (np.pi - eta_y[ind_y, :]) * yy[ind_y, :] / (2 * np.pi * sol.time) \
+                    - 0.5 / np.pi * np.arcsin(yy[ind_y, :] * np.sin(eta_y[ind_y, :]) / np.sqrt(xx[ind_y, :]**2 + yy[ind_y, :]**2))
+                j = jleft + jbottom
+                axs['analytical'].contourf(xx[1:, 1:],
+                                           yy[1:, 1:],
+                                           j[1:, 1:],
+                                           levels=levels)
+                                                              
+                fig.colorbar(pos, cax=axs['color'])
+
+                err = np.abs(out.T - j) + 1e-16
+                # err = np.log10(np.abs(out - out_a) + 1e-16)
+                # err += 1e-16
+                cmap = plt.colormaps["bone"]
+                pos = axs['error'].contourf(xx[1:, 1:],
+                                            yy[1:, 1:],
+                                            err[1:, 1:], cmap=cmap)
+                axs['error'].set_xlabel('Time')
+                axs['error'].set_ylabel('Space')
+                axs['error'].set_title('Error')
+                fig.colorbar(pos, cax=axs['color2'])
+                return fig, axs
+
+            return plot_intensity, None, None
     else:
         raise NotImplementedError('Cannot plot for other problems')
     pass
@@ -346,9 +406,15 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
         indices, disc, sol[0]
     )
 
-    time_step_plot, final_plot = get_plots(disc, config)
-    fig, axs = plt.subplots(1, 1)
-    axs = time_step_plot(axs, sol[0])
+    time_step_plot, overlay_time_plot, final_plot = get_plots(disc, config)
+
+    if overlay_time_plot is not None:
+        fig, axs = plt.subplots(1, 1)
+        axs = overlay_time_plot(axs, sol[0])
+
+    if time_step_plot is not None:
+        time_step_plot(sol[0])
+
 
     # plt.show()
     # plt.exit(1)
@@ -388,7 +454,11 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
             sol[ii].aux['mean_intensity'] = mean_intensity(
                 indices, disc, sol[ii]
             )
-            axs = time_step_plot(axs, sol[ii])
+            if overlay_time_plot is not None:
+                axs = overlay_time_plot(axs, sol[ii])
+
+            if time_step_plot is not None:
+                 time_step_plot(sol[ii])
 
     plt.savefig(save_dir / f'{config.problem}_per_step_plot.pdf')
 

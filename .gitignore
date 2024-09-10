@@ -3,6 +3,7 @@
 *pycache*
 *#*
 *.prof*
+*DS_Store*
 
 local_scratch/*
 apps/transport_solver/results/*
