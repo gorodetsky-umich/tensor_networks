@@ -18,22 +18,27 @@ A library for python solvers
    - =flake8 algs.py=
    - use emacs whitespace mode to see extra whitespace
 
-## Other stuff 
+## Other stuff
 Using -e flag tells pip install to read package in an editable mode, which means you don't need to reinstall the package after making your changes. They get detected automatically. 
 
+## Coding TODO
+1. Regression tests for the solver
+2. Cleanup of the solver problems
+
 ## Immediate
-1. Applying the operator is currently most expensive. Get this down. First by exploiting the summation aspect. Second by exploiting sparsity patterns.
+
 
 ## Next
-3. ALS 
+3. ALS
 4. contract two nodes along edge / reshape a node
 5. orthogonalize (general)
 6. round/truncate (general)
 
+
 ## POTENTIAL ISSUES:
 -1. currently edges are not actually used to determine contraction path, just index names. This causes issues when contracting when attaching tensors of edges are the same
 0. benchmarking done but dimension scaling is off (possibly because path is not optimal). Could hardcode optimal TT path, but it should be ok for lower dimensions (lower number of cores) May be a problem if QTT considered in the future
-1. compute_einsum_str assumes 1 dimension per edge 
+
 
 ## To test 
 <!-- python -m unittest tests/test_something.py -->

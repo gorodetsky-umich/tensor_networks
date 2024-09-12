@@ -6,7 +6,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 from load_config import load_yml_config, Config
-import solver
+import main_loop
 
 if __name__ == "__main__":
 
@@ -29,8 +29,6 @@ if __name__ == "__main__":
     logger.info('started')
     logger.info("config:\n%r", config)
 
-    # Start Create STUFF!!
-    solver.main_loop(config, logger, save_dir)
-    # solver.check()
+    main_loop.main_loop(config, logger, save_dir)
 
     logger.info('Finished')

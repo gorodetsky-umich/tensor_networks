@@ -1,6 +1,6 @@
 """Solver utilities."""
 from typing import Dict, Any, Optional, List
-import pathlib
+
 import copy
 from dataclasses import dataclass
 from tqdm import tqdm
@@ -10,44 +10,13 @@ import matplotlib
 matplotlib.rcParams['mathtext.fontset'] = 'stix'
 matplotlib.rcParams['font.family'] = 'STIXGeneral'
 matplotlib.rcParams['font.size'] = 14
-# font = {'family' : 'normal',
-#         'weight' : 'bold',
-#         'size'   : 22}
-# from matplotlib import rc
-# rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
-# ## for Palatino and other serif fonts use:
-# #rc('font',**{'family':'serif','serif':['Palatino']})
-# rc('text', usetex=True)
 
 import numpy as np
 
 from load_config import Config
 import pytens
 
-@dataclass
-class Indices:
-    """Indices involved in the problem"""
-    dimension: int
-    space: pytens.Index
-    theta: pytens.Index
-    psi: pytens.Index
-
-    @classmethod
-    def from_config(cls, config: Config) -> 'Indices':
-        """Build indices from config."""
-
-        n = np.prod(config.geometry.n)
-        pos = pytens.Index('x', n)
-        theta = pytens.Index('theta', config.angles.n_theta)
-        psi = pytens.Index('psi', config.angles.n_psi)
-        out = cls(config.geometry.dimension, pos,
-                  theta, psi)
-        return out
-
-    def __repr__(self) -> str:
-        out = (f"Indices({self.dimension!r},"
-               f"{self.space!r}, {self.theta!r}, {self.psi})")
-        return out
+import problems
 
 
 class Solution:
@@ -130,11 +99,10 @@ def get_ic(indices: Indices,
     return Solution(0.0, f)
 
 
-def get_rhs(indices: Indices,
-            discretization: Discretization,
-            config: Config):
+def get_transport_term(indices: Indices,
+                       discretization: Discretization,
+                       config: Config):
 
-    h = discretization.get_min_h()
     ones = np.ones(indices.space.size)
     sin_theta = np.sin(discretization.theta)
     cos_psi = np.cos(discretization.psi)
@@ -145,6 +113,7 @@ def get_rhs(indices: Indices,
 
         if discretization.dimension == 1:
             from old_stuff import old_upwind_1d
+            h = discretization.get_min_h()
             ttop = old_upwind_1d(indices, h, cos_psi)
             def op(time, sol):
                 # op1 = pytens.ttop_apply(ttop, copy.deepcopy(sol))
@@ -170,28 +139,6 @@ def get_rhs(indices: Indices,
         )
 
     return op
-
-def mean_intensity(indices: Indices,
-                   disc: Discretization,
-                   sol: Solution):
-
-    sint = np.sin(disc.theta) / disc.theta.shape[0] * np.pi
-    one =  np.ones((disc.psi.shape[0]))/ disc.psi.shape[0] * 2 * np.pi
-    # print("tt = ", tt)
-    integral = sol.sol.integrate(
-        [indices.theta, indices.psi],
-        [sint, one]
-    ).contract().value
-
-    norm = np.sum(np.sin(disc.theta))* \
-           np.sum(np.ones((disc.psi.shape[0]))) / \
-           disc.theta.shape[0] / disc.psi.shape[0] * \
-           np.pi * 2 * np.pi
-
-    integral /=  norm
-
-    # print("integral = ", integral)
-    return integral
 
 def get_plots(disc: Discretization,
                       config: Config):
@@ -386,88 +333,4 @@ def plot_ranks_compressions(disc: Discretization, sols: List[Solution]):
     plt.tight_layout()
     return fig, axs
 
-def main_loop(config: Config, logger, save_dir: pathlib.Path):
 
-    sol = [None] * (config.solver.num_steps + 1)
-
-    indices = Indices.from_config(config)
-    disc = Discretization.from_config(config)
-    dt = config.solver.cfl * disc.get_min_h()
-    logger.info("min_h = %f", disc.get_min_h())
-    logger.info("dt = %f", dt)
-    rhs = get_rhs(indices, disc, config)
-    sol[0] = get_ic(indices, disc, config)
-
-    sol[0].aux['mean_intensity'] = mean_intensity(
-        indices, disc, sol[0]
-    )
-
-    time_step_plot, overlay_time_plot, final_plot = get_plots(disc, config)
-
-    fig_o = None
-    if overlay_time_plot is not None:
-        fig_o, axs_o = plt.subplots(1, 1)
-        axs_o = overlay_time_plot(axs_o, sol[0])
-
-    if time_step_plot is not None:
-        fig, axs = time_step_plot(sol[0])
-
-
-    # plt.show()
-    # plt.exit(1)
-
-    # print(sol[0])
-    time = 0.0
-    for ii in (pbar := tqdm(range(1, config.solver.num_steps + 1))):
-
-        if ii % 1 == 0 and ii > 0:
-            pbar.set_postfix(
-                {
-                    "time": sol[ii-1].time,
-                    "ranks": sol[ii-1].sol.ranks()
-                }
-            )
-        if ii % 1 == 0:
-            logger.info("Step %d, ranks = %r", ii-1, sol[ii-1].sol.ranks())
-
-        if config.solver.method == 'forward euler':
-            sol[ii] = Solution(
-                sol[ii-1].time + dt,
-                sol[ii-1].sol + rhs(
-                    sol[ii-1].time,
-                    sol[ii-1].sol
-                ).scale(-dt)
-            )
-        else:
-            raise NotImplementedError("This solver not implemented")
-
-        if ii % config.solver.round_freq == 0:
-            sol[ii].sol = pytens.tt_round(
-                sol[ii].sol,
-                config.solver.round_tol
-            )
-
-        if ii % config.saving.plot_freq == 0:
-            sol[ii].aux['mean_intensity'] = mean_intensity(
-                indices, disc, sol[ii]
-            )
-            if overlay_time_plot is not None:
-                axs_o = overlay_time_plot(axs_o, sol[ii])
-
-            if time_step_plot is not None:
-                fig, _ = time_step_plot(sol[ii])
-                fig.savefig(
-                    save_dir / f'{config.problem}_{ii}_{sol[ii].time}.pdf'
-                )
-
-    if fig_o is not None:
-        fig_o.savefig(save_dir / f'{config.problem}_per_step_plot.pdf')
-
-    logger.info("Final time: %r",sol[-1].time)
-    plot_ranks_compressions(disc, sol)
-    plt.savefig(save_dir / f'{config.problem}_ranks_compression.pdf')
-
-    if final_plot is not None:
-        fig, axs = final_plot(sol)
-        plt.savefig(save_dir / f'{config.problem}_comparison_to_analytical.pdf')
-    plt.show()
