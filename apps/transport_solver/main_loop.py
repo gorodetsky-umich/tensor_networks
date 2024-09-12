@@ -1,6 +1,6 @@
 """Main Loop."""
 import pathlib
-import logger
+import logging
 
 from load_config import Config
 import solver
@@ -11,7 +11,7 @@ def main_loop(config: Config, logger: logging.Logger, save_dir: pathlib.Path):
     sol = [None] * (config.solver.num_steps + 1)
 
     problem = problems.load_problem(config)
-    disc = Discretization.from_config(config)
+    disc = solver.Discretization.from_config(config)
     dt = config.solver.cfl * disc.get_min_h()
 
     logger.info("min_h = %f", disc.get_min_h())
@@ -19,14 +19,12 @@ def main_loop(config: Config, logger: logging.Logger, save_dir: pathlib.Path):
 
     rhs = solver.get_transport_term(problem.indices, disc, config)
     sol[0] = solver.Solution(0.0, problem.ic())
-    sol[0] = problem.compute_aux_quantity(sol[0])
+    sol[0] = problem.compute_aux_quantity(sol[0], disc)
 
-    time_step_plot, overlay_time_plot, final_plot = get_plots(disc, config)
+    ax_o = problem.plot_per_step_overlay(sol[0], disc)
+    
+    # time_step_plot, overlay_time_plot, final_plot = get_plots(disc, config)
 
-    fig_o = None
-    if overlay_time_plot is not None:
-        fig_o, axs_o = plt.subplots(1, 1)
-        axs_o = overlay_time_plot(axs_o, sol[0])
 
     if time_step_plot is not None:
         fig, axs = time_step_plot(sol[0])
@@ -62,11 +60,13 @@ def main_loop(config: Config, logger: logging.Logger, save_dir: pathlib.Path):
             )
 
         if ii % config.saving.plot_freq == 0:
-            sol[ii].aux['mean_intensity'] = mean_intensity(
-                indices, disc, sol[ii]
+            sol[ii] = problem.compute_aux_quantity(sol[ii], disc)
+            ax_o = problem.plot_per_step_overlay(
+                sol[ii],
+                disc,
+                ax=ax_o,
+                save=save_dir / f'{config.problem}_{ii}_overlay_{sol[ii].time}.pdf'
             )
-            if overlay_time_plot is not None:
-                axs_o = overlay_time_plot(axs_o, sol[ii])
 
             if time_step_plot is not None:
                 fig, _ = time_step_plot(sol[ii])
@@ -74,14 +74,17 @@ def main_loop(config: Config, logger: logging.Logger, save_dir: pathlib.Path):
                     save_dir / f'{config.problem}_{ii}_{sol[ii].time}.pdf'
                 )
 
-    if fig_o is not None:
-        fig_o.savefig(save_dir / f'{config.problem}_per_step_plot.pdf')
+    if ax_o is not None:        
+        ax_o.get_figure().savefig(
+            save_dir / f'{config.problem}_overlay_final.pdf'
+        )
 
+        
     logger.info("Final time: %r",sol[-1].time)
     plot_ranks_compressions(disc, sol)
     plt.savefig(save_dir / f'{config.problem}_ranks_compression.pdf')
 
-    if final_plot is not None:
-        fig, axs = final_plot(sol)
-        plt.savefig(save_dir / f'{config.problem}_comparison_to_analytical.pdf')
+    axs = problem.plot_all_sols(sol, disc)
+    if axs != None:
+        axs.get_figure().savefig(save_dir / f'{config.problem}_comparison_to_analytical.pdf')
     plt.show()

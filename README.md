@@ -5,6 +5,17 @@ A library for python solvers
 ## Pytest
   - TODO
 
+## To compile 
+```
+python -m pip install -e .
+```
+
+## To run rad transport app 
+```
+cd apps/transport_solver 
+python transport_solver input_files/hohlraum2d.yaml
+```
+
 ## To build docs
 
    - =sphinx-build -M html source build= in doc directory

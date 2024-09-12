@@ -16,9 +16,32 @@ import numpy as np
 from load_config import Config
 import pytens
 
-import problems
+@dataclass
+class Indices:
+    """Indices involved in the problem"""
+    dimension: int
+    space: pytens.Index
+    theta: pytens.Index
+    psi: pytens.Index
 
+    @classmethod
+    def from_config(cls, config: Config) -> 'Indices':
+        """Build indices from config."""
 
+        n = np.prod(config.geometry.n)
+        pos = pytens.Index('x', n)
+        theta = pytens.Index('theta', config.angles.n_theta)
+        psi = pytens.Index('psi', config.angles.n_psi)
+        out = cls(config.geometry.dimension, pos,
+                  theta, psi)
+        return out
+
+    def __repr__(self) -> str:
+        out = (f"Indices({self.dimension!r},"
+               f"{self.space!r}, {self.theta!r}, {self.psi})")
+        return out
+
+    
 class Solution:
 
     time: float
@@ -71,32 +94,6 @@ class Discretization:
             if dx < dy:
                 return dx
             return dy
-
-def get_ic(indices: Indices,
-           discretization: Discretization,
-           config: Config):
-
-    if config.problem == 'hohlraum':
-        if indices.dimension == 1:
-            x = np.zeros((config.geometry.n[0]))
-            x[0] = 1
-            theta = np.ones((config.angles.n_theta))
-            psi = np.ones((config.angles.n_psi))
-            ind = [indices.space, indices.theta, indices.psi]
-            f = pytens.tt_rank1(ind, [x, theta, psi])
-        else:
-            xy = np.zeros((config.geometry.n[0], config.geometry.n[1]))
-            xy[0, :] = 1.0
-            xy[:, 0] = 1.0
-            xy = xy.flatten()
-            theta = np.ones((config.angles.n_theta))
-            psi = np.ones((config.angles.n_psi))
-            ind = [indices.space, indices.theta, indices.psi]
-            f = pytens.tt_rank1(ind, [xy, theta, psi])
-    else:
-        raise NotImplementedError("2D hohlraum")
-
-    return Solution(0.0, f)
 
 
 def get_transport_term(indices: Indices,
