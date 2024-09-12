@@ -270,66 +270,63 @@ def get_plots(disc: Discretization,
                     ],
                     width_ratios = [0.45, 0.45, 0.1],
                     layout='constrained')
-                
+
                 y = sol.aux['mean_intensity']
                 xx, yy = np.meshgrid(disc.x, disc.y)
-                # print("xx shape = ", xx.shape)
-                # print("yy shape = ", yy.shape)
-                out = y.reshape((disc.x.shape[0],
-                                 disc.y.shape[0]))
+                out = y.reshape((disc.x.shape[0], disc.y.shape[0]))
                 levels = np.linspace(0, 1, 10)
                 pos = axs['numerical'].contourf(xx[1:, 1:],
                                                 yy[1:, 1:],
                                                 out.T[1:, 1:],
                                                 levels=levels)
-                # ax.plot(disc.x[1:],
-                #         y[1:], '-', color='gray', alpha=0.2)
                 axs['numerical'].set_xlabel(r'$x$')
                 axs['numerical'].set_ylabel(r'$y$')
 
-                jleft = np.zeros((disc.y.shape[0], disc.x.shape[0]))
-                jbottom = np.zeros((disc.y.shape[0], disc.x.shape[0]))
-                dt = sol.time**2.0 - xx**2
-                dt[dt < 1e-15] = 1e-14
-                diff1 = yy / np.sqrt(dt)
-                diff1[diff1 < 1] = 1
-                eta_x = np.arccos(diff1)
+                jleft = np.zeros((disc.y.shape[0], disc.x.shape[0])) + 1e-16
+                jbottom = np.zeros((disc.y.shape[0], disc.x.shape[0])) + 1e-16
 
-                dt = sol.time**2.0 - yy**2
-                dt[dt < 1e-14] = 1e-14
-                diff2 = xx / np.sqrt(dt)
-                diff2[diff2 < 1] = 1
-                eta_y = np.arccos(diff2)
-
-
-                # print(disc.x.shape)
-                # print(disc.y.shape)
-                # print(eta_x.shape)
-                # print(eta_y.shape)
                 ind_x = disc.x < sol.time
+                xx_eta_x = xx[:, ind_x]
+                yy_eta_x = yy[:, ind_x]
+                term1 = yy_eta_x / np.sqrt(sol.time**2 - xx_eta_x**2)
+                term1[term1 > 1] = 1
+                eta_x = np.arccos(term1)
                 jleft[:, ind_x] = 0.5 - \
-                    (np.pi - eta_x[:, ind_x]) * xx[:, ind_x] / (2 * np.pi * sol.time) \
-                    - 0.5 / np.pi * np.arcsin(xx[:, ind_x] * np.sin(eta_x[:, ind_x]) / np.sqrt(xx[:, ind_x]**2 + yy[:, ind_x]**2))
+                    (np.pi - eta_x) * xx_eta_x  /(2 * np.pi * sol.time) \
+                    - 0.5 / np.pi * \
+                    np.arcsin(
+                        xx_eta_x * np.sin(eta_x) /
+                        np.sqrt(xx_eta_x**2 + yy_eta_x**2 + 1e-16)
+                    )
 
                 ind_y = disc.y < sol.time
+                xx_eta_y = xx[ind_y, :]
+                yy_eta_y = yy[ind_y, :]
+                term2 = xx_eta_y / np.sqrt(sol.time**2 - yy_eta_y**2)
+                term2[term2 > 1] = 1
+                eta_y = np.arccos(term2)
                 jbottom[ind_y, :] = 0.5 - \
-                    (np.pi - eta_y[ind_y, :]) * yy[ind_y, :] / (2 * np.pi * sol.time) \
-                    - 0.5 / np.pi * np.arcsin(yy[ind_y, :] * np.sin(eta_y[ind_y, :]) / np.sqrt(xx[ind_y, :]**2 + yy[ind_y, :]**2))
-                j = jleft + jbottom
+                    (np.pi - eta_y) * yy_eta_y  /(2 * np.pi * sol.time) \
+                    - 0.5 / np.pi * \
+                    np.arcsin(
+                        yy_eta_y * np.sin(eta_y) /
+                        np.sqrt(xx_eta_y**2 + yy_eta_y**2 + 1e-16)
+                    )
+
+                j = jleft[1:, 1:] + jbottom[1:, 1:]
+
                 axs['analytical'].contourf(xx[1:, 1:],
                                            yy[1:, 1:],
-                                           j[1:, 1:],
+                                           j,
                                            levels=levels)
-                                                              
+
                 fig.colorbar(pos, cax=axs['color'])
 
-                err = np.abs(out.T - j) + 1e-16
-                # err = np.log10(np.abs(out - out_a) + 1e-16)
-                # err += 1e-16
+                err = np.abs(out.T[1:, 1:] - j) + 1e-16
                 cmap = plt.colormaps["bone"]
                 pos = axs['error'].contourf(xx[1:, 1:],
                                             yy[1:, 1:],
-                                            err[1:, 1:], cmap=cmap)
+                                            err, cmap=cmap)
                 axs['error'].set_xlabel('Time')
                 axs['error'].set_ylabel('Space')
                 axs['error'].set_title('Error')
@@ -391,7 +388,7 @@ def plot_ranks_compressions(disc: Discretization, sols: List[Solution]):
 
 def main_loop(config: Config, logger, save_dir: pathlib.Path):
 
-    sol = [None] * config.solver.num_steps
+    sol = [None] * (config.solver.num_steps + 1)
 
     indices = Indices.from_config(config)
     disc = Discretization.from_config(config)
@@ -399,7 +396,6 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
     logger.info("min_h = %f", disc.get_min_h())
     logger.info("dt = %f", dt)
     rhs = get_rhs(indices, disc, config)
-
     sol[0] = get_ic(indices, disc, config)
 
     sol[0].aux['mean_intensity'] = mean_intensity(
@@ -408,12 +404,13 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
 
     time_step_plot, overlay_time_plot, final_plot = get_plots(disc, config)
 
+    fig_o = None
     if overlay_time_plot is not None:
-        fig, axs = plt.subplots(1, 1)
-        axs = overlay_time_plot(axs, sol[0])
+        fig_o, axs_o = plt.subplots(1, 1)
+        axs_o = overlay_time_plot(axs_o, sol[0])
 
     if time_step_plot is not None:
-        time_step_plot(sol[0])
+        fig, axs = time_step_plot(sol[0])
 
 
     # plt.show()
@@ -421,7 +418,7 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
 
     # print(sol[0])
     time = 0.0
-    for ii in (pbar := tqdm(range(1, config.solver.num_steps))):
+    for ii in (pbar := tqdm(range(1, config.solver.num_steps + 1))):
 
         if ii % 1 == 0 and ii > 0:
             pbar.set_postfix(
@@ -455,12 +452,16 @@ def main_loop(config: Config, logger, save_dir: pathlib.Path):
                 indices, disc, sol[ii]
             )
             if overlay_time_plot is not None:
-                axs = overlay_time_plot(axs, sol[ii])
+                axs_o = overlay_time_plot(axs_o, sol[ii])
 
             if time_step_plot is not None:
-                 time_step_plot(sol[ii])
+                fig, _ = time_step_plot(sol[ii])
+                fig.savefig(
+                    save_dir / f'{config.problem}_{ii}_{sol[ii].time}.pdf'
+                )
 
-    plt.savefig(save_dir / f'{config.problem}_per_step_plot.pdf')
+    if fig_o is not None:
+        fig_o.savefig(save_dir / f'{config.problem}_per_step_plot.pdf')
 
     logger.info("Final time: %r",sol[-1].time)
     plot_ranks_compressions(disc, sol)
