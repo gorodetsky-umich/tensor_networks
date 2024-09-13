@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional, List
 
 import copy
 from dataclasses import dataclass
-from tqdm import tqdm
+
 
 import matplotlib.pyplot as plt
 import matplotlib

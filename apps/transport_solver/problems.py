@@ -1,5 +1,6 @@
 """Physics/Problem Specifications and utilities."""
 import pathlib
+import collections
 from typing import Optional, List
 import abc
 from dataclasses import dataclass
@@ -51,18 +52,18 @@ class Problem(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def analytic_sol(self):
+    def analytic_sol(self, time: float, disc: solver.Discretization):
         pass
 
     @abc.abstractmethod
-    def plot_per_step_overlay(self, sol, disc, ax=None):
+    def plot_per_step_overlay(self, sol, disc, fig=None):
         pass
 
     def plot_per_step(
             self,
             sol: solver.Solution,
             disc: solver.Discretization
-    ) -> Optional[matplotlib.axes.Axes]:
+    ) -> Optional[matplotlib.figure.Figure]:
         pass
 
     @abc.abstractmethod
@@ -100,10 +101,10 @@ class Hohlraum(Problem):
             disc: solver.Discretization
     ) -> solver.Solution:
         """Compute auxiliary quantities."""
-        if self.config.geometry.dimension == 1:
-            sol.aux['mean_intensity'] = mean_intensity(
-                self.indices, disc, sol
-            )
+
+        sol.aux['mean_intensity'] = mean_intensity(
+            self.indices, disc, sol
+        )
 
         return sol
 
@@ -113,31 +114,32 @@ class Hohlraum(Problem):
             disc: solver.Discretization
     ) -> np.ndarray:
 
+        xx, yy = np.meshgrid(disc.x, disc.y)
         jleft = np.zeros((disc.y.shape[0], disc.x.shape[0])) + 1e-16
         jbottom = np.zeros((disc.y.shape[0], disc.x.shape[0])) + 1e-16
 
-        ind_x = disc.x < sol.time
+        ind_x = disc.x < time
         xx_eta_x = xx[:, ind_x]
         yy_eta_x = yy[:, ind_x]
-        term1 = yy_eta_x / np.sqrt(sol.time**2 - xx_eta_x**2)
+        term1 = yy_eta_x / np.sqrt(time**2 - xx_eta_x**2)
         term1[term1 > 1] = 1
         eta_x = np.arccos(term1)
         jleft[:, ind_x] = 0.5 - \
-            (np.pi - eta_x) * xx_eta_x  /(2 * np.pi * sol.time) \
+            (np.pi - eta_x) * xx_eta_x  /(2 * np.pi * time) \
             - 0.5 / np.pi * \
             np.arcsin(
                 xx_eta_x * np.sin(eta_x) /
                 np.sqrt(xx_eta_x**2 + yy_eta_x**2 + 1e-16)
             )
 
-        ind_y = disc.y < sol.time
+        ind_y = disc.y < time
         xx_eta_y = xx[ind_y, :]
         yy_eta_y = yy[ind_y, :]
-        term2 = xx_eta_y / np.sqrt(sol.time**2 - yy_eta_y**2)
+        term2 = xx_eta_y / np.sqrt(time**2 - yy_eta_y**2)
         term2[term2 > 1] = 1
         eta_y = np.arccos(term2)
         jbottom[ind_y, :] = 0.5 - \
-            (np.pi - eta_y) * yy_eta_y  /(2 * np.pi * sol.time) \
+            (np.pi - eta_y) * yy_eta_y  /(2 * np.pi * time) \
             - 0.5 / np.pi * \
             np.arcsin(
                 yy_eta_y * np.sin(eta_y) /
@@ -210,7 +212,7 @@ class Hohlraum(Problem):
         axs['error'].set_ylabel('Space')
         axs['error'].set_title('Error')
         fig.colorbar(pos, cax=axs['color2'])
-        return axs
+        return fig
 
     def plot_all_sols(self,
                       sols: List[solver.Solution],
@@ -222,22 +224,28 @@ class Hohlraum(Problem):
             return None
 
 
-    def plot_per_step_overlay(self, sol, disc, ax=None):
-        if ax is None:
-            fig, ax = plt.subplots(1, 1)
-        if disc.dimension == 1:
-            y = sol.aux['mean_intensity']
-            ax.plot(disc.x[1:], y[1:], '-', color='gray', alpha=0.2)
-            ax.set_xlabel(r'Space $x$')
-            ax.set_ylabel(r'Mean intensity $J$')
-
-        else:
+    def plot_per_step_overlay(self, sol, disc, fig=None):
+        if disc.dimension != 1:
             return None
+        if fig is None:
+            fig, ax = plt.subplots(1, 1)
+        else:
+            ax = fig.get_axes()
+            if isinstance(ax, collections.abc.Sequence):
+                assert len(ax) == 1
+                ax = ax[0]
 
-        return ax
+
+        y = sol.aux['mean_intensity']
+
+        ax.plot(disc.x[1:], y[1:], '-', color='gray', alpha=0.2)
+        ax.set_xlabel(r'Space $x$')
+        ax.set_ylabel(r'Mean intensity $J$')
+
+        return fig
 
     def plot_per_step(self, sol: solver.Solution, disc: solver.Discretization
-                      ) -> Optional[matplotlib.axes.Axes]:
+                      ) -> Optional[matplotlib.figure.Figure]:
         if disc.dimension == 1:
             return None
         else:
@@ -262,7 +270,7 @@ class Hohlraum(Problem):
             axs['numerical'].set_ylabel(r'$y$')
 
 
-
+            j = self.analytic_sol(sol.time, disc)
             axs['analytical'].contourf(xx[1:, 1:],
                                        yy[1:, 1:],
                                        j,
@@ -270,7 +278,7 @@ class Hohlraum(Problem):
 
             fig.colorbar(pos, cax=axs['color'])
 
-            j = self.get_analytic_sol(sol.time, disc)
+            j = self.analytic_sol(sol.time, disc)
 
             err = np.abs(out.T[1:, 1:] - j) + 1e-16
             cmap = plt.colormaps["bone"]
@@ -281,7 +289,7 @@ class Hohlraum(Problem):
             axs['error'].set_ylabel('Space')
             axs['error'].set_title('Error')
             fig.colorbar(pos, cax=axs['color2'])
-            return axs
+            return fig
 
 
 
