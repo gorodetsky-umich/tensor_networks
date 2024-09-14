@@ -1,60 +1,33 @@
-# Python Tensor Solvers
+# Tensor Networks
 
-A library for python solvers
+A library for tensor network manipulation
 
-## Pytest
-  - TODO
-
-## To compile 
+## Installation
+I suggest you create a python virtual environment. Then within that environment you can install an editable installation with
 ```
 python -m pip install -e .
 ```
+a regular install would remove the `-e` term.
 
-## To run rad transport app 
+## Running
+
+Most of the functionality is available in the unit tests. You should be able to execute 
 ```
-cd apps/transport_solver 
+python -m unittest tests/main_test.py -v
+```
+and see all tests pass.
+
+You can also create some scaling plots for the inner command via
+```
+python examples/inner_product_scaling.py
+```
+
+## To run rad transport app
+```
+cd apps/transport_solver
 python transport_solver input_files/hohlraum2d.yaml
 ```
 
-## To build docs
-
-   - =sphinx-build -M html source build= in doc directory
-   - =make html= in docs/ directory
-
-## Style
-
-   - =pylint -v -j 4 pytens examples=
-   - =ruff check= can see the files with =ruff check --show-files=
-   - =mypy --strict= (configs are read from pyproject.toml
-   - =flake8 algs.py=
-   - use emacs whitespace mode to see extra whitespace
-
-## Other stuff
-Using -e flag tells pip install to read package in an editable mode, which means you don't need to reinstall the package after making your changes. They get detected automatically. 
-
-## Coding TODO
-1. Regression tests for the solver
-2. Cleanup of the solver problems
-
-## Immediate
-
-
-## Next
-3. ALS
-4. contract two nodes along edge / reshape a node
-5. orthogonalize (general)
-6. round/truncate (general)
-
-
 ## POTENTIAL ISSUES:
--1. currently edges are not actually used to determine contraction path, just index names. This causes issues when contracting when attaching tensors of edges are the same
-0. benchmarking done but dimension scaling is off (possibly because path is not optimal). Could hardcode optimal TT path, but it should be ok for lower dimensions (lower number of cores) May be a problem if QTT considered in the future
-
-
-## To test 
-<!-- python -m unittest tests/test_something.py -->
-
-## To profile 
-python -m cProfile -o output.prof transport_solver.py input_files/hohlraum_2d.yaml
-pip install snakeviz
-snakeviz output.prof
+0. currently edges are not actually used to determine contraction path, just index names. This causes issues when contracting when attaching tensors of edges are the same
+1. benchmarking done but dimension scaling is off (possibly because path is not optimal). Could hardcode optimal TT path, but it should be ok for lower dimensions (lower number of cores) May be a problem if QTT considered in the future
