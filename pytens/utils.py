@@ -1,9 +1,12 @@
 """Some utility functions."""
+
 from typing import Tuple
 import numpy as np
 
-def delta_svd(data: np.ndarray, delta: float) \
-    -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+def delta_svd(
+    data: np.ndarray, delta: float
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Performs delta-truncated SVD similar to that of the `TTSVD`_ algorithm.
 
