@@ -31,3 +31,7 @@ python transport_solver input_files/hohlraum2d.yaml
 ## POTENTIAL ISSUES:
 0. currently edges are not actually used to determine contraction path, just index names. This causes issues when contracting when attaching tensors of edges are the same
 1. benchmarking done but dimension scaling is off (possibly because path is not optimal). Could hardcode optimal TT path, but it should be ok for lower dimensions (lower number of cores) May be a problem if QTT considered in the future
+
+## Author 
+Copyright 2024, Alex Gorodetsky, goroda@umich.edu
+
