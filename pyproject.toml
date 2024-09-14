@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Python-Tensor-Solvers"
-description = "Tensor solvers in python"
+name = "Python-Tensor-Networks"
+description = "Tensor networks with python"
 # readme = "README.org"
 requires-python = ">=3.10"
 # license = "MIT"
@@ -22,10 +22,7 @@ dependencies = [
   "numpy ~=2.1.0",
   "opt_einsum",
   "networkx",
-  "pydantic",
   "matplotlib", # for plotting
-  "pyyaml", # for apps
-  "tqdm", # for apps
 ]
 
 [tool.setuptools]
