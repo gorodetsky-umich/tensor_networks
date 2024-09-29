@@ -675,7 +675,8 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
         tn.network.nodes[node]["tensor"].update_val_size(new_val)
 
     val2 = tn.network.nodes[node - 1]["tensor"].value
-    new_val2 = np.einsum("...i,ij->...j", val2, R.T)
+    # new_val2 = np.einsum("...i,ij->...j", val2, R.T)
+    new_val2 = np.dot(val2, R.T)
     tn.network.nodes[node - 1]["tensor"].update_val_size(new_val2)
 
     return tn

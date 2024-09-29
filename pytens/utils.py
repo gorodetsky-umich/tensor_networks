@@ -38,13 +38,21 @@ def delta_svd(
     """
 
     # delta = (eps / ((dimensions - 1) ** (0.5))) * dataNorm
-    try:
-        u, s, v = np.linalg.svd(data, False, True)
-    except np.linalg.LinAlgError:
-        print("Numpy svd did not converge, using qr+svd")
+
+    m, n = data.shape
+    if m > 10 * n: # tall and skinny
+        # print("Tall and skinny ")
         q, r = np.linalg.qr(data)
         u, s, v = np.linalg.svd(r)
         u = q @ u
+    else:
+        try:
+            u, s, v = np.linalg.svd(data, False, True)
+        except np.linalg.LinAlgError:
+            print("Numpy svd did not converge, using qr+svd")
+            q, r = np.linalg.qr(data)
+            u, s, v = np.linalg.svd(r)
+            u = q @ u
     slist = list(s * s)
     slist.reverse()
     truncpost = [
