@@ -53,10 +53,12 @@ def delta_svd(
             print("Numpy svd did not converge, using qr+svd")
             q, r = np.linalg.qr(data)
             u, s, v = np.linalg.svd(r)
-            if with_normalizing:
-                norm = np.sqrt(np.sum(s**2))
-                delta = delta * norm
             u = q @ u
+            
+    if with_normalizing:
+         norm = np.sqrt(np.sum(s**2))
+         delta = delta * norm
+
     slist = list(s * s)
     slist.reverse()
     truncpost = [
