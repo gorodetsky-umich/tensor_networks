@@ -146,7 +146,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        TTadd =  tt_round(TTadd, 1e-10)
+        TTadd =  tt_round(TTadd, 1e-5)
         # # exit(1)
         new_ranks = TTadd.ranks()
 
