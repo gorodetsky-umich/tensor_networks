@@ -5,8 +5,7 @@ import numpy as np
 
 
 def delta_svd(
-        data: np.ndarray, delta: float,
-        with_normalizing=False
+    data: np.ndarray, delta: float, with_normalizing=False
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Performs delta-truncated SVD similar to that of the `TTSVD`_ algorithm.
@@ -41,7 +40,7 @@ def delta_svd(
     # delta = (eps / ((dimensions - 1) ** (0.5))) * dataNorm
 
     m, n = data.shape
-    if m > 10 * n: # tall and skinny
+    if m > 10 * n:  # tall and skinny
         # print("Tall and skinny ")
         q, r = np.linalg.qr(data)
         u, s, v = np.linalg.svd(r)
@@ -54,10 +53,10 @@ def delta_svd(
             q, r = np.linalg.qr(data)
             u, s, v = np.linalg.svd(r)
             u = q @ u
-            
+
     if with_normalizing:
-         norm = np.sqrt(np.sum(s**2))
-         delta = delta * norm
+        norm = np.sqrt(np.sum(s**2))
+        delta = delta * norm
 
     slist = list(s * s)
     slist.reverse()
@@ -66,5 +65,10 @@ def delta_svd(
     ]
     truncation_rank = max(len(s) - len(truncpost), 1)
     if with_normalizing:
-        return u[:, :truncation_rank], s[:truncation_rank], v[:truncation_rank, :], delta
+        return (
+            u[:, :truncation_rank],
+            s[:truncation_rank],
+            v[:truncation_rank, :],
+            delta,
+        )
     return u[:, :truncation_rank], s[:truncation_rank], v[:truncation_rank, :]

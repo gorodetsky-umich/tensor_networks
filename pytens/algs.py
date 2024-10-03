@@ -652,7 +652,8 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     if val1.ndim == 3:
         # print("val1.shape = ", val1.shape)
         r, n, b = val1.shape
-        val1 = np.reshape(val1, (r, n * b), order="F")
+        # val1 = np.reshape(val1, (r, n * b), order="F")
+        val1 = np.reshape(val1, (r, n * b))
         # print("val1.T.shape = ", val1.T.shape)
         q, R = np.linalg.qr(val1.T, mode="reduced")
         if q.shape[1] < r:
@@ -667,7 +668,8 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
         # print("r.shape = ", R.shape)
         # print("r = ", r)
         # print("q shape = ", q.shape)
-        new_val = np.reshape(q.T, (r, n, b), order="F")
+        # new_val = np.reshape(q.T, (r, n, b), order="F")
+        new_val = np.reshape(q.T, (r, n, b))
         tn.network.nodes[node]["tensor"].update_val_size(new_val)
     else:
         q, R = np.linalg.qr(val1.T)
@@ -691,6 +693,7 @@ def tt_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
     # above disables the snake case complaints for variables like R
     # norm2 = tn.norm()
     dim = tn.dim()
+    delta = None
     # delta = eps / np.sqrt(dim - 1) * norm2
 
     # cores = []
@@ -705,7 +708,6 @@ def tt_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
 
     # print("ON FORWARD SWEEP")
     for ii, (node, data) in enumerate(out.network.nodes(data=True)):
-
         value = data["tensor"].value
         if value.ndim == 3:
             r1, n, r2a = value.shape
@@ -721,9 +723,7 @@ def tt_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
             n, r2a = value.shape
             if ii == 0:
                 u, s, v, delta = delta_svd(
-                    value,
-                    eps / np.sqrt(dim - 1),
-                    with_normalizing=True
+                    value, eps / np.sqrt(dim - 1), with_normalizing=True
                 )
             else:
                 u, s, v = delta_svd(value, delta)
