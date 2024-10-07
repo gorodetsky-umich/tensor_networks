@@ -743,6 +743,12 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork
                 break
     
     else:
+        def eps_to_rank(s, eps):
+            l = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
+            res = np.argmax(l)
+            if res == 0 and l[0] == False: return s.shape[0]
+            else: return res
+
         def next_gram(gram_now, core_next, order='lr'):
             snext = core_next.shape            
             if order == 'lr':
@@ -755,8 +761,8 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork
                 return tmp @ core_next.reshape((snext[0], -1)).T
             else: print("Invalid choice")
         
+        threshold = 1e-9 # Arbitrary
         dim = tn.dim()
-        # gr_list = [factors[-1][..., 0] @ factors[-1][..., 0].T]
         gr_list = [tn.value(dim-1) @ tn.value(dim-1).T]
         
         # Collect gram matrices from right to left
@@ -791,7 +797,8 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork
             eiglm12[~maskl] = 1/eigl12[~maskl]
             eigrm12[~maskr] = 1/eigr12[~maskr]
 
-            # eiglm12 = np.nan_to_num(eiglm12, nan=0, posinf=0, neginf=0); eigrm12 = np.nan_to_num(eigrm12, nan=0, posinf=0, neginf=0)
+            # eiglm12 = np.nan_to_num(eiglm12, nan=0, posinf=0, neginf=0)
+            # eigrm12 = np.nan_to_num(eigrm12, nan=0, posinf=0, neginf=0)
             
             tmp = ((eigl12[:, np.newaxis] * vl.T) @ 
                     (vr * eigr12[np.newaxis, :]))
@@ -813,6 +820,124 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork
 
         
     return out
+
+# Rounding sum of TT cores
+def get_columns(matrix, periodicity, consecutive, start):
+    """
+    Gets the columns of the matrix that are supposed to be right multiplied with the non-zero elements of H(X_n).T to avoid 
+    unnecessary computation. 
+    """
+    indices = np.concatenate([np.arange(i, i + consecutive) for i in range(start, matrix.shape[1], periodicity)])
+    return matrix[:, indices]
+
+
+def next_gram_sum(gram_now, core_next, order='rl'):
+    """
+    Let's say that we are dealing with 's' summands in our TT sum.
+
+    gram_now is a sigma r_i times sigma r_i matrix (i from 1 to s) where r_i represents the sum of rank of a particular
+    TT core of the summands. For example, it could be the sum for the last TT core of every summand. 
+
+    core_next is the list (of size s) of adjacent TT-core of all summands. For example, if gram_now corresponds to the last TT core
+    of all the summands, then assuming order = rl, core_next will be a list of the penultimate cores of all the summands.
+
+    order: 'lr' means left to right and 'rl' means right to left.
+    """
+
+    shnext = [s.shape for s in core_next]
+    if order == 'rl':
+        Rk = [s.shape[-1] for s in core_next]
+        Rk_cumsum = np.cumsum([0]+Rk)
+        Rk_sum = gram_now.shape[0]
+        Rk1 = [s.shape[0] for s in core_next]
+        Rk1_sum = np.sum(Rk1)
+        Rk1_cumsum = np.cumsum([0]+Rk1)
+        n = core_next[0].shape[1]
+        tmp = np.zeros((Rk1_sum*n, Rk_sum))
+        for i in range(len(core_next)):
+            tmp[Rk1_cumsum[i]*n:Rk1_cumsum[i+1]*n, :] = core_next[i].reshape((-1, shnext[i][-1])) @ gram_now[Rk_cumsum[i]:Rk_cumsum[i+1], :]
+        tmp = tmp.reshape((Rk1_sum, n*Rk_sum))
+        tmplist = [get_columns(tmp, Rk_sum, rk, Rk_cumsum[i]) for i, rk in enumerate(Rk)]
+        tmp = np.zeros((Rk1_sum, Rk1_sum))
+        for i, mat in enumerate(tmplist):
+            tmp[:, Rk1_cumsum[i]:Rk1_cumsum[i+1]] = mat @ core_next[i].reshape((shnext[i][0], -1)).T
+        return tmp
+    
+    # elif order == 'lr':
+    #     corelist = []
+    #     for i in range(len(core_next)):
+    #         corelist.append(core_next[i].reshape((-1, shnext[-1])).T @ core_next[i].reshape((-1, shnext[-1])))
+    #     return corelist
+        
+        
+
+def round_ttsum(factors_list: list[TensorNetwork], 
+                eps=1e-14, threshold=1e-10):
+
+    dim = factors_list[0].dim()
+    n_s = len(factors_list)
+
+    for i in range(n_s):
+        if not i: ttsum = factors_list[i]
+        else: ttsum = ttsum.add(factors_list[i])
+
+    gr_list = [ttsum.value(dim-1) @ ttsum.value(dim-1).T]
+    
+    # Collect gram matrices from right to left
+    for i in range(d-2, 0, -1):
+        gr_list.append(next_gram_sum(gr_list[-1], 
+                [f.value(i) for f in factors_list], 'rl'))
+    
+    tmp = ttsum.value(0)
+    gr_list.append(np.sum((tmp @ gr_list[-1]) * tmp).reshape((1, 1)))
+    
+    norm = np.sqrt(np.linalg.norm(gr_list[-1]))
+    delta = eps * norm/(d-1)**0.5
+
+    gr_list = gr_list[::-1]
+    
+    for i in range(d-1):
+        sh = ttsum.value(i).shape; shp1 = ttsum.value(i+1).shape
+        gl = ttsum.value(i).reshape((-1, sh[-1])).T @ ttsum.value(i).reshape((-1, sh[-1]))
+        eigl, vl = np.linalg.eigh(gl)
+        eigr, vr = np.linalg.eigh(gr_list[i+1])
+        
+        eigl = np.abs(eigl)
+        eigr = np.abs(eigr)
+        maskl = eigl < threshold
+        maskr = eigr < threshold
+
+        eigl[maskl] = 0
+        eigr[maskr] = 0
+        
+        eigl12 = np.sqrt(eigl)
+        eigr12 = np.sqrt(eigr)
+        eiglm12 = np.zeros_like(eigl12)
+        eigrm12 = np.zeros_like(eigr12)
+        eiglm12[~maskl] = 1/eigl12[~maskl]
+        eigrm12[~maskr] = 1/eigr12[~maskr]
+        
+        # eiglm12 = np.nan_to_num(eiglm12, nan=0, posinf=0, neginf=0)
+        # eigrm12 = np.nan_to_num(eigrm12, nan=0, posinf=0, neginf=0)
+
+        tmp = ((eigl12[:, np.newaxis] * vl.T) @ 
+                (vr * eigr12[np.newaxis, :]))
+        
+        u, s, v = np.linalg.svd(tmp)
+        rk = min(tmp.shape[0], tmp.shape[1], eps_to_rank(s, delta))
+        u = u[:, :rk]; s = s[:rk]; v = v[:rk, :]
+        
+        curr_val = (ttsum.value(i).reshape((-1, sh[-1])) @ vl @ 
+                    (eiglm12[:, np.newaxis] * u)).reshape((sh[0], sh[1], -1))
+        
+        next_val = ((s[:, np.newaxis] * v * eigrm12[np.newaxis, :]) @ vr.T @ 
+                    ttsum.value(i+1).reshape((shp1[0], -1))).reshape(
+                        (-1, shp1[1], shp1[2]))
+      
+        ttsum.network.nodes[node]["tensor"].update_val_size(curr_val)
+        ttsum.network.nodes[node + 1]["tensor"].update_val_size(next_val)
+        
+    return ttsum
 
 
 def ttop_rank1(
