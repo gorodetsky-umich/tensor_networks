@@ -158,6 +158,51 @@ class TestTT(unittest.TestCase):
             np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14)
         )
 
+    def test_gramsvd_rounding(self):
+
+        # print("\nROUNDING")
+        TTadd = self.TT + self.TT
+        # TTadd = TTadd.rename('added')
+
+        # print(TTadd)
+        ttadd = TTadd.contract().value
+        TTadd =  tt_round(TTadd, 1e-5, False)
+        # # exit(1)
+        new_ranks = TTadd.ranks()
+
+        self.assertTrue(new_ranks[0], self.tt_ranks[0])
+        self.assertTrue(new_ranks[1], self.tt_ranks[1])
+
+        ttadd_rounded = TTadd.contract().value
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14)
+        )
+
+    def test_rounding_ttsum(self):
+        # print("\nROUNDING")
+        s = 3
+        TTadd = self.TT
+        for _ in range(s-1):
+            TTadd = TTadd + self.TT
+
+        sum_list = [copy.deepcopy(self.TT) for _ in range(s)]
+
+        # TTadd = TTadd.rename('added')
+
+        # print(TTadd)
+        ttadd = TTadd.contract().value
+        TTadd =  round_ttsum(sum_list, 1e-5, False)
+        # # exit(1)
+        new_ranks = TTadd.ranks()
+
+        self.assertTrue(new_ranks[0], self.tt_ranks[0])
+        self.assertTrue(new_ranks[1], self.tt_ranks[1])
+
+        ttadd_rounded = TTadd.contract().value
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14)
+        )
+
     def test_scale(self):
 
         TT = copy.deepcopy(self.TT)
