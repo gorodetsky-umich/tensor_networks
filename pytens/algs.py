@@ -684,7 +684,7 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     return tn
 
 
-def tt_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
+def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork:
     """Round a tensor train.
 
     Nodes should be integers 0,1,2,...,dim-1
@@ -692,55 +692,126 @@ def tt_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
     # pylint: disable=C0103
     # above disables the snake case complaints for variables like R
     # norm2 = tn.norm()
-    dim = tn.dim()
-    delta = None
-    # delta = eps / np.sqrt(dim - 1) * norm2
+    if orthogonalize:
+        dim = tn.dim()
+        delta = None
+        # delta = eps / np.sqrt(dim - 1) * norm2
 
-    # cores = []
-    # for node, data in tn.network.nodes(data=True):
-    #     cores.append(node)
+        # cores = []
+        # for node, data in tn.network.nodes(data=True):
+        #     cores.append(node)
 
-    # print("DIM = ", dim)
-    out = tt_right_orth(tn, dim - 1)
-    for jj in range(dim - 2, 0, -1):
-        # print(f"orthogonalizing core {cores[jj]}")
-        out = tt_right_orth(out, jj)
+        # print("DIM = ", dim)
+        out = tt_right_orth(tn, dim - 1)
+        for jj in range(dim - 2, 0, -1):
+            # print(f"orthogonalizing core {cores[jj]}")
+            out = tt_right_orth(out, jj)
 
-    # print("ON FORWARD SWEEP")
-    for ii, (node, data) in enumerate(out.network.nodes(data=True)):
-        value = data["tensor"].value
-        if value.ndim == 3:
-            r1, n, r2a = value.shape
-            val = np.reshape(value, (r1 * n, r2a))
-            u, s, v = delta_svd(val, delta)
-            # print("u shape = ", u.shape)
-            # print("s shape = ", s.shape)
-            # print("v shape = ", v.shape)
-            v = np.dot(np.diag(s), v)
-            r2 = u.shape[1]
-            new_core = np.reshape(u, (r1, n, r2))
-        else:
-            n, r2a = value.shape
-            if ii == 0:
-                u, s, v, delta = delta_svd(
-                    value, eps / np.sqrt(dim - 1), with_normalizing=True
-                )
+        # print("ON FORWARD SWEEP")
+        for ii, (node, data) in enumerate(out.network.nodes(data=True)):
+            value = data["tensor"].value
+            if value.ndim == 3:
+                r1, n, r2a = value.shape
+                val = np.reshape(value, (r1 * n, r2a))
+                u, s, v = delta_svd(val, delta)
+                # print("u shape = ", u.shape)
+                # print("s shape = ", s.shape)
+                # print("v shape = ", v.shape)
+                v = np.dot(np.diag(s), v)
+                r2 = u.shape[1]
+                new_core = np.reshape(u, (r1, n, r2))
             else:
-                u, s, v = delta_svd(value, delta)
-            v = np.dot(np.diag(s), v)
-            r2 = u.shape[1]
-            new_core = np.reshape(u, (n, r2))
+                n, r2a = value.shape
+                if ii == 0:
+                    u, s, v, delta = delta_svd(
+                        value, eps / np.sqrt(dim - 1), with_normalizing=True
+                    )
+                else:
+                    u, s, v = delta_svd(value, delta)
+                v = np.dot(np.diag(s), v)
+                r2 = u.shape[1]
+                new_core = np.reshape(u, (n, r2))
 
-        data["tensor"].update_val_size(new_core)
+            data["tensor"].update_val_size(new_core)
 
-        # print("In here")
-        val_old = out.network.nodes[node + 1]["tensor"].value
-        next_val = np.einsum("ij,jk...->ik...", v, val_old)
-        out.network.nodes[node + 1]["tensor"].update_val_size(next_val)
+            # print("In here")
+            val_old = out.network.nodes[node + 1]["tensor"].value
+            next_val = np.einsum("ij,jk...->ik...", v, val_old)
+            out.network.nodes[node + 1]["tensor"].update_val_size(next_val)
 
-        if node == dim - 2:
-            break
+            if node == dim - 2:
+                break
+    
+    else:
+        def next_gram(gram_now, core_next, order='lr'):
+            snext = core_next.shape            
+            if order == 'lr':
+                tmp = (gram_now.T @ core_next.reshape(
+                    (snext[0], -1))).reshape((-1, snext[-1]))
+                return tmp.T @ core_next.reshape((-1, snext[-1]))
+            elif order == 'rl':
+                tmp = (core_next.reshape(
+                    (-1, snext[-1])) @ gram_now).reshape((snext[0], -1))
+                return tmp @ core_next.reshape((snext[0], -1)).T
+            else: print("Invalid choice")
+        
+        dim = tn.dim()
+        # gr_list = [factors[-1][..., 0] @ factors[-1][..., 0].T]
+        gr_list = [tn.value(dim-1) @ tn.value(dim-1).T]
+        
+        # Collect gram matrices from right to left
+        for i in range(d-2, -1, -1):
+            gr_list.append(next_gram(gr_list[-1], tn.value(i), 'rl'))
+        
+        norm = np.sqrt(np.linalg.norm(gr_list[-1]))
+        eps0 = eps * norm/(d-1)**0.5
+        gr_list = gr_list[::-1]
+        
+        for i in range(d-1):
+            sh = tn.value(i).shape; shp1 = tn.value(i+1).shape
+            gl = (tn.value(i).reshape((-1, sh[-1])).T @ 
+                    tn.value(i).reshape((-1, sh[-1])))
+            
+            eigl, vl = np.linalg.eigh(gl)
+            eigr, vr = np.linalg.eigh(gr_list[i+1])
+            
+            eigl = np.abs(eigl)
+            eigr = np.abs(eigr)
 
+            maskl = eigl < threshold
+            maskr = eigr < threshold
+            eigl[maskl] = 0
+            eigr[maskr] = 0
+
+            eigl12 = np.sqrt(eigl)
+            eigr12 = np.sqrt(eigr)
+
+            eiglm12 = np.zeros_like(eigl12)
+            eigrm12 = np.zeros_like(eigr12)
+            eiglm12[~maskl] = 1/eigl12[~maskl]
+            eigrm12[~maskr] = 1/eigr12[~maskr]
+
+            # eiglm12 = np.nan_to_num(eiglm12, nan=0, posinf=0, neginf=0); eigrm12 = np.nan_to_num(eigrm12, nan=0, posinf=0, neginf=0)
+            
+            tmp = ((eigl12[:, np.newaxis] * vl.T) @ 
+                    (vr * eigr12[np.newaxis, :]))
+
+            u, s, v = np.linalg.svd(tmp)
+            rk = min(tmp.shape[0], tmp.shape[1], eps_to_rank(s, eps0))
+            u = u[:, :rk]; s = s[:rk]; v = v[:rk, :]
+            
+            currval = (tn.value(i).reshape((-1, sh[-1])) @ 
+                        vl @ (eiglm12[:, np.newaxis] * u)
+                        ).reshape((sh[0], sh[1], -1))
+
+            nextval = ((s[:, np.newaxis] * v * eigrm12[np.newaxis, :]) @ 
+                        vr.T @ tn.value(i+1).reshape((shp1[0], -1))
+                        ).reshape((-1, shp1[1], shp1[2]))
+            
+            tn.network.nodes[node]["tensor"].update_val_size(curr_val)
+            tn.network.nodes[node + 1]["tensor"].update_val_size(next_val)
+
+        
     return out
 
 
