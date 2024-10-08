@@ -684,10 +684,19 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     return tn
 
 
-def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork:
+def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True, threshold=1e-10) -> TensorNetwork:
     """Round a tensor train.
 
     Nodes should be integers 0,1,2,...,dim-1
+
+    orthogonalize determines of QR is used to orthogonalize the
+    cores. If orthogonalize=False, the Gram-SVD rounding algo-
+    rithm is used [1].
+
+    [1] - H. Al Daas, G. Ballard and L. Manning, "Parallel Tensor-
+    Train Rounding using Gram SVD," 2022 IEEE International Parallel
+    and Distributed Processing Symposium (IPDPS), Lyon, France, 2022, 
+    pp. 930-940, doi: 10.1109/IPDPS53621.2022.00095.
     """
     # pylint: disable=C0103
     # above disables the snake case complaints for variables like R
@@ -765,7 +774,6 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork
             else:
                 print("Invalid choice")
         
-        threshold = 1e-10 # Arbitrary
         dim = tn.dim()
         gr_list = [tn.value(dim-1) @ tn.value(dim-1).T]
 
