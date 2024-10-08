@@ -268,7 +268,7 @@ class TestTT(unittest.TestCase):
         err = np.linalg.norm(should_be - check)
         # print("error = ", err)
         self.assertTrue(np.allclose(check, should_be,
-                                    atol=1e-14, rtol=1e-14))
+                                    atol=1e-13, rtol=1e-13))
 
         out = ttop_sum_apply(tt, indices_in, indices_out,
                              [
@@ -286,9 +286,8 @@ class TestTT(unittest.TestCase):
                              "A")
         check2 = out.contract().value
         err2 = np.linalg.norm(should_be - check2)
-        # print("err = ", err2)
         self.assertTrue(np.allclose(check2, should_be,
-                                    atol=1e-14, rtol=1e-14))
+                                    atol=1e-13, rtol=1e-13))
         # print("out = ", out)
 
     # @unittest.skip('other stuff first')

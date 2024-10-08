@@ -757,23 +757,31 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork
                 tmp = (gram_now.T @ core_next.reshape(
                     (snext[0], -1))).reshape((-1, snext[-1]))
                 return tmp.T @ core_next.reshape((-1, snext[-1]))
-            elif order == 'rl':
+            if order == 'rl':
                 tmp = (core_next.reshape(
                     (-1, snext[-1])) @ gram_now).reshape((snext[0], -1))
-                return tmp @ core_next.reshape((snext[0], -1)).T
-            else: print("Invalid choice")
+                out = np.dot(tmp,  core_next.reshape((snext[0], -1)).T)
+                return out
+            else:
+                print("Invalid choice")
         
         threshold = 1e-10 # Arbitrary
         dim = tn.dim()
         gr_list = [tn.value(dim-1) @ tn.value(dim-1).T]
-        
+
+        # print("pre backward sweep 1")
+        # print("tn" , tn)
         # Collect gram matrices from right to left
         for i in range(dim-2, -1, -1):
+            # print("i = ", i)
+            # print(tn.value(i))
             gr_list.append(next_gram(gr_list[-1], tn.value(i), 'rl'))
-        
+        # print("end")
         norm = np.sqrt(np.linalg.norm(gr_list[-1]))
         delta = eps * norm/(dim-1)**0.5
         gr_list = gr_list[::-1]
+
+        # print("pre backward sweep 2")
         
         for i in range(dim-1):
             sh = list(tn.value(i).shape)
