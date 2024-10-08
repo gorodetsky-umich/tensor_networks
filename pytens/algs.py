@@ -759,8 +759,8 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True) -> TensorNetwork
                 return tmp.T @ core_next.reshape((-1, snext[-1]))
             if order == 'rl':
                 tmp = (core_next.reshape(
-                    (-1, snext[-1])) @ gram_now).reshape((snext[0], -1))
-                out = np.dot(tmp,  core_next.reshape((snext[0], -1)).T)
+                    (-1, snext[-1])) @ gram_now).reshape((-1, snext[-2]*snext[-1]))
+                out = np.dot(tmp,  core_next.reshape((-1, snext[-2]*snext[-1])).T)
                 return out
             else:
                 print("Invalid choice")
