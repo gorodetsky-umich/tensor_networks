@@ -875,10 +875,14 @@ def next_gram_sum(gram_now, core_next, order='rl'):
         Rk = [s.shape[-1] for s in core_next]
         Rk_cumsum = np.cumsum([0]+Rk)
         Rk_sum = gram_now.shape[0]
-        Rk1 = [s.shape[0] for s in core_next]
+        if core_next[0].ndim == 2: 
+            Rk1 = [1 for s in core_next]
+        else:
+            Rk1 = [s.shape[0] for s in core_next]
         Rk1_sum = np.sum(Rk1)
         Rk1_cumsum = np.cumsum([0]+Rk1)
         n = core_next[0].shape[1]
+
         tmp = np.zeros((Rk1_sum*n, Rk_sum))
         for i in range(len(core_next)):
             tmp[Rk1_cumsum[i]*n:Rk1_cumsum[i+1]*n, :] = (core_next[i].reshape(
@@ -890,7 +894,7 @@ def next_gram_sum(gram_now, core_next, order='rl'):
         tmp = np.zeros((Rk1_sum, Rk1_sum))
         for i, mat in enumerate(tmplist):
             tmp[:, Rk1_cumsum[i]:Rk1_cumsum[i+1]] = mat @ core_next[i].reshape(
-                                                            (shnext[i][0], -1)).T
+                                                            (-1, shnext[i][-2]*shnext[i][-1])).T
         return tmp
     
     # elif order == 'lr':
