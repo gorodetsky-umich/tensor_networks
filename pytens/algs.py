@@ -684,7 +684,7 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     return tn
 
 
-def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True, threshold=1e-10) -> TensorNetwork:
+def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True, threshold=1e-14) -> TensorNetwork:
     """Round a tensor train.
 
     Nodes should be integers 0,1,2,...,dim-1
@@ -906,8 +906,9 @@ def next_gram_sum(gram_now, core_next, order='rl'):
         
 
 def round_ttsum(factors_list: list[TensorNetwork], 
-                eps=1e-14, threshold=1e-10):
-
+                eps=1e-14, threshold=1e-10) -> TensorNetwork:
+    """Round a list of tensor networks that should be summed."""
+    
     def eps_to_rank(s, eps):
         l = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
         res = np.argmax(l)
