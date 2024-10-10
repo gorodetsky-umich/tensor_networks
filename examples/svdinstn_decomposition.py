@@ -6,7 +6,7 @@ import opt_einsum as oe
 import timeit
 import time
 
-gamma = 0.0015
+gamma = 5e-6 # 0.0015
 rho = 0.001
 mu = 1.0
 
@@ -52,22 +52,24 @@ class FCTN:
                 axises = [i for i in range(self.N) if i != t and i != l]
                 x_tl = np.mean(self.target, axis=tuple(axises))
                 # print(f"x_{t}_{l} shape:", x_tl.shape)
-                _, s_tl, _ = np.linalg.svd(x_tl.squeeze())
+                _, s_tl, _ = np.linalg.svd(x_tl)
                 # print(f"s_{t}_{l} shape:", s_tl.shape)
                 # print(f"s_{t}_{l}:", s_tl)
-                # s_tl = shrink(s_tl, gamma * np.max(s_tl) / (np.abs(s_tl) + 1e-16))
+                s_tl = shrink(s_tl, gamma * np.max(s_tl) / (np.abs(s_tl) + 1e-16))
                 # print(f"after shrink s_{t}_{l}:", s_tl)
                 s_tl = s_tl[s_tl != 0]
                 self.S[(t, l)] = s_tl
                 # s_tl = self.S[(t, l)]
                 # print(f"after shrink s_{t}_{l}:", s_tl.shape)
-                ranks[t, l] = len(s_tl)
+                ranks[(t, l)] = len(s_tl)
+                # ranks[t, l] = min(self.indices[t], self.indices[l])
+                # self.S[(t, l)] = np.random.random(ranks[t, l])
                 print(f"rank({t}, {l}) =", ranks[t, l])
 
         # initialize G
         for i, idx in enumerate(self.indices):
             dims = tuple(ranks[:i, i]) + (idx,) + tuple(ranks[i, i+1:])
-            self.G[i] = 1 / np.sqrt(idx) * np.ones(dims)
+            self.G[i] = np.ones(dims) / np.sqrt(idx)
 
     def _get_index_id(self, i, j):
         # if i == j, it returns the index Ii
@@ -221,21 +223,6 @@ class FCTN:
         G_l = unfold(G[l], G[l].shape, t)
         H_tl = np.zeros((np.prod(self.indices), len(self.S[(t, l)])))
 
-        def tnprod(g):
-            m = np.array([1])
-            n = [0]
-            out = g[0]
-            for i in range(self.N - 1):
-                # print(out.shape, m)
-                # print(g[i+1].shape, n)
-                out = np.tensordot(out, g[i + 1], axes=(m, n))
-                n.append(i + 1)
-                if i > 0:
-                    m[1:] = m[1:] - np.array(range(1, i+1))
-                m = np.append(m, 1 + (i + 1) * (self.N - i - 1))
-
-            return out
-
         for i in range(len(self.S[(t, l)])):
             g = copy.deepcopy(G)
             g_t_shape = list(G[t].shape)
@@ -246,9 +233,24 @@ class FCTN:
             g_l_shape = list(G[l].shape)
             g_l_shape[t] = 1
             g[l] = fold(G_l[i, :], g_l_shape, t)
-            H_tl[:, i] = tnprod(g).reshape(-1)
+            H_tl[:, i] = self.tnprod(g).reshape(-1)
 
         return H_tl
+    
+    def tnprod(self, g):
+        m = np.array([1])
+        n = [0]
+        out = g[0]
+        for i in range(self.N - 1):
+            # print(out.shape, m)
+            # print(g[i+1].shape, n)
+            out = np.tensordot(out, g[i + 1], axes=(m, n))
+            n.append(i + 1)
+            if i > 0:
+                m[1:] = m[1:] - np.array(range(1, i+1))
+            m = np.append(m, 1 + (i + 1) * (self.N - i - 1))
+
+        return out
 
     def decompose(self, max_iters=5000):
         start = time.time()
@@ -293,7 +295,7 @@ class FCTN:
                         s[(t, l)] = shrink(s_left, s_right)
                         P[(t, l)] = P[(t, l)] + s[(t, l)] - Q[(t, l)]
 
-                    self.S[(t, l)] = s[(t, l)]
+                    # self.S[(t, l)] = s[(t, l)]
 
             # delete zero elements in S
             for t in range(self.N):
@@ -309,7 +311,13 @@ class FCTN:
                     self.G[t] = np.take(self.G[t], indices, axis=l)
                     self.G[l] = np.take(self.G[l], indices, axis=t)
 
-            X = self._contract_rest([])
+            g = copy.deepcopy(self.G)
+            for i in range(self.N):
+                for j in range(i + 1, self.N):
+                    g[i] = np.tensordot(g[i], np.diag(self.S[(i, j)]), axes=([i + 1], [0]))
+
+            X = self.tnprod(g)
+            # print(self.target)
             err = np.linalg.norm(X - old_X) / np.linalg.norm(old_X)
             re = np.linalg.norm(X - self.target) / np.linalg.norm(self.target)
             print("Iteration:", it, "Time:", time.time() - start, "Error:", err, "RE:", re)
@@ -329,7 +337,7 @@ class FCTN:
                 print(f"rank({t}, {l}) =", len(s_tl[s_tl!=0]))
 
 if __name__ == "__main__":
-    np.random.seed(4)
+    np.random.seed(1314)
     target = np.random.randn(16, 18, 20, 22)
     target_fctn = FCTN(target)
     target_fctn.G[0] = np.random.random((16, 4, 3, 2))
