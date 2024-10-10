@@ -785,7 +785,7 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True, threshold=1e-10)
             # print(tn.value(i))
             gr_list.append(next_gram(gr_list[-1], tn.value(i), 'rl'))
         # print("end")
-        norm = np.sqrt(np.linalg.norm(gr_list[-1]))
+        norm = np.sqrt(gr_list[-1])[0, 0]
         delta = eps * norm/(dim-1)**0.5
         gr_list = gr_list[::-1]
 
@@ -848,13 +848,72 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True, threshold=1e-10)
 
 
 # Rounding sum of TT cores
-def get_columns(matrix, periodicity, consecutive, start):
+def get_indices(max, periodicity, consecutive, start):
     """
-    Gets the columns of the matrix that are supposed to be right multiplied with the non-zero elements of H(X_n).T to avoid 
-    unnecessary computation. 
+    Gets the column indices of a matrix when right multiplied by the horizontal unfolding (or its transpose) of a TT-sum (H(X) or H(X).T).
+    The indices correspond to the non-zero parts of H and helps to avoid unnecessary computation. 
     """
-    indices = np.concatenate([np.arange(i, i + consecutive) for i in range(start, matrix.shape[1], periodicity)])
-    return matrix[:, indices]
+    indices = np.concatenate([np.arange(i, i + consecutive) for i in range(start, max, periodicity)])
+    return indices
+
+
+def multiply_core_unfolding(mat: np.ndarray, cores_list: list, v_unfolding: bool, left_multiply: bool, transpose: bool):
+    rows, cols = mat.shape
+    n_cores = len(cores_list)
+    if left_multiply:
+        Rk = [s.shape[-1] for s in cores_list]
+        Rk_cumsum = np.cumsum([0]+Rk)
+        Rk_sum = np.sum(Rk)
+        if cores_list[0].ndim == 2: 
+            Rk1 = [1 for s in cores_list]
+        else:
+            Rk1 = [s.shape[0] for s in cores_list]
+        Rk1_sum = np.sum(Rk1)
+        Rk1_cumsum = np.cumsum([0]+Rk1)
+        n = cores_list[0].shape[1]
+        
+        if v_unfolding and (not transpose):
+            assert rows == Rk_sum, f"Dimension mismatch {rows} != {Rk_sum}"
+            res = np.zeros((Rk1_sum*n, cols))
+            for i in range(n_cores):
+                res[Rk1_cumsum[i]*n:Rk1_cumsum[i+1]*n, :] = cores_list[i].reshape((-1, Rk[i])) @ mat[Rk_cumsum[i]:Rk_cumsum[i+1], :]
+            return res
+        else: print("Invalid") 
+     
+    else:
+        Rk = [s.shape[0] for s in cores_list]
+        Rk_cumsum = np.cumsum([0]+Rk)
+        Rk_sum = np.sum(Rk)
+        if cores_list[0].ndim == 2: 
+            Rk1 = [1 for s in cores_list]
+        else:
+            Rk1 = [s.shape[-1] for s in cores_list]
+        Rk1_sum = np.sum(Rk1)
+        Rk1_cumsum = np.cumsum([0]+Rk1)
+        n = cores_list[0].shape[1]
+        
+        if v_unfolding and (not transpose):
+            assert cols == Rk_sum*n, f"Dimension mismatch {cols} != {Rk_sum*n}"
+            res = np.zeros((rows, Rk1_sum))
+            for i in range(n_cores):
+                res[:, Rk1_cumsum[i]:Rk1_cumsum[i+1]] = mat[:, Rk_cumsum[i]*n:Rk_cumsum[i+1]*n] @ cores_list[i].reshape((-1, Rk1[i]))
+            return res
+        elif (not v_unfolding) and (transpose):
+            assert cols == Rk1_sum*n, f"Dimension mismatch {cols} != {Rk1_sum*n}"
+            res = np.zeros((rows, Rk_sum))
+            for i in range(n_cores):
+                ind = get_indices(cols, Rk1_sum, Rk1[i], Rk1_cumsum[i])
+                res[:, Rk_cumsum[i]:Rk_cumsum[i+1]] = mat[:, ind] @ (cores_list[i].reshape((Rk[i], -1))).T
+            return res
+        elif (not v_unfolding) and (not transpose):
+            assert cols == Rk_sum, f"Dimension mismatch {cols} != {Rk_sum}"
+            res = np.zeros((rows, n*Rk1_sum))
+            for i in range(n_cores):
+                ind = get_indices(Rk1_sum*n, Rk1_sum, Rk1[i], Rk1_cumsum[i])
+                res[:, ind] = mat[:, Rk_cumsum[i]:Rk_cumsum[i+1]] @ cores_list[i].reshape((Rk[i], -1))
+            return res
+        else: print("Invalid")
+
 
 
 def next_gram_sum(gram_now, core_next, order='rl'):
@@ -870,40 +929,24 @@ def next_gram_sum(gram_now, core_next, order='rl'):
     order: 'lr' means left to right and 'rl' means right to left.
     """
 
-    shnext = [s.shape for s in core_next]
+    # shnext = [s.shape for s in core_next]
     if order == 'rl':
-        Rk = [s.shape[-1] for s in core_next]
-        Rk_cumsum = np.cumsum([0]+Rk)
-        Rk_sum = gram_now.shape[0]
-        if core_next[0].ndim == 2: 
-            Rk1 = [1 for s in core_next]
-        else:
-            Rk1 = [s.shape[0] for s in core_next]
-        Rk1_sum = np.sum(Rk1)
-        Rk1_cumsum = np.cumsum([0]+Rk1)
+        Rk1_sum, _, Rk_sum = np.sum([list(s.shape) for s in core_next], axis=0)
         n = core_next[0].shape[1]
-
-        tmp = np.zeros((Rk1_sum*n, Rk_sum))
-        for i in range(len(core_next)):
-            tmp[Rk1_cumsum[i]*n:Rk1_cumsum[i+1]*n, :] = (core_next[i].reshape(
-                                                        (-1, shnext[i][-1])) @ 
-                                                        gram_now[Rk_cumsum[i]:Rk_cumsum[i+1], :])
-        
+        tmp = multiply_core_unfolding(gram_now, core_next, True, True, False)
         tmp = tmp.reshape((Rk1_sum, n*Rk_sum))
-        tmplist = [get_columns(tmp, Rk_sum, rk, Rk_cumsum[i]) for i, rk in enumerate(Rk)]
-        tmp = np.zeros((Rk1_sum, Rk1_sum))
-        for i, mat in enumerate(tmplist):
-            tmp[:, Rk1_cumsum[i]:Rk1_cumsum[i+1]] = mat @ core_next[i].reshape(
-                                                            (-1, shnext[i][-2]*shnext[i][-1])).T
-        return tmp
+        res = multiply_core_unfolding(tmp, core_next, False, False, True)
+        return res
     
-    # elif order == 'lr':
-    #     corelist = []
-    #     for i in range(len(core_next)):
-    #         corelist.append(core_next[i].reshape((-1, shnext[-1])).T @ core_next[i].reshape((-1, shnext[-1])))
-    #     return corelist
-        
-        
+    elif order == 'lr':
+        Rk_sum, _, Rk1_sum = np.sum([list(s.shape) for s in core_next], axis=0)
+        n = core_next[0].shape[1]
+        tmp = multiply_core_unfolding(gram_now, core_next, False, False, False)
+        tmp = tmp.reshape((Rk_sum*n, Rk1_sum)).T
+        res = multiply_core_unfolding(tmp, core_next, True, False, False)
+        return res
+       
+                
 
 def round_ttsum(factors_list: list[TensorNetwork], 
                 eps=1e-14, threshold=1e-10):
@@ -914,36 +957,53 @@ def round_ttsum(factors_list: list[TensorNetwork],
         if res == 0 and l[0] == False: return s.shape[0]
         else: return res
 
+    def core_info(k):
+        cores = [f.value(k) for f in factors_list]
+        Rk = [s.shape[0] for s in cores]
+        Rk1 = [s.shape[-1] for s in cores]
+        n = cores[0].shape[1]
+        if cores[0].ndim == 3:
+            return cores, [np.sum(Rk), n, np.sum(Rk1)]
+        elif cores[0].ndim == 2: 
+            return cores, [np.sum(Rk), n]
+            
     dim = factors_list[0].dim()
-    n_s = len(factors_list)
 
-    for i in range(n_s):
-        if not i: ttsum = factors_list[i]
-        else: ttsum = ttsum + factors_list[i]
+    ttsum = copy.deepcopy(factors_list[0])
 
-    gr_list = [ttsum.value(dim-1) @ ttsum.value(dim-1).T]
+    gr_list = [np.concatenate([f.value(dim-1) for f in 
+                factors_list], axis=0)]
+    
+    ttsum.network.nodes[dim-1]["tensor"].update_val_size(gr_list[-1])
+    gr_list = [gr_list[-1] @ gr_list[-1].T]
+
+    
+    gl_list = [np.concatenate([f.value(0) for f in 
+                factors_list], axis=1)]
+    
+    ttsum.network.nodes[0]["tensor"].update_val_size(gl_list[-1])
+    gl_list = [gl_list[-1].T @ gl_list[-1]]
     
     # Collect gram matrices from right to left
     for i in range(dim-2, 0, -1):
         gr_list.append(next_gram_sum(gr_list[-1], 
-                [f.value(i) for f in factors_list], 'rl'))
-    
-    tmp = ttsum.value(0)
-    gr_list.append(np.sum((tmp @ gr_list[-1]) * tmp).reshape((1, 1)))
-    
-    norm = np.sqrt(np.linalg.norm(gr_list[-1]))
+                                     [f.value(i) for f in factors_list], 'rl'))
+
+    for i in range(1, dim-1, 1):
+        gl_list.append(next_gram_sum(gl_list[-1], 
+                                     [f.value(i) for f in factors_list], 'lr'))
+
+    gr_list.append(np.sum((ttsum.value(0) @ gr_list[-1]) * ttsum.value(0)))   
+    norm = np.sqrt(gr_list[-1])
     delta = eps * norm/(dim-1)**0.5
 
     gr_list = gr_list[::-1]
     
     for i in range(dim-1):
         sh = list(ttsum.value(i).shape)
-        shp1 = list(ttsum.value(i+1).shape)
-
-        gl = (ttsum.value(i).reshape((-1, sh[-1])).T @ 
-                ttsum.value(i).reshape((-1, sh[-1])))
-
-        eigl, vl = np.linalg.eigh(gl)
+        core_next, shp1 = core_info(i+1)
+        
+        eigl, vl = np.linalg.eigh(gl_list[i])
         eigr, vr = np.linalg.eigh(gr_list[i+1])
         
         eigl = np.abs(eigl)
@@ -974,8 +1034,11 @@ def round_ttsum(factors_list: list[TensorNetwork],
         curr_val = (ttsum.value(i).reshape((-1, sh[-1])) @ vl @ 
                     (eiglm12[:, np.newaxis] * u))
         
-        next_val = ((s[:, np.newaxis] * v * eigrm12[np.newaxis, :]) @ vr.T @ 
-                    ttsum.value(i+1).reshape((shp1[0], -1)))
+        next_val = (s[:, np.newaxis] * v * eigrm12[np.newaxis, :]) @ vr.T
+        if i == (dim-2):
+            next_val = next_val @ ttsum.value(dim-1)
+        else:
+            next_val = multiply_core_unfolding(next_val, core_next, False, False, False)
       
         sh[-1] = rk
         shp1[0] = rk
