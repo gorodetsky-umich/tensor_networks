@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "Python-Tensor-Networks"
 description = "Tensor networks with python"
 # readme = "README.org"
-requires-python = ">=3.10"
+requires-python = ">= 3.11"
 # license = "MIT"
 version = "0.0.1"
 keywords = []
@@ -23,6 +23,10 @@ dependencies = [
   "opt_einsum",
   "networkx",
   "matplotlib", # for plotting
+  "ruff",
+  "pylint",
+  "flake8",
+  "flake8-pyproject"
 ]
 
 [tool.setuptools]
@@ -39,7 +43,7 @@ Source = "https://github.com/unknown/temporary"
 analyse-fallback-blocks = false
 clear-cache-post-run = false
 confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE", "INFERENCE_FAILURE", "UNDEFINED"]
-disable = ["bad-inline-option", "deprecated-pragma", "file-ignored", "locally-disabled", "raw-checker-failed", "suppressed-message", "use-implicit-booleaness-not-comparison-to-string", "use-implicit-booleaness-not-comparison-to-zero", "use-symbolic-message-instead", "useless-suppression", "too-few-public-methods"]
+disable = ["bad-inline-option", "deprecated-pragma", "file-ignored", "locally-disabled", "raw-checker-failed", "suppressed-message", "use-implicit-booleaness-not-comparison-to-string", "use-implicit-booleaness-not-comparison-to-zero", "use-symbolic-message-instead", "useless-suppression", "too-few-public-methods", "too-many-locals", "too-many-lines"]
 enable = []
 evaluation = "max(0, 0 if fatal else 10.0 - ((float(5 * error + warning + refactor + convention) / statement) * 10))"
 exit-zero = false
@@ -61,6 +65,18 @@ recursive = false
 reports = false
 score = true
 source-roots = []
+
+[tool.flake8]
+extend-ignore = "E203"
+exclude = [
+        ".git",
+        "__pycache__",
+        "docs/source/conf.py",
+        "old",
+        "build",
+        "dist",
+        "__init__.py", 
+        ]
 
 [tool.mypy]
 warn_return_any = true
@@ -119,8 +135,9 @@ exclude = [
     "venv",
 ]
 
+line-length=79
 # Same as Black.
-line-length = 88
+# line-length = 88
 indent-width = 4
 
 # Assume Python 3.12
@@ -166,3 +183,7 @@ docstring-code-format = false
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F403"]
+"**/{tests,docs,tools}/*" = ["E402"]
