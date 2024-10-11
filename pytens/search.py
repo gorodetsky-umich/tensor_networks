@@ -26,7 +26,7 @@ class Split:
         return hash(self.__str__())
     
     def execute(self, network: TensorNetwork) -> TensorNetwork:
-        network.pull_through(self.node)
+        network.orthonormalize(self.node)
         network.split(self.node, self.left_orders, self.right_orders, eps=self.eps)
         return network
 
@@ -43,6 +43,17 @@ class Merge:
     
     def execute(self, network: TensorNetwork) -> TensorNetwork:
         network.merge(self.node1, self.node2)
+
+def add_wodup(best_network, new_net, worked, worklist):
+    canonical_new_net = new_net.canonicalize()
+    if canonical_new_net not in worked:
+        if best_network is None or best_network.cost() > new_net.cost():
+            best_network = new_net
+
+        heapq.heappush(worklist, new_net)
+        worked.add(canonical_new_net)
+
+    return best_network
 
 class SearchEngine:
     def __init__(self, params, target):
@@ -66,9 +77,6 @@ class SearchEngine:
             # net.draw()
             # plt.show()
 
-            if best_network is None or best_network.cost() > net.cost():
-                best_network = net
-
             # can we perform split?
             for n in net.network.nodes:
                 indices = net.network.nodes[n]["tensor"].indices
@@ -81,12 +89,10 @@ class SearchEngine:
 
                     for comb in combs:
                         new_net = copy.deepcopy(net)
-                        budget -= 1
+                        new_net.orthonormalize(n)
                         new_net.split(n, comb, tuple([j for j in indices if j not in comb]))
-                        canonical_new_net = new_net.canonicalize()
-                        if canonical_new_net not in worked:
-                            heapq.heappush(worklist, new_net)
-                            worked.add(canonical_new_net)
+                        best_network = add_wodup(best_network, new_net, worked, worklist)
+                        budget -= 1
 
             # can we perform merge?
             for n in net.network.nodes:
@@ -94,11 +100,8 @@ class SearchEngine:
                     if n < m:
                         new_net = copy.deepcopy(net)
                         new_net.merge(n, m)
-                        canonical_new_net = new_net.canonicalize()
-                        if canonical_new_net not in worked:
-                            heapq.heappush(worklist, new_net)
-                            worked.add(canonical_new_net)
-                            budget -= 1
+                        best_network = add_wodup(best_network, new_net, worked, worklist)
+                        budget -= 1
 
             if budget < 0:
                 break
