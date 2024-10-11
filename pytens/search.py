@@ -44,17 +44,6 @@ class Merge:
     def execute(self, network: TensorNetwork) -> TensorNetwork:
         network.merge(self.node1, self.node2)
 
-def add_wodup(best_network, new_net, worked, worklist):
-    canonical_new_net = new_net.canonicalize()
-    if canonical_new_net not in worked:
-        if best_network is None or best_network.cost() > new_net.cost():
-            best_network = new_net
-
-        heapq.heappush(worklist, new_net)
-        worked.add(canonical_new_net)
-
-    return best_network
-
 class SearchEngine:
     def __init__(self, params, target):
         self.params = params
@@ -89,10 +78,12 @@ class SearchEngine:
 
                     for comb in combs:
                         new_net = copy.deepcopy(net)
-                        new_net.orthonormalize(n)
-                        new_net.split(n, comb, tuple([j for j in indices if j not in comb]))
-                        best_network = add_wodup(best_network, new_net, worked, worklist)
                         budget -= 1
+                        new_net.split(n, comb, tuple([j for j in indices if j not in comb]))
+                        canonical_new_net = new_net.canonicalize()
+                        if canonical_new_net not in worked:
+                            heapq.heappush(worklist, new_net)
+                            worked.add(canonical_new_net)
 
             # can we perform merge?
             for n in net.network.nodes:
@@ -100,8 +91,11 @@ class SearchEngine:
                     if n < m:
                         new_net = copy.deepcopy(net)
                         new_net.merge(n, m)
-                        best_network = add_wodup(best_network, new_net, worked, worklist)
-                        budget -= 1
+                        canonical_new_net = new_net.canonicalize()
+                        if canonical_new_net not in worked:
+                            heapq.heappush(worklist, new_net)
+                            worked.add(canonical_new_net)
+                            budget -= 1
 
             if budget < 0:
                 break
