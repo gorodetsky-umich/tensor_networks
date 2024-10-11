@@ -4,6 +4,7 @@ import copy
 import unittest
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 from pytens.algs import *
 
@@ -276,6 +277,84 @@ class TestTT(unittest.TestCase):
 
     #     self.assertTrue(np.allclose(check, should_be,
     #                                 atol=1e-5, rtol=1e-5))
+
+class TestTree(unittest.TestCase):
+
+    def setUp(self):
+        np.random.seed(100)
+        self.x = Index('x', 5)
+        self.u = Index('u', 10)
+        self.v = Index('v', 20)
+        self.tree = rand_tree([self.x, self.u, self.v], [1,2,3,4,5])
+        self.tree2 = rand_tree([self.x, self.u, self.v], [5,4,3,2,1])
+
+    def test_tree_split(self):
+        original = self.tree.contract().value
+        self.tree.split(4, [0, 2], [1])
+        # self.tree.draw()
+        # plt.show()
+        after_split = self.tree.contract().value
+        
+        self.assertTrue(np.allclose(original, after_split, atol=1e-5, rtol=1e-5))
+
+    def test_tree_split_free(self):
+        original = self.tree.contract().value
+        original_free = self.tree.free_indices()
+
+        self.tree.split(3, [0, 1], [2])
+        # self.tree.draw()
+        # plt.show()
+        after_split = self.tree.contract().value
+        after_split_free = self.tree.free_indices()
+        permutation = [after_split_free.index(i) for i in original_free]
+        after_split = after_split.transpose(permutation)
+        
+        self.assertTrue(np.allclose(original, after_split, atol=1e-5, rtol=1e-5))
+
+    def test_tree_merge(self):
+        original = self.tree.contract().value
+        original_free = self.tree.free_indices()
+        
+        self.tree.merge(2, 3)
+        self.tree.draw()
+        plt.show()
+        after_merge = self.tree.contract().value
+        after_merge_free = self.tree.free_indices()
+        permutation = [after_merge_free.index(i) for i in original_free]
+        after_merge = after_merge.transpose(permutation)
+        
+        self.assertTrue(np.allclose(original, after_merge, atol=1e-5, rtol=1e-5))
+
+    def test_tree_orthonorm(self):
+        # self.tree.draw()
+        # plt.show()
+        original = self.tree.contract().value
+        original_indices = self.tree.free_indices()
+
+        root = 3
+        self.tree.orthonormalize(root)
+        # self.tree.draw()
+        # plt.show()
+        after_orthonormal = self.tree.contract().value
+        after_orthonormal_indices = self.tree.free_indices()
+        permutation = [after_orthonormal_indices.index(i) for i in original_indices]
+        after_orthonormal = after_orthonormal.transpose(permutation)
+
+        self.assertTrue(np.allclose(after_orthonormal, original, atol=1e-5, rtol=1e-5))
+
+        # check each neighbor of root becomes isometry
+        nbrs = list(self.tree.network.neighbors(root))
+        for n in nbrs:
+            self.tree.network.remove_edge(root, n)
+            reachable_nodes = nx.descendants(self.tree.network, n)
+            reachable_graph = self.tree.network.subgraph(reachable_nodes)
+            subnet = TensorNetwork()
+            subnet.network = reachable_graph
+            self.assertTrue(subnet.norm(), 1)
+
+            self.tree.network.add_edge(root, n)
+
+        
 
 if __name__ == "__main__":
     unittest.main()

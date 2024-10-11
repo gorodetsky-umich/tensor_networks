@@ -54,7 +54,8 @@ class Tensor:
     def rename_indices(self, rename_map: Dict[IntOrStr, str]) -> Self:
         """Rename the indices of the tensor."""
         for ii, index in enumerate(self.indices):
-            self.indices[ii] = index.with_new_name(rename_map[index.name])
+            if index.name in rename_map:
+                self.indices[ii] = index.with_new_name(rename_map[index.name])
 
         return self
 
@@ -164,6 +165,42 @@ class Tensor:
         tens = Tensor(new_val, new_indices)
         return tens
     
+    def contract(self, other: Self) -> "Tensor":
+        new_shape = []
+        new_indices = []
+        str1 = ""
+        str2 = ""
+        output_str = ""
+        on_index = 97
+        for index_here in self.indices:
+            new_char = chr(on_index)
+            str1 += new_char
+            on_index += 1
+            if index_here not in other.indices:
+                new_indices.append(index_here)
+                new_shape.append(index_here.size)
+                output_str += new_char
+        
+        for index_other in other.indices:
+            if index_other in self.indices:
+                idx = self.indices.index(index_other)
+                str2 += str1[idx]
+            else:
+                new_char = chr(on_index)
+                str2 += new_char
+                output_str += new_char
+                on_index += 1
+                new_indices.append(index_other)
+                new_shape.append(index_other.size)
+    
+        estr = str1 + "," + str2 + "->" + output_str
+        # print("estr", estr)
+
+        new_val = np.einsum(estr, self.value, other.value)
+        new_val = np.reshape(new_val, new_shape)
+        tens = Tensor(new_val, new_indices)
+        return tens
+
     def split(self, left_indices: Sequence[int], right_indices: Sequence[int], mode: str, delta=0.1) -> List["Tensor"]:
         value = np.permute_dims(self.value, left_indices + right_indices)
         left_sz = int(np.prod([self.indices[i].size for i in left_indices]))
@@ -171,9 +208,9 @@ class Tensor:
         value = value.reshape(left_sz, right_sz)
 
         if mode == "svd":
-            u, s, v = delta_svd(value, delta)
-            u = u @ np.diag(np.sqrt(s))
-            v = np.diag(np.sqrt(s)) @ v
+            result = delta_svd(value, delta)
+            u = result.u @ np.diag(np.sqrt(result.s))
+            v = np.diag(np.sqrt(result.s)) @ result.v
         elif mode == "qr":
             u, v = np.linalg.qr(value)
         else:
@@ -516,20 +553,25 @@ class TensorNetwork:
 
     def orthonormalize(self, name: NodeName):
         # traverse the tree rooted at the given node in the post order
-        visited = {}
+        visited = {} # 0 for not visited, 1 for processing, and 2 for processed
         def postorder(pname, name):
-            visited[name] = True
+            visited[name] = 1
             children_rs = []
             nbrs = list(self.network.neighbors(name))
             for n in nbrs:
                 if n not in visited:
                     children_rs.append(postorder(name, n))
 
+            # print("Processing", name)
             # subsume r values from its children
             merged = name
             for c in children_rs:
                 merged = self.merge(merged, c)
             
+            # print("after merge, renaming", merged, "into", name)
+            nx.relabel_nodes(self.network, {merged: name}, copy=False)
+            merged = name
+
             r = None
             if pname != None:
                 left_indices, right_indices = [], []
@@ -540,8 +582,7 @@ class TensorNetwork:
                         n_indices = self.network.nodes[n]["tensor"].indices
                         if index in n_indices:
                             common_index = i
-                            if n not in visited:
-                                # this node is added after split, being child
+                            if n not in visited or visited[n] == 2:
                                 left_indices.append(common_index)
                             else:
                                 right_indices.append(common_index)
@@ -552,8 +593,13 @@ class TensorNetwork:
                         left_indices.append(i)
 
                 # print(f"Splitting {merged} by {left_indices} and {right_indices}")
-                _, r = self.split(merged, left_indices, right_indices)
+                q, r = self.split(merged, left_indices, right_indices)
+                # print("after split, renaming", q, "into", name)
+                nx.relabel_nodes(self.network, {q: name}, copy=False)
 
+            # self.draw()
+            # plt.show()
+            visited[name] = 2
             return r
 
         postorder(None, name)
@@ -1266,3 +1312,72 @@ def gmres(  # pylint: disable=R0913
     # print("resid = ", resid)
     # exit(1);
     return x, resid
+
+def rand_tree(indices: List[Index], ranks: List[int]) -> TensorNetwork:
+    """Return a random tensor tree."""
+
+    ndims = len(indices)
+    num_of_nodes = len(ranks) + 1
+    assert ndims <= num_of_nodes # In a tree, #edges = #nodes - 1
+
+    # sample a topology from given ranks
+    np.random.shuffle(ranks)
+    # sample nodes for free indices
+    nodes_with_free = np.random.choice(num_of_nodes, len(indices), replace=False)
+    # assign edges between nodes
+    parent = {}
+    nodes = list(range(num_of_nodes))
+    while len(nodes) > 1:
+        node = np.random.choice(nodes, 1)[0]
+        nodes.remove(node)
+
+        p = np.random.choice(num_of_nodes, 1)[0]
+        while p == node:
+            p = np.random.choice(num_of_nodes, 1)[0]
+        # print("suggesting parent of", node, "as", p)
+        # check for cycles
+        ancestor = p
+        while ancestor in parent:
+            # print("ancestor of", ancestor)
+            ancestor, _ = parent[ancestor]
+            if ancestor == node:
+                p = np.random.choice(num_of_nodes, 1)[0]
+                while p == node:
+                    p = np.random.choice(num_of_nodes, 1)[0]
+                ancestor = p
+
+        # print("finalizing parent of", node, "as", p)
+        parent[node] = (p, len(nodes) - 1)
+
+    tree = TensorNetwork()
+
+    for i in range(num_of_nodes):
+        i_ranks = []
+        i_dims = []
+        if i in nodes_with_free:
+            idx = list(nodes_with_free).index(i)
+            dim = indices[idx].size
+            i_ranks.append(indices[idx])
+            i_dims.append(dim)
+        
+        if i in parent:
+            _, ridx = parent[i]
+            dim = ranks[ridx]
+            i_ranks.append(Index(f"r_{ridx}", dim))
+            i_dims.append(dim)
+
+        for p, ridx in parent.values():
+            if p == i:
+                dim = ranks[ridx]
+                i_ranks.append(Index(f"r_{ridx}", dim))
+                i_dims.append(dim)
+
+        value = np.random.randn(*i_dims)
+        tensor = Tensor(value, i_ranks)
+        tree.add_node(i, tensor)
+
+    for i, (p, _) in parent.items():
+        # print("edge between", i, "and", p)
+        tree.add_edge(i, p)
+
+    return tree
