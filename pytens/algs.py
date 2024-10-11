@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from collections import Counter
 from dataclasses import dataclass
 import typing
-from typing import Dict, Optional, Union, List, Self, Tuple
+from typing import Dict, Optional, Union, List, Self, Tuple, Callable
 import numpy as np
 import opt_einsum as oe
 import networkx as nx
@@ -58,7 +58,9 @@ class Tensor:
 
         return self
 
-    def concat_fill(self, other: Self, indices_common: List[Index]) -> "Tensor":
+    def concat_fill(
+        self, other: Self, indices_common: List[Index]
+    ) -> "Tensor":
         """Concatenate two arrays.
 
         keep dimensions corresponding to indices_common the same.
@@ -219,7 +221,9 @@ class TensorNetwork:
         free_indices = [i for i, v in icount.items() if v == 1]
         return free_indices
 
-    def get_contraction_index(self, node1: NodeName, node2: NodeName) -> List[Index]:
+    def get_contraction_index(
+        self, node1: NodeName, node2: NodeName
+    ) -> List[Index]:
         """Get the contraction indices."""
         ind1 = self.network.nodes[node1]["tensor"].indices
         ind2 = self.network.nodes[node2]["tensor"].indices
@@ -247,7 +251,9 @@ class TensorNetwork:
         all_indices = self.all_indices()
         free_indices = [i for i, v in all_indices.items() if v == 1]
 
-        mapping = {name: chr(i + 97) for i, name in enumerate(all_indices.keys())}
+        mapping = {
+            name: chr(i + 97) for i, name in enumerate(all_indices.keys())
+        }
         input_str_map = {}
         for node, data in self.network.nodes(data=True):
             input_str_map[node] = "".join(
@@ -328,9 +334,16 @@ class TensorNetwork:
 
         for n1, d1 in self.network.nodes(data=True):
             for n2, d2 in other.network.nodes(data=True):
-                total_dim = len(d1["tensor"].indices) + len(d2["tensor"].indices)
+                total_dim = len(d1["tensor"].indices) + len(
+                    d2["tensor"].indices
+                )
                 if (
-                    len(set(list(d1["tensor"].indices) + list(d2["tensor"].indices)))
+                    len(
+                        set(
+                            list(d1["tensor"].indices)
+                            + list(d2["tensor"].indices)
+                        )
+                    )
                     < total_dim
                 ):
                     u.add_edge(f"{rename[0]}{n1}", f"{rename[1]}{n2}")
@@ -390,7 +403,9 @@ class TensorNetwork:
         return out
 
     def integrate(
-        self, indices: Sequence[Index], weights: Sequence[Union[np.ndarray, float]]
+        self,
+        indices: Sequence[Index],
+        weights: Sequence[Union[np.ndarray, float]],
     ) -> "TensorNetwork":
         """Integrate over the chosen indices. So far just uses simpson rule."""
 
@@ -443,7 +458,9 @@ class TensorNetwork:
 
             tens1 = self.network.nodes[node1]["tensor"]
             tens2 = other.network.nodes[node2]["tensor"]
-            new_tens.network.nodes[node1]["tensor"] = tens1.mult(tens2, free_indices)
+            new_tens.network.nodes[node1]["tensor"] = tens1.mult(
+                tens2, free_indices
+            )
 
         return new_tens
 
@@ -526,10 +543,14 @@ class TensorNetwork:
             label = "-".join(labels)
             edge_labels[(u, v)] = label
         nx.draw_networkx_edges(new_graph, pos, ax=ax)
-        nx.draw_networkx_edge_labels(new_graph, pos, ax=ax, edge_labels=edge_labels)
+        nx.draw_networkx_edge_labels(
+            new_graph, pos, ax=ax, edge_labels=edge_labels
+        )
 
 
-def vector(name: Union[str, int], index: Index, value: np.ndarray) -> "TensorNetwork":
+def vector(
+    name: Union[str, int], index: Index, value: np.ndarray
+) -> "TensorNetwork":
     """Convert a vector to a tensor network."""
     vec = TensorNetwork()
     vec.add_node(name, Tensor(value, [index]))
@@ -546,7 +567,8 @@ def rand_tt(indices: List[Index], ranks: List[int]) -> TensorNetwork:
 
     r = [Index("r1", ranks[0])]
     tt.add_node(
-        0, Tensor(np.random.randn(indices[0].size, ranks[0]), [indices[0], r[0]])
+        0,
+        Tensor(np.random.randn(indices[0].size, ranks[0]), [indices[0], r[0]]),
     )
 
     core = 1
@@ -564,7 +586,9 @@ def rand_tt(indices: List[Index], ranks: List[int]) -> TensorNetwork:
 
     tt.add_node(
         dim - 1,
-        Tensor(np.random.randn(ranks[-1], indices[-1].size), [r[-1], indices[-1]]),
+        Tensor(
+            np.random.randn(ranks[-1], indices[-1].size), [r[-1], indices[-1]]
+        ),
     )
     tt.add_edge(dim - 2, dim - 1)
 
@@ -600,7 +624,9 @@ def tt_rank1(indices: List[Index], vals: List[np.ndarray]) -> TensorNetwork:
     return tt
 
 
-def tt_separable(indices: List[Index], funcs: List[np.ndarray]) -> TensorNetwork:
+def tt_separable(
+    indices: List[Index], funcs: List[np.ndarray]
+) -> TensorNetwork:
     """Rank 2 function formed by sums of functions of individual dimensions."""
 
     dim = len(indices)
@@ -707,39 +733,39 @@ def tt_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
         out = tt_right_orth(out, jj)
 
     # print("ON FORWARD SWEEP")
-    for ii, (node, data) in enumerate(out.network.nodes(data=True)):
+    core_list = list(out.network.nodes(data=True))
+    node = core_list[0][0]
+    data = core_list[0][1]
+    value = out.value(node)
+    trunc_svd = delta_svd(value, eps / np.sqrt(dim - 1), with_normalizing=True)
+    delta = trunc_svd.delta
+    assert delta is not None
+
+    v = np.dot(np.diag(trunc_svd.s), trunc_svd.v)
+    r2 = trunc_svd.u.shape[1]
+    new_core = np.reshape(trunc_svd.u, (value.shape[0], r2))
+
+    data["tensor"].update_val_size(new_core)
+
+    # print("In here")
+    val_old = out.network.nodes[node + 1]["tensor"].value
+    next_val = np.einsum("ij,jk...->ik...", v, val_old)
+    out.network.nodes[node + 1]["tensor"].update_val_size(next_val)
+
+    for node, data in core_list[1:-1]:
         value = data["tensor"].value
-        if value.ndim == 3:
-            r1, n, r2a = value.shape
-            val = np.reshape(value, (r1 * n, r2a))
-            u, s, v = delta_svd(val, delta)
-            # print("u shape = ", u.shape)
-            # print("s shape = ", s.shape)
-            # print("v shape = ", v.shape)
-            v = np.dot(np.diag(s), v)
-            r2 = u.shape[1]
-            new_core = np.reshape(u, (r1, n, r2))
-        else:
-            n, r2a = value.shape
-            if ii == 0:
-                u, s, v, delta = delta_svd(
-                    value, eps / np.sqrt(dim - 1), with_normalizing=True
-                )
-            else:
-                u, s, v = delta_svd(value, delta)
-            v = np.dot(np.diag(s), v)
-            r2 = u.shape[1]
-            new_core = np.reshape(u, (n, r2))
+        r1, n, r2a = value.shape
+        val = np.reshape(value, (r1 * n, r2a))
+        trunc_svd = delta_svd(val, delta)
+        v = np.dot(np.diag(trunc_svd.s), trunc_svd.v)
+        r2 = trunc_svd.u.shape[1]
+        new_core = np.reshape(trunc_svd.u, (r1, n, r2))
 
         data["tensor"].update_val_size(new_core)
 
-        # print("In here")
         val_old = out.network.nodes[node + 1]["tensor"].value
         next_val = np.einsum("ij,jk...->ik...", v, val_old)
         out.network.nodes[node + 1]["tensor"].update_val_size(next_val)
-
-        if node == dim - 2:
-            break
 
     return out
 
@@ -757,7 +783,8 @@ def ttop_rank1(
 
     rank_indices = [Index(f"{rank_name_prefix}_r1", 1)]
     a1_tens = Tensor(
-        cores[0][:, :, np.newaxis], [indices_out[0], indices_in[0], rank_indices[0]]
+        cores[0][:, :, np.newaxis],
+        [indices_out[0], indices_in[0], rank_indices[0]],
     )
     tt_op.add_node(0, a1_tens)
     for ii in range(1, dim):
@@ -880,7 +907,9 @@ def ttop_sum(
             )
             tt_op.add_node(ii, ai_tens)
         else:
-            core = np.zeros((num_sum, indices_out[ii].size, indices_in[ii].size))
+            core = np.zeros(
+                (num_sum, indices_out[ii].size, indices_in[ii].size)
+            )
             for jj in range(num_sum):
                 core[jj, :, :] = cores[jj][ii]
 
@@ -897,38 +926,44 @@ def ttop_sum_apply(
     tt_in: TensorNetwork,
     indices_in: List[Index],
     indices_out: List[Index],
-    cores: List[List[np.ndarray]],
+    cores: List[List[Callable[[np.ndarray], np.ndarray]]],
     rank_name_prefix: str,
 ) -> TensorNetwork:
     """Apply sum of rank1 tt ops to a tt."""
+
     assert len(indices_in) == len(indices_out)
     dim = len(indices_in)
     tt_out = TensorNetwork()
     num_sum = len(cores)
-    for ii, node_tt in enumerate(tt_in.network.nodes()):
-        v = tt_in.network.nodes[node_tt]["tensor"].value
-        if ii == 0:
-            rank_indices = [Index(f"{rank_name_prefix}_r1", num_sum * v.shape[1])]
 
-        if ii > 0 and ii < dim - 1:
+    node_list = list(tt_in.network.nodes())
+    ii = 0
+    v = tt_in.value(node_list[ii])
+    rank_indices = [Index(f"{rank_name_prefix}_r1", num_sum * v.shape[1])]
+    core = np.zeros((indices_out[ii].size, v.shape[1] * num_sum))
+    indices = [indices_out[ii], rank_indices[ii]]
+    on_ind = 0
+    for jj in range(num_sum):
+        new_core = cores[jj][ii](v)
+        new_core = np.reshape(new_core, (v.shape[0], -1))
+        core[:, on_ind : on_ind + new_core.shape[1]] = new_core
+        on_ind += new_core.shape[1]
+    tt_out.add_node(ii, Tensor(core, indices))
+
+    for ii, node_tt in enumerate(node_list[1:], start=1):
+        v = tt_in.value(node_tt)
+
+        if ii < dim - 1:
             rank_indices.append(
                 Index(f"{rank_name_prefix}_r{ii+1}", v.shape[2] * num_sum)
             )
 
-        if ii == 0:
-            core = np.zeros((indices_out[ii].size, v.shape[1] * num_sum))
-            indices = [indices_out[ii], rank_indices[ii]]
-            on_ind = 0
-            for jj in range(num_sum):
-                new_core = cores[jj][ii](v)
-                # new_core = np.einsum('ij,jl->il', cores[jj][ii], v)
-                n = v.shape[0]
-                new_core = np.reshape(new_core, (n, -1))
-                core[:, on_ind : on_ind + new_core.shape[1]] = new_core
-                on_ind += new_core.shape[1]
-        elif ii < dim - 1:
             core = np.zeros(
-                (num_sum * v.shape[0], indices_out[ii].size, num_sum * v.shape[2])
+                (
+                    num_sum * v.shape[0],
+                    indices_out[ii].size,
+                    num_sum * v.shape[2],
+                )
             )
 
             indices = [rank_indices[ii - 1], indices_out[ii], rank_indices[ii]]
@@ -941,7 +976,9 @@ def ttop_sum_apply(
                 new_core = np.reshape(new_core, (shape[0], shape[1], shape[2]))
                 n1 = new_core.shape[0]
                 n2 = new_core.shape[2]
-                core[on_ind1 : on_ind1 + n1, :, on_ind2 : on_ind2 + n2] = new_core
+                core[on_ind1 : on_ind1 + n1, :, on_ind2 : on_ind2 + n2] = (
+                    new_core
+                )
                 on_ind1 += n1
                 on_ind2 += n2
         else:
@@ -949,19 +986,12 @@ def ttop_sum_apply(
             indices = [rank_indices[ii - 1], indices_out[ii]]
             on_ind = 0
             for jj in range(num_sum):
-                # new_core = np.einsum('ij,mj->mi', cores[jj][ii], v)
                 new_core = cores[jj][ii](v)
-                # shape = new_core.shape
-                # new_core = np.reshape(new_core, (shape[0]*shape[1], -1))
                 core[on_ind : on_ind + new_core.shape[0], :] = new_core
                 on_ind += new_core.shape[0]
 
-        new_tensor = Tensor(core, indices)
-
-        tt_out.add_node(ii, new_tensor)
-
-        if ii > 0:
-            tt_out.add_edge(ii - 1, ii)
+        tt_out.add_node(ii, Tensor(core, indices))
+        tt_out.add_edge(ii - 1, ii)
 
     return tt_out
 
@@ -1005,7 +1035,7 @@ def ttop_apply(ttop: TensorNetwork, tt_in: TensorNetwork) -> TensorNetwork:
 
 
 @typing.no_type_check
-def gmres(
+def gmres(  # pylint: disable=R0913
     op,  # function from in to out
     rhs: TensorNetwork,
     x0: TensorNetwork,

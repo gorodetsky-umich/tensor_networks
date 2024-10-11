@@ -23,6 +23,10 @@ dependencies = [
   "opt_einsum",
   "networkx",
   "matplotlib", # for plotting
+  "ruff",
+  "pylint",
+  "flake8",
+  "flake8-pyproject"
 ]
 
 [tool.setuptools]
@@ -61,6 +65,18 @@ recursive = false
 reports = false
 score = true
 source-roots = []
+
+[tool.flake8]
+extend-ignore = "E203"
+exclude = [
+        ".git",
+        "__pycache__",
+        "docs/source/conf.py",
+        "old",
+        "build",
+        "dist",
+        "__init__.py", 
+        ]
 
 [tool.mypy]
 warn_return_any = true
@@ -119,8 +135,9 @@ exclude = [
     "venv",
 ]
 
+line-length=79
 # Same as Black.
-line-length = 88
+# line-length = 88
 indent-width = 4
 
 # Assume Python 3.12
@@ -166,3 +183,7 @@ docstring-code-format = false
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F403"]
+"**/{tests,docs,tools}/*" = ["E402"]

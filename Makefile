@@ -5,10 +5,11 @@ check:
 	ruff check 
 
 format:
-	ruff format -v
+	ruff format
 
 lint:
 	python -m pylint pytens
+	python -m flake8 pytens
 
 type-check:
 	python -m mypy 
@@ -16,4 +17,6 @@ type-check:
 test:
 	python -m unittest tests/main_test.py -v
 
-.PHONY: init format lint test type-check
+ci: check format lint type-check test
+
+.PHONY: init check format lint test type-check
