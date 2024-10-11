@@ -6,11 +6,7 @@ import opt_einsum as oe
 import timeit
 import time
 
-<<<<<<< HEAD
-gamma = 5e-6 # 0.0015
-=======
 gamma = 0.0015
->>>>>>> 49cdf18 (fix params according to author response)
 rho = 0.001
 mu = 0.1
 
@@ -255,6 +251,25 @@ class FCTN:
             m = np.append(m, 1 + (i + 1) * (self.N - i - 1))
 
         return out
+    
+    def tnprod_with_s(self, g, s):
+        for i in range(self.N):
+            for j in range(i + 1, self.N):
+                g[i] = np.tensordot(g[i], np.diag(s[(i, j)]), axes=([i + 1], [0]))
+
+        m = np.array([1])
+        n = [0]
+        out = g[0]
+        for i in range(self.N - 1):
+            # print(out.shape, m)
+            # print(g[i+1].shape, n)
+            out = np.tensordot(out, g[i + 1], axes=(m, n))
+            n.append(i + 1)
+            if i > 0:
+                m[1:] = m[1:] - np.array(range(1, i+1))
+            m = np.append(m, 1 + (i + 1) * (self.N - i - 1))
+
+        return out
 
     def decompose(self, max_iters=5000):
         start = time.time()
@@ -340,6 +355,23 @@ class FCTN:
                 s_tl = self.S[(t, l)]
                 print(f"rank({t}, {l}) =", len(s_tl[s_tl!=0]))
 
+def same_topology(tn1, tn2):
+    N = len(tn1.G)
+    for i in range(N):
+        for j in range(i+1, N):
+            if len(tn1.S[(i, j)]) != len(tn2.S[(i, j)]):
+                return False
+            
+    return True
+
+def cost(tn):
+    N = len(tn.G)
+    cost = 0
+    for i in range(N):
+        cost += np.prod(tn.G[i].shape)
+
+    return cost
+
 def test_case_1():
     target = np.random.randn(16, 18, 20, 22)
     target_fctn = FCTN(target)
@@ -406,7 +438,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     with open(args.log, "w") as f:
-        for i in range(50):
+        for i in range(1):
             print("Repeat", i)
             # prepare the data
             target_fctn = test_case_1()
