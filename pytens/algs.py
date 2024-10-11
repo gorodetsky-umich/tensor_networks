@@ -163,6 +163,33 @@ class Tensor:
         new_val = np.reshape(new_val, new_shape)
         tens = Tensor(new_val, new_indices)
         return tens
+    
+    def split(self, left_indices: Sequence[int], right_indices: Sequence[int], mode: str, delta=0.1) -> List["Tensor"]:
+        value = np.permute_dims(self.value, left_indices + right_indices)
+        left_sz = int(np.prod([self.indices[i].size for i in left_indices]))
+        right_sz = int(np.prod([self.indices[j].size for j in right_indices]))
+        value = value.reshape(left_sz, right_sz)
+
+        if mode == "svd":
+            u, s, v = delta_svd(value, delta)
+            u = u @ np.diag(np.sqrt(s))
+            v = np.diag(np.sqrt(s)) @ v
+        elif mode == "qr":
+            u, v = np.linalg.qr(value)
+        else:
+            raise Exception(f"Unsupported mode: {mode}")
+
+        u = u.reshape([self.indices[i].size for i in left_indices] + [-1])
+        u_indices = [self.indices[i] for i in left_indices]
+        u_indices.append(Index("r_split", u.shape[-1]))
+        u_tensor = Tensor(u, u_indices)
+        
+        v = v.reshape([-1] + [self.indices[j].size for j in right_indices])
+        v_indices = [self.indices[j] for j in right_indices]
+        v_indices = [Index("r_split", v.shape[0])] + v_indices
+        v_tensor = Tensor(v, v_indices)
+
+        return [u_tensor, v_tensor]
 
 
 # @dataclass(frozen=True, eq=True)
@@ -419,6 +446,117 @@ class TensorNetwork:
             out = out.attach(tens, rename=("", ""))
 
         return out
+    
+    def fresh_index(self) -> Index:
+        # TODO: can be optimized
+        all_indices = [i.name for i in self.all_indices().keys()]
+        i = 0
+        while f"s_{i}" in all_indices:
+            i += 1
+
+        return f"s_{i}"
+    
+    def fresh_node(self) -> NodeName:
+        # TODO: can be optimized
+        i = 0
+        node = f"n{i}"
+        while node in self.network.nodes:
+            i += 1
+            node = f"n{i}"
+
+        return node
+
+    def split(self, node_name: NodeName, left_indices: Sequence[int], right_indices: Sequence[int], mode="svd", delta=0.1) -> Tuple[NodeName, NodeName]:
+        x = self.network.nodes[node_name]["tensor"]
+        # svd decompose the data into specified index partition
+        u, v = x.split(left_indices, right_indices, mode, delta)
+
+        new_index = self.fresh_index()
+        u_name = self.fresh_node()
+        self.add_node(u_name, u.rename_indices({"r_split": new_index}))
+        v_name = self.fresh_node()
+        self.add_node(v_name, v.rename_indices({"r_split": new_index}))
+        self.add_edge(u_name, v_name)
+
+        x_nbrs = self.network.neighbors(node_name)
+        for y in list(x_nbrs):
+            y_inds = self.network.nodes[y]["tensor"].indices
+            if any([i in y_inds for i in u.indices]):
+                self.add_edge(u_name, y)
+            elif any([i in y_inds for i in v.indices]):
+                self.add_edge(v_name, y)
+            else:
+                raise ValueError(f"Indices {y_inds} does not exist in splits ({left_indices}, {right_indices})")
+        
+        self.network.remove_node(node_name)
+
+        return u_name, v_name
+
+    def merge(self, name1: NodeName, name2: NodeName) -> NodeName:
+        if not self.network.has_edge(name1, name2):
+            raise Exception(f"Cannot merge two nodes that are not adjacent: {name1}, {name2}")
+        
+        t1 = self.network.nodes[name1]["tensor"]
+        t2 = self.network.nodes[name2]["tensor"]
+        result = t1.contract(t2)
+        new_node = self.fresh_node()
+        self.add_node(new_node, result)
+        for n in self.network.neighbors(name1):
+            if n != name2:
+                self.add_edge(new_node, n)
+        
+        for m in self.network.neighbors(name2):
+            if n != name1:
+                self.add_edge(new_node, m)
+
+        self.network.remove_node(name1)
+        self.network.remove_node(name2)
+
+        return new_node
+
+    def orthonormalize(self, name: NodeName):
+        # traverse the tree rooted at the given node in the post order
+        visited = {}
+        def postorder(pname, name):
+            visited[name] = True
+            children_rs = []
+            nbrs = list(self.network.neighbors(name))
+            for n in nbrs:
+                if n not in visited:
+                    children_rs.append(postorder(name, n))
+
+            # subsume r values from its children
+            merged = name
+            for c in children_rs:
+                merged = self.merge(merged, c)
+            
+            r = None
+            if pname != None:
+                left_indices, right_indices = [], []
+                merged_indices = self.network.nodes[merged]["tensor"].indices
+                for i, index in enumerate(merged_indices):
+                    common_index = None
+                    for n in self.network.neighbors(merged):
+                        n_indices = self.network.nodes[n]["tensor"].indices
+                        if index in n_indices:
+                            common_index = i
+                            if n not in visited:
+                                # this node is added after split, being child
+                                left_indices.append(common_index)
+                            else:
+                                right_indices.append(common_index)
+                            
+                            break
+
+                    if common_index is None:
+                        left_indices.append(i)
+
+                # print(f"Splitting {merged} by {left_indices} and {right_indices}")
+                _, r = self.split(merged, left_indices, right_indices)
+
+            return r
+
+        postorder(None, name)
 
     def __add__(self, other: Self) -> Self:
         """Add two tensor trains.
