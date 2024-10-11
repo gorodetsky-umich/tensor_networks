@@ -2,9 +2,9 @@ name: Makefile CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "goroda-check_actions" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "master", "goroda-check_actions" ]
 
 jobs:
   build:
