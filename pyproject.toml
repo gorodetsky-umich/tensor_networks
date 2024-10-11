@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "Python-Tensor-Networks"
 description = "Tensor networks with python"
 # readme = "README.org"
-requires-python = ">=3.10"
+requires-python = ">= 3.11"
 # license = "MIT"
 version = "0.0.1"
 keywords = []
