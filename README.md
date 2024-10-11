@@ -1,6 +1,6 @@
 # Tensor Networks
 
-A library for tensor network manipulation
+A library for tensor network manipulation.
 
 ## Installation
 I suggest you create a python virtual environment. Then within that environment you can install an editable installation with
