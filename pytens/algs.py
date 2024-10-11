@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from collections import Counter
 from dataclasses import dataclass
 import typing
-from typing import Dict, Optional, Union, List, Self, Tuple, Callable
+from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Set
 import numpy as np
 import opt_einsum as oe
 import networkx as nx
@@ -34,7 +34,26 @@ class Index:
     def with_new_name(self, name: IntOrStr) -> "Index":
         """Create a new index with same size but new name"""
         return Index(name, self.size)
+    
+    def __lt__(self, other):
+        return self.name < other.name and self.size < other.size
 
+@dataclass
+class IsoShape:
+    ordered: List[Union[Index, int]]
+    unordered: Dict[int, int]
+
+    def __hash__(self):
+        return hash(self.__str__())
+    
+    def __str__(self):
+        return f"({sorted([str(x) for x in self.ordered])}, {sorted(list(self.unordered))})"
+
+    def __lt__(self, other):
+        return self.__str__() < other.__str__()
+    
+    def __eq__(self, other):
+        return self.__str__() == other.__str__()
 
 @dataclass  # (frozen=True, eq=True)
 class Tensor:
@@ -604,6 +623,63 @@ class TensorNetwork:
 
         postorder(None, name)
 
+    def canonicalize(self):
+        """Canonicalize the tensor network into a standard representation
+        """
+        # free indices remain the same
+        # we choose the node contains the first free index as the root
+        free_indices = sorted(self.free_indices())
+        first_free = free_indices[0]
+        for n in self.network.nodes:
+            if first_free in self.network.nodes[n]["tensor"].indices:
+                root = n
+                break
+
+        result = []
+        queue = [(root, [])]
+        visited = set()
+        while len(queue) > 0:
+            pending = []
+            level_result = set()
+            for n, parent_indices in queue:
+                visited.add(n)
+                n_indices = self.network.nodes[n]["tensor"].indices
+                n_ordered, n_parent, n_unordered = [], [], {}
+                for i in n_indices:
+                    if i in free_indices:
+                        n_ordered.append(i)
+                    elif i in parent_indices:
+                        n_parent.append(i.size)
+                    else:
+                        n_unordered[i.size] = n_unordered.get(i.size, 0) + 1
+
+                n_shape = IsoShape(sorted(n_ordered) + n_parent, n_unordered)
+                level_result.add(n_shape)
+
+                for nbr in self.network.neighbors(n):
+                    if nbr not in visited:
+                        pending.append((nbr, n_indices))
+
+            # print("before sort", list(level_result))
+            # print("after sort", sorted(list(level_result)))
+            result.append(tuple(sorted(list(level_result))))
+            queue = pending
+
+        # print(result)
+        return tuple(result)
+
+    def cost(self) -> int:
+        cost = 0
+        for n in self.network.nodes:
+            indices = self.network.nodes[n]["tensor"].indices
+            n_cost = np.prod([i.size for i in indices])
+            cost += n_cost
+
+        return cost
+
+    def __lt__(self, other: Self) -> bool:
+        return self.cost() < other.cost()
+
     def __add__(self, other: Self) -> Self:
         """Add two tensor trains.
 
@@ -677,7 +753,7 @@ class TensorNetwork:
 
         # with_label = {'A': True, 'B': False}
 
-        free_indices = self.free_indices()
+        free_indices = sorted(self.free_indices())
 
         free_graph = nx.Graph()
         for index in free_indices:
@@ -690,7 +766,7 @@ class TensorNetwork:
                 if index in data["tensor"].indices:
                     new_graph.add_edge(node, name1)
 
-        pos = nx.planar_layout(new_graph)
+        pos = nx.bfs_layout(new_graph, f"{free_indices[0].name}-f")
 
         for node, data in self.network.nodes(data=True):
             node_groups["A"].append(node)
@@ -723,7 +799,7 @@ class TensorNetwork:
         edge_labels = {}
         for u, v in self.network.edges():
             indices = self.get_contraction_index(u, v)
-            labels = [i.name for i in indices]
+            labels = [str(i.size) for i in indices]
             label = "-".join(labels)
             edge_labels[(u, v)] = label
         nx.draw_networkx_edges(new_graph, pos, ax=ax)

@@ -356,5 +356,13 @@ class TestTree(unittest.TestCase):
 
         
 
+    def test_tree_canonicalize(self):
+        plt.figure(1)
+        self.tree.draw()
+        plt.figure(2)
+        self.tree2.draw()
+        plt.show()
+        self.assertNotEqual(self.tree.canonicalize(), self.tree2.canonicalize())
+
 if __name__ == "__main__":
     unittest.main()
