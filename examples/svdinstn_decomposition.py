@@ -6,9 +6,13 @@ import opt_einsum as oe
 import timeit
 import time
 
+<<<<<<< HEAD
 gamma = 5e-6 # 0.0015
+=======
+gamma = 0.0015
+>>>>>>> 49cdf18 (fix params according to author response)
 rho = 0.001
-mu = 1.0
+mu = 0.1
 
 def shrink(a, b):
     return np.maximum(a - b, 0) + np.minimum(a + b, 0)
@@ -55,7 +59,7 @@ class FCTN:
                 _, s_tl, _ = np.linalg.svd(x_tl)
                 # print(f"s_{t}_{l} shape:", s_tl.shape)
                 # print(f"s_{t}_{l}:", s_tl)
-                s_tl = shrink(s_tl, gamma * np.max(s_tl) / (np.abs(s_tl) + 1e-16))
+                s_tl = shrink(s_tl, gamma * np.max(s_tl) / (len(s_tl) + 1e-16))
                 # print(f"after shrink s_{t}_{l}:", s_tl)
                 s_tl = s_tl[s_tl != 0]
                 self.S[(t, l)] = s_tl
@@ -63,7 +67,7 @@ class FCTN:
                 # print(f"after shrink s_{t}_{l}:", s_tl.shape)
                 ranks[(t, l)] = len(s_tl)
                 # ranks[t, l] = min(self.indices[t], self.indices[l])
-                # self.S[(t, l)] = np.random.random(ranks[t, l])
+                # self.S[(t, l)] = np.random.uniform(ranks[t, l])
                 print(f"rank({t}, {l}) =", ranks[t, l])
 
         # initialize G
@@ -290,7 +294,7 @@ class FCTN:
                     # old_stl = self.S[(t, l)]
                     for _ in range(5):
                         Q[(t, l)] = np.linalg.pinv(H_tl.T @ H_tl + np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + s[(t, l)] + P[(t, l)])
-                        s_left = (rho * self.S[(t, l)] + Q[(t, l)] - P[(t, l)]) / (rho + 1)
+                        s_left = (rho * s[(t, l)] + Q[(t, l)] - P[(t, l)]) / (rho + 1)
                         s_right = lam / (rho + 1)
                         s[(t, l)] = shrink(s_left, s_right)
                         P[(t, l)] = P[(t, l)] + s[(t, l)] - Q[(t, l)]
@@ -336,29 +340,82 @@ class FCTN:
                 s_tl = self.S[(t, l)]
                 print(f"rank({t}, {l}) =", len(s_tl[s_tl!=0]))
 
-if __name__ == "__main__":
-    np.random.seed(1314)
+def test_case_1():
     target = np.random.randn(16, 18, 20, 22)
     target_fctn = FCTN(target)
-    target_fctn.G[0] = np.random.random((16, 4, 3, 2))
-    target_fctn.G[1] = np.random.random((4, 18, 2, 2))
-    target_fctn.G[2] = np.random.random((3, 2, 20, 3))
-    target_fctn.G[3] = np.random.random((2, 2, 3, 22))
-    target_fctn.S[(0, 1)] = np.random.random(4)
-    target_fctn.S[(0, 2)] = np.random.random(3)
-    target_fctn.S[(0, 3)] = np.random.random(2)
-    target_fctn.S[(1, 2)] = np.random.random(2)
-    target_fctn.S[(1, 3)] = np.random.random(2)
-    target_fctn.S[(2, 3)] = np.random.random(3)
-    target = target_fctn._contract_rest([])
-    
-    fctn = FCTN(target)
-    # fctn.S[(0, 1)] = target_fctn.S[(0, 1)]
-    # fctn.S[(0, 2)] = target_fctn.S[(0, 2)]
-    # fctn.S[(0, 3)] = target_fctn.S[(0, 3)]
-    # fctn.S[(1, 2)] = target_fctn.S[(1, 2)]
-    # fctn.S[(1, 3)] = target_fctn.S[(1, 3)]
-    # fctn.S[(2, 3)] = target_fctn.S[(2, 3)]
+    target_fctn.G[0] = np.random.uniform(size=(16, 4, 3, 2))
+    target_fctn.G[1] = np.random.uniform(size=(4, 18, 2, 2))
+    target_fctn.G[2] = np.random.uniform(size=(3, 2, 20, 3))
+    target_fctn.G[3] = np.random.uniform(size=(2, 2, 3, 22))
 
-    fctn.initialize()
-    fctn.decompose()
+    target_fctn.S[(0, 1)] = np.random.uniform(size=4)
+    target_fctn.S[(0, 2)] = np.random.uniform(size=3)
+    target_fctn.S[(0, 3)] = np.random.uniform(size=2)
+    target_fctn.S[(1, 2)] = np.random.uniform(size=2)
+    target_fctn.S[(1, 3)] = np.random.uniform(size=2)
+    target_fctn.S[(2, 3)] = np.random.uniform(size=3)
+    
+    return target_fctn
+
+def test_case_2():
+    target = np.random.randn(16, 18, 20, 22)
+    target_fctn = FCTN(target)
+    target_fctn.G[0] = np.random.uniform(size=(16, 3, 1, 1))
+    target_fctn.G[1] = np.random.uniform(size=(3, 18, 4, 1))
+    target_fctn.G[2] = np.random.uniform(size=(1, 4, 20, 4))
+    target_fctn.G[3] = np.random.uniform(size=(1, 1, 4, 22))
+
+    target_fctn.S[(0, 1)] = np.random.uniform(size=3)
+    target_fctn.S[(0, 2)] = np.random.uniform(size=1)
+    target_fctn.S[(0, 3)] = np.random.uniform(size=1)
+    target_fctn.S[(1, 2)] = np.random.uniform(size=4)
+    target_fctn.S[(1, 3)] = np.random.uniform(size=1)
+    target_fctn.S[(2, 3)] = np.random.uniform(size=4)
+    
+    return target_fctn
+
+def test_case_3():
+    target = np.random.randn(14, 16, 18, 20, 22)
+    target_fctn = FCTN(target)
+    target_fctn.G[0] = np.random.uniform(size=(14, 1, 3, 2, 1))
+    target_fctn.G[1] = np.random.uniform(size=(1, 16, 1, 3, 4))
+    target_fctn.G[2] = np.random.uniform(size=(3, 1, 18, 1, 3))
+    target_fctn.G[3] = np.random.uniform(size=(2, 3, 1, 20, 1))
+    target_fctn.G[4] = np.random.uniform(size=(1, 4, 3, 1, 22))
+
+    target_fctn.S[(0, 1)] = np.random.uniform(size=1)
+    target_fctn.S[(0, 2)] = np.random.uniform(size=3)
+    target_fctn.S[(0, 3)] = np.random.uniform(size=2)
+    target_fctn.S[(0, 4)] = np.random.uniform(size=1)
+    target_fctn.S[(1, 2)] = np.random.uniform(size=1)
+    target_fctn.S[(1, 3)] = np.random.uniform(size=3)
+    target_fctn.S[(1, 4)] = np.random.uniform(size=4)
+    target_fctn.S[(2, 3)] = np.random.uniform(size=1)
+    target_fctn.S[(2, 4)] = np.random.uniform(size=3)
+    target_fctn.S[(3, 4)] = np.random.uniform(size=1)
+    
+    return target_fctn
+
+if __name__ == "__main__":
+    np.random.seed(100)
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--log", type=str, help="Path to the log file")
+    args = parser.parse_args()
+
+    with open(args.log, "w") as f:
+        for i in range(50):
+            print("Repeat", i)
+            # prepare the data
+            target_fctn = test_case_1()
+            target = target_fctn.tnprod_with_s(target_fctn.G, target_fctn.S)
+            fctn = FCTN(target)
+
+            start = time.time()
+            fctn.initialize()
+            re = fctn.decompose()
+            end = time.time()
+
+            f.write(f"{i}, {end-start}, {re}, {same_topology(target_fctn, fctn)}, {cost(fctn)}, {cost(fctn) / np.prod(target.shape)}\n")
