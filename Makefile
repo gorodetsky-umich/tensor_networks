@@ -1,5 +1,8 @@
-init:
+init-e:
 	python -m pip install -e .
+
+init:
+	python -m pip install .
 
 check:
 	ruff check 
