@@ -290,10 +290,15 @@ class TestTree(unittest.TestCase):
 
     def test_tree_split(self):
         original = self.tree.contract().value
+        original_free = self.tree.free_indices()
+
         self.tree.split(4, [0, 2], [1])
         # self.tree.draw()
         # plt.show()
         after_split = self.tree.contract().value
+        after_split_free = self.tree.free_indices()
+        permutation = [after_split_free.index(i) for i in original_free]
+        after_split = after_split.transpose(permutation)
         
         self.assertTrue(np.allclose(original, after_split, atol=1e-5, rtol=1e-5))
 
@@ -316,8 +321,8 @@ class TestTree(unittest.TestCase):
         original_free = self.tree.free_indices()
         
         self.tree.merge(2, 3)
-        self.tree.draw()
-        plt.show()
+        # self.tree.draw()
+        # plt.show()
         after_merge = self.tree.contract().value
         after_merge_free = self.tree.free_indices()
         permutation = [after_merge_free.index(i) for i in original_free]
