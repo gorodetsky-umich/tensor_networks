@@ -6,11 +6,13 @@ from collections.abc import Sequence
 from collections import Counter
 from dataclasses import dataclass
 import typing
-from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Set
+from typing import Dict, Optional, Union, List, Self, Tuple, Callable
+import itertools
+
 import numpy as np
 import opt_einsum as oe
 import networkx as nx
-import itertools
+
 from .utils import delta_svd
 
 IntOrStr = Union[str, int]
@@ -550,7 +552,7 @@ class TensorNetwork:
         """
         # To ensure the error bound in SVD, we first orthornormalize its env.
         if mode == "svd":
-            self.orthonormalize(node_name)
+            node_name = self.orthonormalize(node_name)
 
         x = self.network.nodes[node_name]["tensor"]
         # svd decompose the data into specified index partition
@@ -608,9 +610,13 @@ class TensorNetwork:
         return new_node
 
     def orthonormalize(self, name: NodeName) -> NodeName:
-        """Orthonormalize the environment network for the specified node."""
+        """Orthonormalize the environment network for the specified node.
+
+        Note that this method changes all node names in the network.
+        It returns the new name for the given node after orthonormalization.
+        """
         # traverse the tree rooted at the given node in the post order
-        # 0 for not visited, 1 for processing, and 2 for processed
+        # 1 for visited and 2 for processed
         visited = {}
 
         def _postorder(pname: Optional[NodeName], name: NodeName) -> NodeName:
@@ -628,11 +634,7 @@ class TensorNetwork:
             for c in children_rs:
                 merged = self.merge(merged, c)
 
-            # Keep the node the same name after merging all r values.
-            nx.relabel_nodes(self.network, {merged: name}, copy=False)
-            merged = name
-
-            r = name
+            r = merged
             if pname is not None:
                 left_indices, right_indices = [], []
                 merged_indices = self.network.nodes[merged]["tensor"].indices
@@ -642,8 +644,6 @@ class TensorNetwork:
                         n_indices = self.network.nodes[n]["tensor"].indices
                         if index in n_indices:
                             common_index = i
-                            if n not in visited:
-                                print("Warning: orthonormal changes node name")
 
                             # The edge direction is determined by
                             # whether a neighbor node has been processed.
@@ -658,7 +658,7 @@ class TensorNetwork:
                             # We use the left_indices to keep track of indices
                             # shared with children, and right_indices to keep
                             # track of indices shared with the parent.
-                            if visited[n] == 2:
+                            if n not in visited or visited[n] == 2:
                                 left_indices.append(common_index)
                             else:
                                 right_indices.append(common_index)
@@ -668,15 +668,12 @@ class TensorNetwork:
                     if common_index is None:
                         left_indices.append(i)
 
-                q, r = self.split(
+                _, r = self.split(
                     merged, left_indices, right_indices, mode="qr"
                 )
-                # print("after split, renaming", q, "into", name)
-                nx.relabel_nodes(self.network, {q: name}, copy=False)
 
-            # self.draw()
-            # plt.show()
             visited[name] = 2
+            visited[merged] = 2
             return r
 
         return _postorder(None, name)
