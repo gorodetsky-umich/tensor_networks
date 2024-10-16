@@ -743,7 +743,7 @@ class TensorNetwork:
             n_cost = np.prod([i.size for i in indices])
             cost += n_cost
 
-        return cost
+        return int(cost)
 
     def __lt__(self, other: Self) -> bool:
         return self.cost() < other.cost()

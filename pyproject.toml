@@ -26,11 +26,12 @@ dependencies = [
   "ruff",
   "pylint",
   "flake8",
-  "flake8-pyproject"
+  "flake8-pyproject",
+  "pydantic", # better dataclasses
 ]
 
 [tool.setuptools]
-packages = ["pytens"]
+packages = ["pytens", "benchmarks"]
 
 
 [project.urls]

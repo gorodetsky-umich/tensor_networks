@@ -5,7 +5,7 @@ import time
 import copy
 import heapq
 import argparse
-from typing import Sequence, Dict, Set, List, Tuple
+from typing import Sequence, Dict, Set, List, Tuple, Any
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -41,9 +41,7 @@ class Split:
 
     def execute(self, network: TensorNetwork) -> TensorNetwork:
         """Execute a split action."""
-        network.split(
-            self.node, self.left_orders, self.right_orders, delta=self.delta
-        )
+        network.split(self.node, self.left_orders, self.right_orders, delta=self.delta)
         return network
 
 
@@ -66,47 +64,79 @@ class Merge:
         return network
 
 
-def add_wodup(
-    best_network: TensorNetwork,
-    new_net: TensorNetwork,
-    worked: Set[Tuple],
-    worklist: List[TensorNetwork],
-) -> TensorNetwork:
-    """Add a network to a worked set to remove duplicates."""
-    canonical_new_net = new_net.canonicalize()
-    if canonical_new_net not in worked:
-        if best_network is None or best_network.cost() > new_net.cost():
-            best_network = new_net
+def approx_error(tensor: Tensor, net: TensorNetwork):
+    """Compute the reconstruction error.
 
-        heapq.heappush(worklist, new_net)
-        worked.add(canonical_new_net)
-
-    return best_network
+    Given a tensor network TN and the target tensor X,
+    it returns ||X - TN|| / ||X||.
+    """
+    target_free_indices = tensor.indices
+    net_free_indices = net.free_indices()
+    net_value = net.contract().value
+    perm = [net_free_indices.index(i) for i in target_free_indices]
+    net_value = net_value.transpose(perm)
+    error = np.linalg.norm(net_value - tensor.value) / np.linalg.norm(tensor.value)
+    return error
 
 
 class SearchEngine:
     """Tensor network topology search engine."""
 
-    def __init__(self, params: Dict, net: TensorNetwork):
+    def __init__(self, params: Dict):
         self.params = params
-        self.target_net = net
-        self.target = net.contract()
 
-    def exhaustive(self, budget: int = 10000):
+    def add_wodup(self,
+        best_network: TensorNetwork,
+        new_net: TensorNetwork,
+        worked: Set[Tuple],
+        worklist: List[TensorNetwork],
+        # used for stats collections
+        search_stats: Dict[str, Any],
+        ts: float,
+        ops: int,
+    ) -> TensorNetwork:
+        """Add a network to a worked set to remove duplicates."""
+        # new_net.draw()
+        # plt.show()
+        canonical_new_net = new_net.canonicalize()
+        if canonical_new_net not in worked:
+            if best_network is None or best_network.cost() > new_net.cost():
+                best_network = new_net
+
+            heapq.heappush(worklist, (new_net, ops))
+            worked.add(canonical_new_net)
+
+        if self.params["verbose"]:
+            search_stats["networks"].append((ts, new_net, ops))
+            search_stats["best_networks"].append(best_network)
+
+        return best_network
+
+    def exhaustive(self, net: TensorNetwork, budget: int = 10000):
         """Perform an exhaustive enumeration."""
+        target_tensor = net.contract()
+
+        search_stats = {
+            "networks": [],
+            "best_networks": [],
+            "best_cost": [],
+            "costs": [],
+            "errors": [],
+            "ops": [],
+        }
         start = time.time()
 
         network = TensorNetwork()
-        network.add_node("tt", self.target)
+        network.add_node("tt", target_tensor)
 
         worked = set()
         worklist = []
         worked.add(network.canonicalize())
-        heapq.heappush(worklist, network)
+        heapq.heappush(worklist, (network, 0))
         best_network = None
 
         while len(worklist) != 0:
-            net = heapq.heappop(worklist)
+            net, ops = heapq.heappop(worklist)
 
             # print(net.canonicalize())
             # net.draw()
@@ -128,9 +158,16 @@ class SearchEngine:
                             n,
                             comb,
                             tuple(j for j in indices if j not in comb),
+                            delta=1e-5
                         )
-                        best_network = add_wodup(
-                            best_network, new_net, worked, worklist
+                        best_network = self.add_wodup(
+                            best_network,
+                            new_net,
+                            worked,
+                            worklist,
+                            search_stats,
+                            time.time() - start,
+                            ops + 1,
                         )
                         budget -= 1
                         new_net.split(n, comb, tuple([j for j in indices if j not in comb]))
@@ -145,8 +182,14 @@ class SearchEngine:
                     if n < m:
                         new_net = copy.deepcopy(net)
                         new_net.merge(n, m)
-                        best_network = add_wodup(
-                            best_network, new_net, worked, worklist
+                        best_network = self.add_wodup(
+                            best_network,
+                            new_net,
+                            worked,
+                            worklist,
+                            search_stats,
+                            time.time() - start,
+                            ops + 1,
                         )
                         budget -= 1
 
@@ -154,20 +197,25 @@ class SearchEngine:
                 break
 
         end = time.time()
-        search_stats = {}
+
+        if self.params["verbose"]:
+            for ((ts, n, ops), bn) in zip(search_stats["networks"], search_stats["best_networks"]):
+                search_stats["ops"].append((ts, ops))
+                search_stats["costs"].append((ts, n.cost()))
+                err = approx_error(target_tensor, n)
+                search_stats["errors"].append((ts, err))
+                search_stats["best_cost"].append(
+                    (ts, bn.cost())
+                )
 
         search_stats["time"] = end - start
         search_stats["best_network"] = best_network
+        err = approx_error(target_tensor, best_network)
+        search_stats["reconstruction_error"] = err
 
-        best_result = best_network.contract()
-        best_free_indices = best_network.free_indices()
-        target_free_indices = self.target_net.free_indices()
-        perm = [best_free_indices.index(i) for i in target_free_indices]
-        best_value = best_result.value.transpose(perm)
-        error = np.linalg.norm(
-            best_value - self.target.value
-        ) / np.linalg.norm(self.target.value)
-        search_stats["reconstruction_error"] = error
+        # remove temporary stats
+        search_stats.pop("networks")
+        search_stats.pop("best_networks")
 
         return search_stats
 
@@ -393,8 +441,8 @@ if __name__ == "__main__":
 
     with open(args.log, "w", encoding="utf-8") as f:
         for i in range(10):
-            engine = SearchEngine({"tag": args.tag}, target)
-            stats = engine.exhaustive()
+            engine = SearchEngine({"tag": args.tag})
+            stats = engine.exhaustive(target)
             f.write(f"{i},{stats['time']},{stats['reconstruction_error']}\n")
             stats["best_network"].draw()
             plt.savefig(f"{args.tag}_result.png")
