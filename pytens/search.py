@@ -1,55 +1,101 @@
-from pytens import *
+"""Search algorithsm for tensor networks."""
+
+import itertools
+import time
+import copy
+import heapq
+import argparse
+from typing import Sequence, Dict, Set, List, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
-import copy
-import heapq
-import itertools
-import time
-import argparse
+
+from pytens import NodeName, TensorNetwork, Index, Tensor
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--tag", type=str)
 parser.add_argument("--log", type=str)
 
+
 class Split:
-    def __init__(self, eps: float, node: NodeName, left_orders: Sequence[int], right_orders: Sequence[int]):
-        self.eps = eps
+    """Split action."""
+
+    def __init__(
+        self,
+        delta: float,
+        node: NodeName,
+        left_orders: Sequence[int],
+        right_orders: Sequence[int],
+    ):
+        self.delta = delta
         self.node = node
         self.left_orders = left_orders
         self.right_orders = right_orders
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"Split({self.node}, {self.left_orders}, {self.right_orders})"
-    
-    def __hash__(self):
+
+    def __hash__(self) -> int:
         return hash(self.__str__())
-    
+
     def execute(self, network: TensorNetwork) -> TensorNetwork:
-        network.orthonormalize(self.node)
-        network.split(self.node, self.left_orders, self.right_orders, eps=self.eps)
+        """Execute a split action."""
+        network.split(
+            self.node, self.left_orders, self.right_orders, delta=self.delta
+        )
         return network
 
+
 class Merge:
+    """Merge action."""
+
     def __init__(self, node1: NodeName, node2: NodeName):
         self.node1 = node1
         self.node2 = node2
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"Merge({self.node1}, {self.node2})"
-    
-    def __hash__(self):
+
+    def __hash__(self) -> int:
         return hash(self.__str__())
-    
+
     def execute(self, network: TensorNetwork) -> TensorNetwork:
+        """Execute a merge action."""
         network.merge(self.node1, self.node2)
+        return network
+
+
+def add_wodup(
+    best_network: TensorNetwork,
+    new_net: TensorNetwork,
+    worked: Set[Tuple],
+    worklist: List[TensorNetwork],
+) -> TensorNetwork:
+    """Add a network to a worked set to remove duplicates."""
+    canonical_new_net = new_net.canonicalize()
+    if canonical_new_net not in worked:
+        if best_network is None or best_network.cost() > new_net.cost():
+            best_network = new_net
+
+        heapq.heappush(worklist, new_net)
+        worked.add(canonical_new_net)
+
+    return best_network
+
 
 class SearchEngine:
-    def __init__(self, params, target):
-        self.params = params
-        self.target = target
+    """Tensor network topology search engine."""
 
-    def exhaustive(self, budget = 10000):
+    def __init__(self, params: Dict, net: TensorNetwork):
+        self.params = params
+        self.target_net = net
+        self.target = net.contract()
+
+    def exhaustive(self, budget: int = 10000):
+        """Perform an exhaustive enumeration."""
+        start = time.time()
+
         network = TensorNetwork()
         network.add_node("tt", self.target)
 
@@ -61,7 +107,7 @@ class SearchEngine:
 
         while len(worklist) != 0:
             net = heapq.heappop(worklist)
-            
+
             # print(net.canonicalize())
             # net.draw()
             # plt.show()
@@ -74,10 +120,18 @@ class SearchEngine:
                 for sz in range(1, len(indices) // 2 + 1):
                     combs = list(itertools.combinations(indices, sz))
                     if len(indices) % 2 == 0 and sz == len(indices) // 2:
-                        combs = combs[:len(combs)//2]
+                        combs = combs[: len(combs) // 2]
 
                     for comb in combs:
                         new_net = copy.deepcopy(net)
+                        new_net.split(
+                            n,
+                            comb,
+                            tuple(j for j in indices if j not in comb),
+                        )
+                        best_network = add_wodup(
+                            best_network, new_net, worked, worklist
+                        )
                         budget -= 1
                         new_net.split(n, comb, tuple([j for j in indices if j not in comb]))
                         canonical_new_net = new_net.canonicalize()
@@ -91,24 +145,42 @@ class SearchEngine:
                     if n < m:
                         new_net = copy.deepcopy(net)
                         new_net.merge(n, m)
-                        canonical_new_net = new_net.canonicalize()
-                        if canonical_new_net not in worked:
-                            heapq.heappush(worklist, new_net)
-                            worked.add(canonical_new_net)
-                            budget -= 1
+                        best_network = add_wodup(
+                            best_network, new_net, worked, worklist
+                        )
+                        budget -= 1
 
             if budget < 0:
                 break
 
-        plt.figure(2)
-        best_network.draw()
-        # best_result = best_network.contract()
-        # best_value = best_result.value.transpose(2,1,3,4,0)
-        # error = np.linalg.norm(best_value - self.target.value) / np.linalg.norm(self.target.value)
-        # print("Reconstruction error", error)
-        plt.savefig(f"{self.params['tag']}_result.png")
+        end = time.time()
+        search_stats = {}
+
+        search_stats["time"] = end - start
+        search_stats["best_network"] = best_network
+
+        best_result = best_network.contract()
+        best_free_indices = best_network.free_indices()
+        target_free_indices = self.target_net.free_indices()
+        perm = [best_free_indices.index(i) for i in target_free_indices]
+        best_value = best_result.value.transpose(perm)
+        error = np.linalg.norm(
+            best_value - self.target.value
+        ) / np.linalg.norm(self.target.value)
+        search_stats["reconstruction_error"] = error
+
+        return search_stats
+
 
 def test_case_1():
+    """Test exhaustive search.
+
+    Target size: 16 x 18 x 20 x22
+    Ranks:
+    R12 = 3
+    R23 = 4
+    R24 = 2
+    """
     target_net = TensorNetwork()
 
     g1 = np.random.randn(16, 3)
@@ -116,7 +188,12 @@ def test_case_1():
     target_net.add_node("G1", Tensor(g1, g1_indices))
 
     g2 = np.random.randn(18, 3, 4, 2)
-    g2_indices = [Index("I2", 18), Index("r12", 3), Index("r23", 4), Index("r24", 2)]
+    g2_indices = [
+        Index("I2", 18),
+        Index("r12", 3),
+        Index("r23", 4),
+        Index("r24", 2),
+    ]
     target_net.add_node("G2", Tensor(g2, g2_indices))
 
     g3 = np.random.randn(20, 4)
@@ -133,7 +210,16 @@ def test_case_1():
 
     return target_net
 
+
 def test_case_2():
+    """Test exhaustive search.
+
+    Target size: 16 x 18 x 20 x22
+    Ranks:
+    R12 = 3
+    R23 = 4
+    R34 = 4
+    """
     target_net = TensorNetwork()
 
     g1 = np.random.randn(16, 3)
@@ -158,8 +244,17 @@ def test_case_2():
 
     return target_net
 
+
 def test_case_3():
-    # 14 x 16 x 18 x 20 x22
+    """Test exhaustive search.
+
+    Target size: 14 x 16 x 18 x 20 x22
+    Ranks:
+    R12 = 3
+    R23 = 4
+    R34 = 3
+    R45 = 2
+    """
     target_net = TensorNetwork()
 
     g1 = np.random.randn(14, 3)
@@ -189,8 +284,17 @@ def test_case_3():
 
     return target_net
 
+
 def test_case_4():
-    # 40 x 60 x 3 x 9 x 9
+    """Test exhaustive search.
+
+    Target size: 40 x 60 x 3 x 9 x 9
+    Ranks:
+    R12 = 3
+    R13 = 3
+    R34 = 3
+    R35 = 3
+    """
     target_net = TensorNetwork()
 
     g1 = np.random.randn(40, 3, 3)
@@ -202,7 +306,12 @@ def test_case_4():
     target_net.add_node("G2", Tensor(g2, g2_indices))
 
     g3 = np.random.randn(3, 3, 3, 3)
-    g3_indices = [Index("r13", 3), Index("I3", 3), Index("r34", 3), Index("r35", 3)]
+    g3_indices = [
+        Index("r13", 3),
+        Index("I3", 3),
+        Index("r34", 3),
+        Index("r35", 3),
+    ]
     target_net.add_node("G3", Tensor(g3, g3_indices))
 
     g4 = np.random.randn(3, 9)
@@ -220,8 +329,20 @@ def test_case_4():
 
     return target_net
 
+
 def test_case_5():
-    # 14 x 16 x 18 x 20 x22
+    """Test exhaustive search.
+
+    Target size: 14 x 16 x 18 x 20 x22
+    Ranks:
+    R12 = 3
+    R1i1 = 3
+    R1i1 = 3
+    i1i2 = 2
+    i1R4 = 4
+    i2R3 = 3
+    i2R5 = 3
+    """
     target_net = TensorNetwork()
 
     g1 = np.random.randn(14, 4, 3)
@@ -261,21 +382,20 @@ def test_case_5():
 
     return target_net
 
+
 if __name__ == "__main__":
     args = parser.parse_args()
 
-    target_net = test_case_2()
-    target = target_net.contract()
-    plt.figure(1)
-    target_net.draw()
+    target = test_case_5()
+    target.draw()
     plt.savefig(f"{args.tag}_gt.png")
+    plt.close()
 
-    print(target.value.shape, target.indices)
-    with open(args.log, "w") as f:
+    with open(args.log, "w", encoding="utf-8") as f:
         for i in range(10):
             engine = SearchEngine({"tag": args.tag}, target)
-            start = time.time()
-            engine.exhaustive()
-            end = time.time()
-            f.write(f"{i},{end-start}\n")
-        
+            stats = engine.exhaustive()
+            f.write(f"{i},{stats['time']},{stats['reconstruction_error']}\n")
+            stats["best_network"].draw()
+            plt.savefig(f"{args.tag}_result.png")
+            plt.close()

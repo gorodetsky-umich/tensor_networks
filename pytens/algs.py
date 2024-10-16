@@ -38,26 +38,35 @@ class Index:
     def with_new_name(self, name: IntOrStr) -> "Index":
         """Create a new index with same size but new name"""
         return Index(name, self.size)
-    
-    def __lt__(self, other):
-        return self.name < other.name and self.size < other.size
+
+    def __lt__(self, other: Self) -> bool:
+        return str(self.name) < str(other.name) and self.size < other.size
+
 
 @dataclass
 class IsoShape:
+    """Isomorphic shape representation. Used for deduplicate networks."""
+
     ordered: List[Union[Index, int]]
     unordered: Dict[int, int]
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self.__str__())
-    
-    def __str__(self):
-        return f"({sorted([str(x) for x in self.ordered])}, {sorted(list(self.unordered))})"
 
-    def __lt__(self, other):
+    def __str__(self) -> str:
+        sorted_ordered = sorted([str(x) for x in self.ordered])
+        sorted_unordered = sorted(list(self.unordered))
+        return f"({sorted_ordered}, {sorted_unordered})"
+
+    def __lt__(self, other: Self) -> bool:
         return self.__str__() < other.__str__()
-    
-    def __eq__(self, other):
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, IsoShape):
+            return NotImplemented
+
         return self.__str__() == other.__str__()
+
 
 @dataclass  # (frozen=True, eq=True)
 class Tensor:
@@ -678,9 +687,8 @@ class TensorNetwork:
 
         return _postorder(None, name)
 
-    def canonicalize(self):
-        """Canonicalize the tensor network into a standard representation
-        """
+    def canonicalize(self) -> Tuple:
+        """Canonicalize the tensor network into a standard representation"""
         # free indices remain the same
         # we choose the node contains the first free index as the root
         free_indices = sorted(self.free_indices())
@@ -691,7 +699,7 @@ class TensorNetwork:
                 break
 
         result = []
-        queue = [(root, [])]
+        queue: List[Tuple[NodeName, List[Index]]] = [(root, [])]
         visited = set()
         while len(queue) > 0:
             pending = []
@@ -699,7 +707,8 @@ class TensorNetwork:
             for n, parent_indices in queue:
                 visited.add(n)
                 n_indices = self.network.nodes[n]["tensor"].indices
-                n_ordered, n_parent, n_unordered = [], [], {}
+                n_ordered, n_parent = [], []
+                n_unordered: Dict[int, int] = {}
                 for i in n_indices:
                     if i in free_indices:
                         n_ordered.append(i)
@@ -724,6 +733,10 @@ class TensorNetwork:
         return tuple(result)
 
     def cost(self) -> int:
+        """Compute the cost for the tensor network.
+
+        The cost is defined as sum of tensor core sizes.
+        """
         cost = 0
         for n in self.network.nodes:
             indices = self.network.nodes[n]["tensor"].indices
