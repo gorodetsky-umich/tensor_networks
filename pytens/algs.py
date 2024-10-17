@@ -7,12 +7,16 @@ from collections import Counter
 from dataclasses import dataclass
 import typing
 from typing import Dict, Optional, Union, List, Self, Tuple, Callable
+import itertools
+
 import numpy as np
 import opt_einsum as oe
 import networkx as nx
+
 from .utils import delta_svd
 
 IntOrStr = Union[str, int]
+IndexChain = Union[List[int], Tuple[int]]
 
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -54,7 +58,8 @@ class Tensor:
     def rename_indices(self, rename_map: Dict[IntOrStr, str]) -> Self:
         """Rename the indices of the tensor."""
         for ii, index in enumerate(self.indices):
-            self.indices[ii] = index.with_new_name(rename_map[index.name])
+            if index.name in rename_map:
+                self.indices[ii] = index.with_new_name(rename_map[index.name])
 
         return self
 
@@ -163,6 +168,78 @@ class Tensor:
         new_val = np.reshape(new_val, new_shape)
         tens = Tensor(new_val, new_indices)
         return tens
+
+    def contract(self, other: Self) -> "Tensor":
+        """Contract two tensors by their common indices."""
+        new_shape = []
+        new_indices = []
+        str1 = ""
+        str2 = ""
+        output_str = ""
+        on_index = 97
+        for index_here in self.indices:
+            new_char = chr(on_index)
+            str1 += new_char
+            on_index += 1
+            if index_here not in other.indices:
+                new_indices.append(index_here)
+                new_shape.append(index_here.size)
+                output_str += new_char
+
+        for index_other in other.indices:
+            if index_other in self.indices:
+                idx = self.indices.index(index_other)
+                str2 += str1[idx]
+            else:
+                new_char = chr(on_index)
+                str2 += new_char
+                output_str += new_char
+                on_index += 1
+                new_indices.append(index_other)
+                new_shape.append(index_other.size)
+
+        estr = str1 + "," + str2 + "->" + output_str
+        # print("estr", estr)
+
+        new_val = np.einsum(estr, self.value, other.value)
+        new_val = np.reshape(new_val, new_shape)
+        tens = Tensor(new_val, new_indices)
+        return tens
+
+    def split(
+        self,
+        left_indices: Sequence[int],
+        right_indices: Sequence[int],
+        mode: str = "svd",
+        delta: float = 0.1,
+    ) -> List["Tensor"]:
+        """Split a tensor into two by SVD or QR."""
+        permute_indices = itertools.chain(left_indices, right_indices)
+        value = np.permute_dims(self.value, tuple(permute_indices))
+        left_sz = int(np.prod([self.indices[i].size for i in left_indices]))
+        right_sz = int(np.prod([self.indices[j].size for j in right_indices]))
+        value = value.reshape(left_sz, right_sz)
+
+        if mode == "svd":
+            result = delta_svd(value, delta)
+            u = result.u @ np.diag(np.sqrt(result.s))
+            v = np.diag(np.sqrt(result.s)) @ result.v
+        elif mode == "qr":
+            u, v = np.linalg.qr(value)
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        u = u.reshape([self.indices[i].size for i in left_indices] + [-1])
+        u_indices = [self.indices[i] for i in left_indices]
+        u_indices.append(Index("r_split", u.shape[-1]))
+        u_tensor = Tensor(u, u_indices)
+
+        v = v.reshape([-1] + [self.indices[j].size for j in right_indices])
+        v_indices = [self.indices[j] for j in right_indices]
+        v_indices = [Index("r_split", v.shape[0])] + v_indices
+        v_tensor = Tensor(v, v_indices)
+
+        return [u_tensor, v_tensor]
 
 
 # @dataclass(frozen=True, eq=True)
@@ -420,6 +497,168 @@ class TensorNetwork:
 
         return out
 
+    def fresh_index(self) -> str:
+        """Generate an index that does not appear in the current network."""
+        all_indices = [i.name for i in self.all_indices().keys()]
+        i = 0
+        while f"s_{i}" in all_indices:
+            i += 1
+
+        return f"s_{i}"
+
+    def fresh_node(self) -> NodeName:
+        """Generate a node name that does not appear in the current network."""
+        i = 0
+        node = f"n{i}"
+        while node in self.network.nodes:
+            i += 1
+            node = f"n{i}"
+
+        return node
+
+    def split(  # pylint: disable=R0913
+        self,
+        node_name: NodeName,
+        left_indices: Sequence[int],
+        right_indices: Sequence[int],
+        mode: str = "svd",
+        delta: float = 0.1,
+    ) -> Tuple[NodeName, NodeName]:
+        """Split a node by the specified index partition.
+
+        Parameters
+        ----------
+        mode: "svd" or "qr" (Default: "svd")
+        delta: threshold used in truncated SVD
+        """
+        # To ensure the error bound in SVD, we first orthornormalize its env.
+        if mode == "svd":
+            node_name = self.orthonormalize(node_name)
+
+        x = self.network.nodes[node_name]["tensor"]
+        # svd decompose the data into specified index partition
+        u, v = x.split(left_indices, right_indices, mode, delta)
+
+        new_index = self.fresh_index()
+        u_name = self.fresh_node()
+        self.add_node(u_name, u.rename_indices({"r_split": new_index}))
+        v_name = self.fresh_node()
+        self.add_node(v_name, v.rename_indices({"r_split": new_index}))
+        self.add_edge(u_name, v_name)
+
+        x_nbrs = self.network.neighbors(node_name)
+        for y in list(x_nbrs):
+            y_inds = self.network.nodes[y]["tensor"].indices
+            if any(i in y_inds for i in u.indices):
+                self.add_edge(u_name, y)
+            elif any(i in y_inds for i in v.indices):
+                self.add_edge(v_name, y)
+            else:
+                raise ValueError(
+                    f"Indices {y_inds} does not exist in splits (",
+                    left_indices,
+                    ",",
+                    right_indices,
+                )
+
+        self.network.remove_node(node_name)
+
+        return u_name, v_name
+
+    def merge(self, name1: NodeName, name2: NodeName) -> NodeName:
+        """Merge two specified nodes into one."""
+        if not self.network.has_edge(name1, name2):
+            raise RuntimeError(
+                f"Cannot merge nodes that are not adjacent: {name1}, {name2}"
+            )
+
+        t1 = self.network.nodes[name1]["tensor"]
+        t2 = self.network.nodes[name2]["tensor"]
+        result = t1.contract(t2)
+        new_node = self.fresh_node()
+        self.add_node(new_node, result)
+        for n in self.network.neighbors(name1):
+            if n != name2:
+                self.add_edge(new_node, n)
+
+        for m in self.network.neighbors(name2):
+            if m != name1:
+                self.add_edge(new_node, m)
+
+        self.network.remove_node(name1)
+        self.network.remove_node(name2)
+
+        return new_node
+
+    def orthonormalize(self, name: NodeName) -> NodeName:
+        """Orthonormalize the environment network for the specified node.
+
+        Note that this method changes all node names in the network.
+        It returns the new name for the given node after orthonormalization.
+        """
+        # traverse the tree rooted at the given node in the post order
+        # 1 for visited and 2 for processed
+        visited = {}
+
+        def _postorder(pname: Optional[NodeName], name: NodeName) -> NodeName:
+            """Postorder traversal the network from a given node name."""
+            visited[name] = 1
+            children_rs = []
+            nbrs = list(self.network.neighbors(name))
+            for n in nbrs:
+                if n not in visited:
+                    # Process children before the current node.
+                    children_rs.append(_postorder(name, n))
+
+            # Subsume r values from its children.
+            merged = name
+            for c in children_rs:
+                merged = self.merge(merged, c)
+
+            r = merged
+            if pname is not None:
+                left_indices, right_indices = [], []
+                merged_indices = self.network.nodes[merged]["tensor"].indices
+                for i, index in enumerate(merged_indices):
+                    common_index = None
+                    for n in self.network.neighbors(merged):
+                        n_indices = self.network.nodes[n]["tensor"].indices
+                        if index in n_indices:
+                            common_index = i
+
+                            # The edge direction is determined by
+                            # whether a neighbor node has been processed.
+                            # In post-order traversal, if a neighbor has been
+                            # processed before the current node, it is view as
+                            # a child of the current node.
+                            # Otherwise, it is viewed as the parent.
+                            # The edge direction matters in orthonormalization
+                            # because the q part should include indices
+                            # shared with its children and the r part should
+                            # include indices shared with its parent.
+                            # We use the left_indices to keep track of indices
+                            # shared with children, and right_indices to keep
+                            # track of indices shared with the parent.
+                            if n not in visited or visited[n] == 2:
+                                left_indices.append(common_index)
+                            else:
+                                right_indices.append(common_index)
+
+                            break
+
+                    if common_index is None:
+                        left_indices.append(i)
+
+                _, r = self.split(
+                    merged, left_indices, right_indices, mode="qr"
+                )
+
+            visited[name] = 2
+            visited[merged] = 2
+            return r
+
+        return _postorder(None, name)
+
     def __add__(self, other: Self) -> Self:
         """Add two tensor trains.
 
@@ -539,7 +778,7 @@ class TensorNetwork:
         edge_labels = {}
         for u, v in self.network.edges():
             indices = self.get_contraction_index(u, v)
-            labels = [i.name for i in indices]
+            labels = [f"{i.name}:{i.size}" for i in indices]
             label = "-".join(labels)
             edge_labels[(u, v)] = label
         nx.draw_networkx_edges(new_graph, pos, ax=ax)
@@ -1128,3 +1367,75 @@ def gmres(  # pylint: disable=R0913
     # print("resid = ", resid)
     # exit(1);
     return x, resid
+
+
+def rand_tree(indices: List[Index], ranks: List[int]) -> TensorNetwork:
+    """Return a random tensor tree."""
+
+    ndims = len(indices)
+    num_of_nodes = len(ranks) + 1
+    assert ndims <= num_of_nodes  # In a tree, #edges = #nodes - 1
+
+    # sample a topology from given ranks
+    np.random.shuffle(ranks)
+    # sample nodes for free indices
+    nodes_with_free = np.random.choice(
+        num_of_nodes, len(indices), replace=False
+    )
+    # assign edges between nodes
+    parent: Dict[int, Tuple[NodeName, int]] = {}
+    nodes = list(range(num_of_nodes))
+    while len(nodes) > 1:
+        node = np.random.choice(nodes, 1)[0]
+        nodes.remove(node)
+
+        p = np.random.choice(num_of_nodes, 1)[0]
+        while p == node:
+            p = np.random.choice(num_of_nodes, 1)[0]
+        # print("suggesting parent of", node, "as", p)
+        # check for cycles
+        ancestor = p
+        while ancestor in parent:
+            # print("ancestor of", ancestor)
+            ancestor, _ = parent[ancestor]
+            if ancestor == node:
+                p = np.random.choice(num_of_nodes, 1)[0]
+                while p == node:
+                    p = np.random.choice(num_of_nodes, 1)[0]
+                ancestor = p
+
+        # print("finalizing parent of", node, "as", p)
+        parent[node] = (p, len(nodes) - 1)
+
+    tree = TensorNetwork()
+
+    for i in range(num_of_nodes):
+        i_ranks = []
+        i_dims = []
+        if i in nodes_with_free:
+            idx = list(nodes_with_free).index(i)
+            dim = indices[idx].size
+            i_ranks.append(indices[idx])
+            i_dims.append(dim)
+
+        if i in parent:
+            _, ridx = parent[i]
+            dim = ranks[ridx]
+            i_ranks.append(Index(f"r_{ridx}", dim))
+            i_dims.append(dim)
+
+        for p, ridx in parent.values():
+            if p == i:
+                dim = ranks[ridx]
+                i_ranks.append(Index(f"r_{ridx}", dim))
+                i_dims.append(dim)
+
+        value = np.random.randn(*i_dims)
+        tensor = Tensor(value, i_ranks)
+        tree.add_node(i, tensor)
+
+    for i, (p, _) in parent.items():
+        # print("edge between", i, "and", p)
+        tree.add_edge(i, p)
+
+    return tree
