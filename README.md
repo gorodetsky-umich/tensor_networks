@@ -1,6 +1,6 @@
 # Tensor Networks
 
-A library for tensor network manipulation
+A library for tensor network manipulation.
 
 ## Installation
 I suggest you create a python virtual environment. Then within that environment you can install an editable installation with
@@ -21,6 +21,14 @@ You can also create some scaling plots for the inner command via
 ```
 python examples/inner_product_scaling.py
 ```
+
+## Development 
+
+Prior to creating a pull request to merge with the default branch, you need to make sure that 
+```
+make ci
+```
+doesnt return any problems.
 
 ## POTENTIAL ISSUES:
 0. currently edges are not actually used to determine contraction path, just index names. This causes issues when contracting when attaching tensors of edges are the same
