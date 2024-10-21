@@ -949,6 +949,16 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     return tn
 
 def gram_svd_round(tn: TensorNetwork, eps: float, threshold=1e-14) -> TensorNetwork:
+    """
+    Description: Modifies the input tensor network and returns the
+    rounded version by implementing the Gram-SVD based rounding 
+    approach [1].
+
+    [1] - H. Al Daas, G. Ballard and L. Manning, "Parallel Tensor-
+    Train Rounding using Gram SVD," 2022 IEEE International Parallel
+    and Distributed Processing Symposium (IPDPS), Lyon, France, 2022, 
+    pp. 930-940, doi: 10.1109/IPDPS53621.2022.00095.
+    """
     def eps_to_rank(s, eps):
         l = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
         res = np.argmax(l)
@@ -967,7 +977,6 @@ def gram_svd_round(tn: TensorNetwork, eps: float, threshold=1e-14) -> TensorNetw
                 (-1, snext[-1])) @ gram_now).reshape((-1, snext[-2]*snext[-1]))
             out = np.dot(tmp,  core_next.reshape((-1, snext[-2]*snext[-1])).T)
             return out
-        print("Invalid choice")
 
     dim = tn.dim()
     gr_list = [tn.value(dim-1) @ tn.value(dim-1).T]
@@ -1044,12 +1053,7 @@ def tt_round(tn: TensorNetwork, eps: float, orthogonalize=True,
 
     orthogonalize determines of QR is used to orthogonalize the
     cores. If orthogonalize=False, the Gram-SVD rounding algo-
-    rithm is used [1].
-
-    [1] - H. Al Daas, G. Ballard and L. Manning, "Parallel Tensor-
-    Train Rounding using Gram SVD," 2022 IEEE International Parallel
-    and Distributed Processing Symposium (IPDPS), Lyon, France, 2022, 
-    pp. 930-940, doi: 10.1109/IPDPS53621.2022.00095.
+    rithm is used.
     """
     # pylint: disable=C0103
     # above disables the snake case complaints for variables like R
@@ -1145,7 +1149,7 @@ def multiply_core_unfolding(mat: np.ndarray, cores_list: list, v_unfolding:
                 res[rk1_cumsum[i]*n:rk1_cumsum[i+1]*n, :] = (cores_list[i].reshape((-1, rk[i]))
                                                             @ mat[rk_cumsum[i]:rk_cumsum[i+1], :])
             return res
-        else: print("Invalid")
+
 
     else:
         rk = [s.shape[0] for s in cores_list]
@@ -1185,7 +1189,6 @@ def multiply_core_unfolding(mat: np.ndarray, cores_list: list, v_unfolding:
                                                                                 (rk[i], -1))
             return res
 
-        print("Invalid")
 
 
 
@@ -1308,7 +1311,9 @@ def round_ttsum(factors_list: list[TensorNetwork],
 
         u, s, v = np.linalg.svd(tmp)
         rk = min(tmp.shape[0], tmp.shape[1], eps_to_rank(s, delta))
-        u = u[:, :rk]; s = s[:rk]; v = v[:rk, :]
+        u = u[:, :rk]
+        s = s[:rk]
+        v = v[:rk, :]
 
         curr_val = (ttsum.value(i).reshape((-1, sh[-1])) @ vl @
                     (eiglm12[:, np.newaxis] * u))
@@ -1329,7 +1334,7 @@ def round_ttsum(factors_list: list[TensorNetwork],
         ttsum.network.nodes[i + 1]["tensor"].update_val_size(next_val)
 
     return ttsum
-        
+
 
 
 def ttop_rank1(
