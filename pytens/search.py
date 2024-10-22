@@ -6,11 +6,12 @@ import copy
 import heapq
 import argparse
 from typing import Sequence, Dict, Set, List, Tuple, Any
+from pydantic.dataclasses import dataclass
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from pytens import NodeName, TensorNetwork, Index, Tensor
+from pytens import NodeName, TensorNetwork, Index, Tensor, tt_round
 
 
 parser = argparse.ArgumentParser()
@@ -64,7 +65,7 @@ class Merge:
         return network
 
 
-def approx_error(tensor: Tensor, net: TensorNetwork):
+def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
     """Compute the reconstruction error.
 
     Given a tensor network TN and the target tensor X,
@@ -75,9 +76,18 @@ def approx_error(tensor: Tensor, net: TensorNetwork):
     net_value = net.contract().value
     perm = [net_free_indices.index(i) for i in target_free_indices]
     net_value = net_value.transpose(perm)
-    error = np.linalg.norm(net_value - tensor.value) / np.linalg.norm(tensor.value)
+    error = float(np.linalg.norm(net_value - tensor.value) / np.linalg.norm(tensor.value))
     return error
 
+class MyConfig:
+    arbitrary_types_allowed=True
+
+@dataclass(config=MyConfig)
+class EnumState:
+    """Enumeration state."""
+    network: TensorNetwork
+    delta: float
+    ops: int
 
 class SearchEngine:
     """Tensor network topology search engine."""
@@ -88,6 +98,7 @@ class SearchEngine:
     def add_wodup(self,
         best_network: TensorNetwork,
         new_net: TensorNetwork,
+        delta: float,
         worked: Set[Tuple],
         worklist: List[TensorNetwork],
         # used for stats collections
@@ -96,14 +107,14 @@ class SearchEngine:
         ops: int,
     ) -> TensorNetwork:
         """Add a network to a worked set to remove duplicates."""
-        # new_net.draw()
-        # plt.show()
+        new_net.draw()
+        plt.show()
         canonical_new_net = new_net.canonicalize()
         if canonical_new_net not in worked:
             if best_network is None or best_network.cost() > new_net.cost():
                 best_network = new_net
 
-            heapq.heappush(worklist, (new_net, ops))
+            worklist.append(EnumState(new_net, delta, ops))
             worked.add(canonical_new_net)
 
         if self.params["verbose"]:
@@ -112,7 +123,7 @@ class SearchEngine:
 
         return best_network
 
-    def exhaustive(self, net: TensorNetwork, budget: int = 10000):
+    def exhaustive(self, net: TensorNetwork, max_ops = 10):
         """Perform an exhaustive enumeration."""
         target_tensor = net.contract()
 
@@ -126,17 +137,21 @@ class SearchEngine:
         }
         start = time.time()
 
-        network = TensorNetwork()
-        network.add_node("tt", target_tensor)
+        network = copy.deepcopy(net)
+        delta = self.params["eps"] * net.norm()
 
         worked = set()
-        worklist = []
+        worklist = [EnumState(network, delta, 0)]
         worked.add(network.canonicalize())
-        heapq.heappush(worklist, (network, 0))
         best_network = None
 
         while len(worklist) != 0:
-            net, ops = heapq.heappop(worklist)
+            st = worklist.pop(0)
+            net = st.network
+            ops = st.ops
+            delta = st.delta
+            if ops == max_ops:
+                continue
 
             # print(net.canonicalize())
             # net.draw()
@@ -154,27 +169,22 @@ class SearchEngine:
 
                     for comb in combs:
                         new_net = copy.deepcopy(net)
-                        new_net.split(
+                        _, new_delta = new_net.split(
                             n,
                             comb,
                             tuple(j for j in indices if j not in comb),
-                            delta=1e-5
+                            delta=delta
                         )
                         best_network = self.add_wodup(
                             best_network,
                             new_net,
+                            new_delta,
                             worked,
                             worklist,
                             search_stats,
                             time.time() - start,
                             ops + 1,
                         )
-                        budget -= 1
-                        new_net.split(n, comb, tuple([j for j in indices if j not in comb]))
-                        canonical_new_net = new_net.canonicalize()
-                        if canonical_new_net not in worked:
-                            heapq.heappush(worklist, new_net)
-                            worked.add(canonical_new_net)
 
             # can we perform merge?
             for n in net.network.nodes:
@@ -185,16 +195,13 @@ class SearchEngine:
                         best_network = self.add_wodup(
                             best_network,
                             new_net,
+                            delta,
                             worked,
                             worklist,
                             search_stats,
                             time.time() - start,
                             ops + 1,
                         )
-                        budget -= 1
-
-            if budget < 0:
-                break
 
         end = time.time()
 
@@ -204,12 +211,12 @@ class SearchEngine:
                 search_stats["costs"].append((ts, n.cost()))
                 err = approx_error(target_tensor, n)
                 search_stats["errors"].append((ts, err))
-                search_stats["best_cost"].append(
-                    (ts, bn.cost())
-                )
+                search_stats["best_cost"].append((ts, bn.cost()))
 
         search_stats["time"] = end - start
         search_stats["best_network"] = best_network
+        search_stats["cr_core"] = best_network.cost() / np.prod(i.size for i in net.free_indices)
+        search_stats["cr_start"] = best_network.cost() / net.cost()
         err = approx_error(target_tensor, best_network)
         search_stats["reconstruction_error"] = err
 
@@ -218,80 +225,6 @@ class SearchEngine:
         search_stats.pop("best_networks")
 
         return search_stats
-
-
-def test_case_1():
-    """Test exhaustive search.
-
-    Target size: 16 x 18 x 20 x22
-    Ranks:
-    R12 = 3
-    R23 = 4
-    R24 = 2
-    """
-    target_net = TensorNetwork()
-
-    g1 = np.random.randn(16, 3)
-    g1_indices = [Index("I1", 16), Index("r12", 3)]
-    target_net.add_node("G1", Tensor(g1, g1_indices))
-
-    g2 = np.random.randn(18, 3, 4, 2)
-    g2_indices = [
-        Index("I2", 18),
-        Index("r12", 3),
-        Index("r23", 4),
-        Index("r24", 2),
-    ]
-    target_net.add_node("G2", Tensor(g2, g2_indices))
-
-    g3 = np.random.randn(20, 4)
-    g3_indices = [Index("I3", 20), Index("r23", 4)]
-    target_net.add_node("G3", Tensor(g3, g3_indices))
-
-    g4 = np.random.randn(22, 2)
-    g4_indices = [Index("I4", 22), Index("r24", 2)]
-    target_net.add_node("G4", Tensor(g4, g4_indices))
-
-    target_net.add_edge("G1", "G2")
-    target_net.add_edge("G2", "G3")
-    target_net.add_edge("G2", "G4")
-
-    return target_net
-
-
-def test_case_2():
-    """Test exhaustive search.
-
-    Target size: 16 x 18 x 20 x22
-    Ranks:
-    R12 = 3
-    R23 = 4
-    R34 = 4
-    """
-    target_net = TensorNetwork()
-
-    g1 = np.random.randn(16, 3)
-    g1_indices = [Index("I1", 16), Index("r12", 3)]
-    target_net.add_node("G1", Tensor(g1, g1_indices))
-
-    g2 = np.random.randn(18, 3, 4)
-    g2_indices = [Index("I2", 18), Index("r12", 3), Index("r23", 4)]
-    target_net.add_node("G2", Tensor(g2, g2_indices))
-
-    g3 = np.random.randn(20, 4, 4)
-    g3_indices = [Index("I3", 20), Index("r23", 4), Index("r34", 4)]
-    target_net.add_node("G3", Tensor(g3, g3_indices))
-
-    g4 = np.random.randn(22, 4)
-    g4_indices = [Index("I4", 22), Index("r34", 4)]
-    target_net.add_node("G4", Tensor(g4, g4_indices))
-
-    target_net.add_edge("G1", "G2")
-    target_net.add_edge("G2", "G3")
-    target_net.add_edge("G3", "G4")
-
-    return target_net
-
 
 def test_case_3():
     """Test exhaustive search.

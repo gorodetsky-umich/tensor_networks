@@ -13,6 +13,7 @@ class TruncSVD:
     s: np.ndarray
     v: np.ndarray
     delta: Optional[float] = None
+    remaining_delta: Optional[float] = None
 
 
 def delta_svd(
@@ -78,13 +79,15 @@ def delta_svd(
         if element <= delta**2
     ]
     truncation_rank = max(len(s) - len(truncpost), 1)
+    used_delta = np.cumsum(slist)[truncpost[-1]] if len(truncpost) > 0 else 0.0
     if with_normalizing:
         return TruncSVD(
             u[:, :truncation_rank],
             s[:truncation_rank],
             v[:truncation_rank, :],
             delta,
+            float(np.sqrt(delta**2 - used_delta)),
         )
     return TruncSVD(
-        u[:, :truncation_rank], s[:truncation_rank], v[:truncation_rank, :]
+        u[:, :truncation_rank], s[:truncation_rank], v[:truncation_rank, :], None, float(np.sqrt(delta**2 - used_delta))
     )

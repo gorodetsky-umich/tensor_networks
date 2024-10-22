@@ -1,0 +1,145 @@
+{
+    "name": "order_4_structure_1_ht_eps_010",
+    "source": "transformed",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": 0,
+                    "size": 2
+                },
+                {
+                    "name": 1,
+                    "size": 2
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_0.npy"
+        },
+        {
+            "name": "G1",
+            "indices": [
+                {
+                    "name": 2,
+                    "size": 8
+                },
+                {
+                    "name": 3,
+                    "size": 4
+                },
+                {
+                    "name": 0,
+                    "size": 2
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_1.npy"
+        },
+        {
+            "name": "G2",
+            "indices": [
+                {
+                    "name": 4,
+                    "size": 3
+                },
+                {
+                    "name": 5,
+                    "size": 18
+                },
+                {
+                    "name": 2,
+                    "size": 8
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_2.npy"
+        },
+        {
+            "name": "G3",
+            "indices": [
+                {
+                    "name": 6,
+                    "size": 16
+                },
+                {
+                    "name": 4,
+                    "size": 3
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_3.npy"
+        },
+        {
+            "name": "G4",
+            "indices": [
+                {
+                    "name": 5,
+                    "size": 18
+                },
+                {
+                    "name": 7,
+                    "size": 18
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_4.npy"
+        },
+        {
+            "name": "G5",
+            "indices": [
+                {
+                    "name": 8,
+                    "size": 20
+                },
+                {
+                    "name": 3,
+                    "size": 4
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_5.npy"
+        },
+        {
+            "name": "G6",
+            "indices": [
+                {
+                    "name": 1,
+                    "size": 2
+                },
+                {
+                    "name": 9,
+                    "size": 1
+                },
+                {
+                    "name": 10,
+                    "size": 2
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_6.npy"
+        },
+        {
+            "name": "G7",
+            "indices": [
+                {
+                    "name": 11,
+                    "size": 22
+                },
+                {
+                    "name": 1,
+                    "size": 2
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_7.npy"
+        },
+        {
+            "name": "G8",
+            "indices": [
+                {
+                    "name": 9,
+                    "size": 1
+                },
+                {
+                    "name": 12,
+                    "size": 1
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_1//htucker_nodes/eps_0.1_node_8.npy"
+        }
+    ],
+    "value_file": null
+}

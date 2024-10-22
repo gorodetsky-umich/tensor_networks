@@ -1,0 +1,97 @@
+{
+    "name": "order_4_structure_5_tt_eps_010",
+    "source": "transformed",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": 0,
+                    "size": 1
+                },
+                {
+                    "name": 1,
+                    "size": 16
+                },
+                {
+                    "name": 2,
+                    "size": 11
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_5//trainedCores/Catgel_TTICE_epsilon010_1train_0.npy"
+        },
+        {
+            "name": "G1",
+            "indices": [
+                {
+                    "name": 2,
+                    "size": 11
+                },
+                {
+                    "name": 3,
+                    "size": 18
+                },
+                {
+                    "name": 4,
+                    "size": 6
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_5//trainedCores/Catgel_TTICE_epsilon010_1train_1.npy"
+        },
+        {
+            "name": "G2",
+            "indices": [
+                {
+                    "name": 4,
+                    "size": 6
+                },
+                {
+                    "name": 5,
+                    "size": 20
+                },
+                {
+                    "name": 6,
+                    "size": 9
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_5//trainedCores/Catgel_TTICE_epsilon010_1train_2.npy"
+        },
+        {
+            "name": "G3",
+            "indices": [
+                {
+                    "name": 6,
+                    "size": 9
+                },
+                {
+                    "name": 7,
+                    "size": 22
+                },
+                {
+                    "name": 8,
+                    "size": 1
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_5//trainedCores/Catgel_TTICE_epsilon010_1train_3.npy"
+        },
+        {
+            "name": "G4",
+            "indices": [
+                {
+                    "name": 8,
+                    "size": 1
+                },
+                {
+                    "name": 9,
+                    "size": 1
+                },
+                {
+                    "name": 10,
+                    "size": 1
+                }
+            ],
+            "value": "benchmarks/SVDinsTN//order_4_structure_5//trainedCores/Catgel_TTICE_epsilon010_1train_4.npy"
+        }
+    ],
+    "value_file": null
+}

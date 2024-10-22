@@ -1,0 +1,33 @@
+{
+    "name": "stack_187_test_8",
+    "source": "BigEarthNet-v1_0_stack",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 11
+                },
+                {
+                    "name": "I1",
+                    "size": 17
+                },
+                {
+                    "name": "I2",
+                    "size": 120
+                },
+                {
+                    "name": "I3",
+                    "size": 120
+                },
+                {
+                    "name": "I4",
+                    "size": 12
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_stack/stack_187_test_8/data.npy"
+        }
+    ],
+    "value_file": "data/BigEarthNet-v1_0_stack/stack_187_test_8/data.npy"
+}

@@ -240,7 +240,7 @@ class Tensor:
         right_indices: Sequence[int],
         mode: str = "svd",
         delta: float = 0.1,
-    ) -> List["Tensor"]:
+    ) -> Tuple[List["Tensor"], float]:
         """Split a tensor into two by SVD or QR."""
         permute_indices = itertools.chain(left_indices, right_indices)
         value = np.permute_dims(self.value, tuple(permute_indices))
@@ -250,10 +250,12 @@ class Tensor:
 
         if mode == "svd":
             result = delta_svd(value, delta)
-            u = result.u @ np.diag(np.sqrt(result.s))
-            v = np.diag(np.sqrt(result.s)) @ result.v
+            u = result.u
+            v = np.diag(result.s) @ result.v
+            d = result.remaining_delta
         elif mode == "qr":
             u, v = np.linalg.qr(value)
+            d = None
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
@@ -267,7 +269,7 @@ class Tensor:
         v_indices = [Index("r_split", v.shape[0])] + v_indices
         v_tensor = Tensor(v, v_indices)
 
-        return [u_tensor, v_tensor]
+        return [u_tensor, v_tensor], d
 
 
 # @dataclass(frozen=True, eq=True)
@@ -382,7 +384,6 @@ class TensorNetwork:
             arrs.append(self.network.nodes[key]["tensor"].value)
             estr_l.append(val)
         estr = ",".join(estr_l) + "->" + eargs.output_str  # explicit
-        # print(estr)
         # estr = ','.join(estr)
         logger.debug("Contraction string = %s", estr)
         out = oe.contract(estr, *arrs, optimize="auto")
@@ -437,25 +438,6 @@ class TensorNetwork:
 
         u = nx.union(new_self.network, new_other.network, rename=rename)
 
-        for n1, d1 in self.network.nodes(data=True):
-            for n2, d2 in other.network.nodes(data=True):
-                total_dim = len(d1["tensor"].indices) + len(
-                    d2["tensor"].indices
-                )
-                if (
-                    len(
-                        set(
-                            list(d1["tensor"].indices)
-                            + list(d2["tensor"].indices)
-                        )
-                    )
-                    < total_dim
-                ):
-                    u.add_edge(f"{rename[0]}{n1}", f"{rename[1]}{n2}")
-
-        tn = TensorNetwork()
-        tn.network = u
-
         all_indices = self.all_indices()
         free_indices = self.free_indices()
         rename_ix = {}
@@ -480,6 +462,18 @@ class TensorNetwork:
 
         for n in other.network.nodes():
             u.nodes[f"{rename[1]}{n}"]["tensor"].rename_indices(rename_ix_o)
+
+        for n1 in self.network.nodes:
+            for n2 in other.network.nodes:
+                d1_indices = u.nodes[f"{rename[0]}{n1}"]["tensor"].indices
+                d2_indices = u.nodes[f"{rename[1]}{n2}"]["tensor"].indices
+                total_indices = d1_indices + d2_indices
+                if len(total_indices) > len(set(total_indices)):
+                    u.add_edge(f"{rename[0]}{n1}", f"{rename[1]}{n2}")
+
+        tn = TensorNetwork()
+        tn.network = u
+        
         # print("ATTACH TN: ", tn)
         # print("self is: ", self)
         return tn
@@ -497,8 +491,7 @@ class TensorNetwork:
 
     def inner(self, other: "TensorNetwork") -> np.ndarray:
         """Compute the inner product."""
-        value = self.attach(other).contract().value
-        return value
+        return self.attach(other).contract().value
 
     def norm(self) -> float:
         """Compute a norm of the tensor network"""
@@ -551,7 +544,7 @@ class TensorNetwork:
         right_indices: Sequence[int],
         mode: str = "svd",
         delta: float = 0.1,
-    ) -> Tuple[NodeName, NodeName]:
+    ) -> Tuple[Tuple[NodeName, NodeName], float]:
         """Split a node by the specified index partition.
 
         Parameters
@@ -565,7 +558,7 @@ class TensorNetwork:
 
         x = self.network.nodes[node_name]["tensor"]
         # svd decompose the data into specified index partition
-        u, v = x.split(left_indices, right_indices, mode, delta)
+        [u, v], delta = x.split(left_indices, right_indices, mode, delta)
 
         new_index = self.fresh_index()
         u_name = self.fresh_node()
@@ -584,14 +577,14 @@ class TensorNetwork:
             else:
                 raise ValueError(
                     f"Indices {y_inds} does not exist in splits (",
-                    left_indices,
+                    u.indices,
                     ",",
-                    right_indices,
+                    v.indices,
                 )
 
         self.network.remove_node(node_name)
 
-        return u_name, v_name
+        return (u_name, v_name), delta
 
     def merge(self, name1: NodeName, name2: NodeName) -> NodeName:
         """Merge two specified nodes into one."""
@@ -677,7 +670,7 @@ class TensorNetwork:
                     if common_index is None:
                         left_indices.append(i)
 
-                _, r = self.split(
+                (_, r), _ = self.split(
                     merged, left_indices, right_indices, mode="qr"
                 )
 
@@ -809,6 +802,47 @@ class TensorNetwork:
 
         return out
 
+    def to_canonical_tt(self):
+        # find the first node with two modes
+        node_idx = 0
+        node = None
+        for n in self.network.nodes:
+            if len(self.network.nodes[n]["tensor"].indices) == 2:
+                node = n
+                break
+
+        if node is None:
+            print("No tensor train start node found. Please double check")
+
+        while node_idx != len(self.network.nodes):
+            tensor = self.network.nodes[node]["tensor"]
+            
+            for n in self.network.neighbors(node):
+                if n != node_idx - 1:
+                    next_node = n
+                    break
+
+            self.add_node(node_idx, tensor)
+            self.network.remove_node(node)
+            node = next_node
+
+            if node_idx != 0:
+                self.network.add_edge(node_idx, node_idx - 1)
+                # swap the tensor dimensions if needed
+                prev = self.network.nodes[node_idx-1]["tensor"]
+                prev_indices = prev.indices
+                curr_indices = tensor.indices
+                print(node_idx-1, prev_indices)
+                print(curr_indices)
+                if curr_indices[0] not in prev_indices:
+                    the_other_dim = 2 if len(curr_indices) > 2 else 1
+                    self.network.nodes[node_idx]["tensor"].value = tensor.value.swapaxes(the_other_dim, 0)
+                    curr_indices[0], curr_indices[the_other_dim] = curr_indices[the_other_dim], curr_indices[0]
+                    # self.network.nodes[node_idx]["tensor"].indices[0] = curr_indices[the_other_dim]
+                    # self.network.nodes[node_idx]["tensor"].indices[the_other_dim] = curr_indices[0]
+
+            node_idx += 1
+
     @typing.no_type_check
     def draw(self, ax=None):
         """Draw a networkx representation of the network."""
@@ -825,16 +859,25 @@ class TensorNetwork:
 
         free_graph = nx.Graph()
         for index in free_indices:
-            free_graph.add_node(f"{index.name}-f")
+            if index.size == 1:
+                continue
+            
+            free_graph.add_node(f"{index.name}-f-{index.size}")
 
         new_graph = nx.compose(self.network, free_graph)
         for index in free_indices:
-            name1 = f"{index.name}-f"
+            if index.size == 1:
+                continue
+
+            name1 = f"{index.name}-f-{index.size}"
             for node, data in self.network.nodes(data=True):
                 if index in data["tensor"].indices:
                     new_graph.add_edge(node, name1)
 
-        pos = nx.bfs_layout(new_graph, f"{free_indices[0].name}-f")
+        try:
+            pos = nx.planar_layout(new_graph)
+        except:
+            pos = nx.circular_layout(new_graph)
 
         for node, data in self.network.nodes(data=True):
             node_groups["A"].append(node)

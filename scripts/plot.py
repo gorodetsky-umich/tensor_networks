@@ -49,14 +49,19 @@ def plot_x_by_time(tag, filename, figure_type, column_tag):
         all_stats = json.load(f)
         stats = all_stats[-1]
         time, data = list(zip(*stats[column_tag]))
-        _, ax = plt.subplots(1, 1)
+        _, [ax, ax_lower] = plt.subplots(2, 1)
         ax.plot(time, data, marker=".")
         ax.hlines([max(data), min(data)], xmin=time[0], xmax=time[-1], colors='red', linestyles='dashed')
+        ax.set_ylabel(column_tag)
+        ax.set_xlabel("time (s)")
         plt.yticks([x for x in list(plt.yticks()[0]) if x >= 0] + [max(data), min(data)])
 
         # zoom into the details
-        # ax_lower.plot(time[100:], data[100:], marker=".")
+        ax_lower.plot(time[100:], data[100:], marker=".")
+        ax_lower.set_ylabel(column_tag)
+        ax_lower.set_xlabel("time (s)")
 
+        plt.tight_layout()
         plt.savefig(f"{tag}_{figure_type}.png")
         plt.close()
 

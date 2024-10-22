@@ -1,0 +1,33 @@
+{
+    "name": "order_5_structure_3",
+    "source": "SVDinsTN",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 14
+                },
+                {
+                    "name": "I1",
+                    "size": 16
+                },
+                {
+                    "name": "I2",
+                    "size": 18
+                },
+                {
+                    "name": "I3",
+                    "size": 20
+                },
+                {
+                    "name": "I4",
+                    "size": 22
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_3/data.npy"
+        }
+    ],
+    "value_file": "data/SVDinsTN/order_5_structure_3/data.npy"
+}
