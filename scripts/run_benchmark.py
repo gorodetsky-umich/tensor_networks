@@ -69,11 +69,11 @@ if __name__ == "__main__":
     runner = Runner(args.__dict__)
 
     all_stats = []
+    print(f"{'Name':35}\t{'Time':>10}\t{'RE':>10}\t{'CR_core':>10}\t{'CR_start':>10}\t{'Best time':>10}\t{'Max ops':>10}")
     for benchmark_file in glob.glob(args.pattern):
         with open(benchmark_file, "r", encoding="utf-8") as benchmark_fd:
             benchmark_dict = json.load(benchmark_fd)
             b = Benchmark(**benchmark_dict)
-            print(b.name)
             np.random.seed(int(time.time()))
             if not args.collect_only:
                 runner.run(b, repeat=args.repeat)
@@ -82,7 +82,25 @@ if __name__ == "__main__":
             if not os.path.exists(out_dir):
                 print("Directory", out_dir, "does not exist")
 
-            single_log_name = f"{args.engine}_{eps_to_str(args.eps)}.log"
-            with open(single_log_name, "r", encoding="utf-8") as single_log_file:
+            slog_name = f"{out_dir}/{args.engine}_{eps_to_str(args.eps)}.log"
+            with open(slog_name, "r", encoding="utf-8") as slog_file:
+                line = slog_file.read().strip()
+                _, t, re, cr_core, cr_start = line.split(",")
 
-            
+            alog_name = f"{out_dir}/{args.engine}_{eps_to_str(args.eps)}_all.log"
+            if os.path.exists(alog_name):
+                with open(alog_name, "r", encoding="utf-8") as alog_file:
+                    all_log = json.load(alog_file)[0]
+                    # get the time that reaches the best network
+                    best_cost = all_log["best_cost"][-1][1]
+                    for ts, c in all_log["best_cost"]:
+                        if c == best_cost:
+                            first_best_cost = ts
+                            break
+
+                    max_ops = all_log["ops"][-1][1]
+            else:
+                first_best_cost = None
+                max_ops = None
+
+            print(f"{b.name:35}\t{float(t):>10.5f}\t{float(re):>10.5f}\t{float(cr_core):>10.5f}\t{float(cr_start):>10.5f}\t{float(first_best_cost):>10.5f}\t{max_ops:>10}")

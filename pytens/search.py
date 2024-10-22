@@ -107,8 +107,8 @@ class SearchEngine:
         ops: int,
     ) -> TensorNetwork:
         """Add a network to a worked set to remove duplicates."""
-        new_net.draw()
-        plt.show()
+        # new_net.draw()
+        # plt.show()
         canonical_new_net = new_net.canonicalize()
         if canonical_new_net not in worked:
             if best_network is None or best_network.cost() > new_net.cost():
@@ -123,7 +123,7 @@ class SearchEngine:
 
         return best_network
 
-    def exhaustive(self, net: TensorNetwork, max_ops = 10):
+    def exhaustive(self, net: TensorNetwork, max_ops = 3):
         """Perform an exhaustive enumeration."""
         target_tensor = net.contract()
 
@@ -147,7 +147,7 @@ class SearchEngine:
 
         while len(worklist) != 0:
             st = worklist.pop(0)
-            net = st.network
+            curr_net = st.network
             ops = st.ops
             delta = st.delta
             if ops == max_ops:
@@ -158,8 +158,8 @@ class SearchEngine:
             # plt.show()
 
             # can we perform split?
-            for n in net.network.nodes:
-                indices = net.network.nodes[n]["tensor"].indices
+            for n in curr_net.network.nodes:
+                indices = curr_net.network.nodes[n]["tensor"].indices
                 indices = range(len(indices))
                 # get all partitions of indices
                 for sz in range(1, len(indices) // 2 + 1):
@@ -168,7 +168,7 @@ class SearchEngine:
                         combs = combs[: len(combs) // 2]
 
                     for comb in combs:
-                        new_net = copy.deepcopy(net)
+                        new_net = copy.deepcopy(curr_net)
                         _, new_delta = new_net.split(
                             n,
                             comb,
@@ -187,10 +187,10 @@ class SearchEngine:
                         )
 
             # can we perform merge?
-            for n in net.network.nodes:
-                for m in net.network.neighbors(n):
+            for n in curr_net.network.nodes:
+                for m in curr_net.network.neighbors(n):
                     if n < m:
-                        new_net = copy.deepcopy(net)
+                        new_net = copy.deepcopy(curr_net)
                         new_net.merge(n, m)
                         best_network = self.add_wodup(
                             best_network,
@@ -215,7 +215,7 @@ class SearchEngine:
 
         search_stats["time"] = end - start
         search_stats["best_network"] = best_network
-        search_stats["cr_core"] = best_network.cost() / np.prod(i.size for i in net.free_indices)
+        search_stats["cr_core"] = best_network.cost() / np.prod([i.size for i in net.free_indices()])
         search_stats["cr_start"] = best_network.cost() / net.cost()
         err = approx_error(target_tensor, best_network)
         search_stats["reconstruction_error"] = err

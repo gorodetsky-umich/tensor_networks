@@ -39,7 +39,7 @@ class Benchmark:
                 node_value = np.random.randn(*node_shape)
             else:
                 with open(node.value, "rb") as value_file:
-                    node_value = np.load("data/" + value_file).astype(np.float64)
+                    node_value = np.load(value_file).astype(np.float64)
 
             network.add_node(node.name, Tensor(node_value, node.indices))
 
@@ -247,3 +247,4 @@ if __name__ == "__main__":
     #     b = Benchmark(**benchmark_obj)
     #     print(b.name)
     #     print(b.nodes)
+    pass
