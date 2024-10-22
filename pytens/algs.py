@@ -962,7 +962,7 @@ def gram_svd_round(tn: TensorNetwork, eps: float, threshold=1e-14) -> TensorNetw
     def eps_to_rank(s, eps):
         l = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
         res = np.argmax(l)
-        if res == 0 and l[0] is False:
+        if res == 0 and l[0] == False:
             return s.shape[0]
         return res
 
@@ -1235,7 +1235,7 @@ def round_ttsum(factors_list: list[TensorNetwork],
     def eps_to_rank(s, eps):
         l = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
         res = np.argmax(l)
-        if res == 0 and l[0] is False:
+        if res == 0 and l[0] == False:
             return s.shape[0]
         return res
 
