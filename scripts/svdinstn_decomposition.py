@@ -55,9 +55,9 @@ class FCTN:
                 _, s_tl, _ = np.linalg.svd(x_tl)
                 # print(f"s_{t}_{l} shape:", s_tl.shape)
                 # print(f"s_{t}_{l}:", s_tl)
-                s_tl = shrink(s_tl, gamma * np.max(s_tl) / (len(s_tl) + 1e-16))
+                s_tl = shrink(s_tl, gamma * np.max(s_tl) / (abs(s_tl) + 1e-16))
                 # print(f"after shrink s_{t}_{l}:", s_tl)
-                s_tl = s_tl[s_tl != 0]
+                s_tl = s_tl[s_tl >= 1e-16]
                 self.S[(t, l)] = s_tl
                 # s_tl = self.S[(t, l)]
                 # print(f"after shrink s_{t}_{l}:", s_tl.shape)
@@ -298,6 +298,7 @@ class FCTN:
             s = copy.deepcopy(self.S)
             for t in range(self.N):
                 for l in range(t+1, self.N):
+                    Q[(t, l)] = self.S[(t, l)]
                     lam = gamma * np.max(self.S[(t, l)]) * (rho + 1)
                     # H = self._contract_rest([('S', [t, l])])
                     H_tl = self._contract_rest_s(t, l)
@@ -307,11 +308,15 @@ class FCTN:
                     # print("S_tl", self.S[(t, l)].shape)
                     # print("P_tl", P[(t, l)].shape)
                     # old_stl = self.S[(t, l)]
-                    for _ in range(5):
-                        Q[(t, l)] = np.linalg.pinv(H_tl.T @ H_tl + np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + s[(t, l)] + P[(t, l)])
+                    if it < 3:
+                        ss = 1
+                    else:
+                        ss = 5
+                    for _ in range(ss):
                         s_left = (rho * s[(t, l)] + Q[(t, l)] - P[(t, l)]) / (rho + 1)
-                        s_right = lam / (rho + 1)
+                        s_right = gamma * np.max(s[(t, l)]) / (abs(s[(t, l)]) + 1e-16) # lam / (rho + 1)
                         s[(t, l)] = shrink(s_left, s_right)
+                        Q[(t, l)] = np.linalg.pinv(H_tl.T @ H_tl + np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + s[(t, l)] + P[(t, l)])
                         P[(t, l)] = P[(t, l)] + s[(t, l)] - Q[(t, l)]
 
                     # self.S[(t, l)] = s[(t, l)]
@@ -320,7 +325,7 @@ class FCTN:
             for t in range(self.N):
                 for l in range(t+1, self.N):
                     s_tl = s[(t, l)]
-                    indices = np.flatnonzero(s[(t, l)])
+                    indices = np.flatnonzero(s_tl >= 1e-16)
                     self.S[(t, l)] = s_tl[indices]
                     # print("indices:", indices)
                     # print("G[t]:", self.G[t].shape, "l:", l)
@@ -340,7 +345,7 @@ class FCTN:
             err = np.linalg.norm(X - old_X) / np.linalg.norm(old_X)
             re = np.linalg.norm(X - self.target) / np.linalg.norm(self.target)
             print("Iteration:", it, "Time:", time.time() - start, "Error:", err, "RE:", re)
-            if err < 1e-5:
+            if err < 1e-3:
                 break
 
             if it % 100 == 0:
@@ -354,6 +359,8 @@ class FCTN:
                 # print(self.S[(t, l)])
                 s_tl = self.S[(t, l)]
                 print(f"rank({t}, {l}) =", len(s_tl[s_tl!=0]))
+
+        return re
 
 def same_topology(tn1, tn2):
     N = len(tn1.G)
@@ -429,7 +436,7 @@ def test_case_3():
     return target_fctn
 
 if __name__ == "__main__":
-    np.random.seed(100)
+    # np.random.seed(100)
 
     import argparse
 
@@ -441,8 +448,8 @@ if __name__ == "__main__":
         for i in range(1):
             print("Repeat", i)
             # prepare the data
-            target_fctn = test_case_1()
-            target = target_fctn.tnprod_with_s(target_fctn.G, target_fctn.S)
+            target_fctn = test_case_3()
+            target = target_fctn.tnprod(target_fctn.G)
             fctn = FCTN(target)
 
             start = time.time()

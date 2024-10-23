@@ -25,7 +25,7 @@ class Runner:
         else:
             raise RuntimeError("unrecognized search engine")
 
-        # net.draw()
+        net.draw()
 
         eps_str = eps_to_str(self.params['eps'])
         log_name = f"{self.params['engine']}_{eps_str}"
@@ -33,8 +33,8 @@ class Runner:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        # plt.savefig(f"{output_dir}/start_from.png")
-        # plt.close()
+        plt.savefig(f"{output_dir}/start_from.png")
+        plt.close()
 
         all_stats = []
         with open(f"{output_dir}/{log_name}.log", "w", encoding="utf-8") as f:

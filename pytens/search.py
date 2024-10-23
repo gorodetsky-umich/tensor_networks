@@ -79,6 +79,13 @@ def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
     error = float(np.linalg.norm(net_value - tensor.value) / np.linalg.norm(tensor.value))
     return error
 
+def log_stats(search_stats, target_tensor, ts, n, ops, bn):
+    search_stats["ops"].append((ts, ops))
+    search_stats["costs"].append((ts, n.cost()))
+    err = approx_error(target_tensor, n)
+    search_stats["errors"].append((ts, err))
+    search_stats["best_cost"].append((ts, bn.cost()))
+
 class MyConfig:
     arbitrary_types_allowed=True
 
@@ -101,29 +108,22 @@ class SearchEngine:
         delta: float,
         worked: Set[Tuple],
         worklist: List[TensorNetwork],
-        # used for stats collections
-        search_stats: Dict[str, Any],
-        ts: float,
         ops: int,
     ) -> TensorNetwork:
         """Add a network to a worked set to remove duplicates."""
         # new_net.draw()
         # plt.show()
-        canonical_new_net = new_net.canonicalize()
-        if canonical_new_net not in worked:
+        # canonical_new_net = new_net.canonicalize()
+        if True: #canonical_new_net not in worked:
             if best_network is None or best_network.cost() > new_net.cost():
                 best_network = new_net
 
             worklist.append(EnumState(new_net, delta, ops))
-            worked.add(canonical_new_net)
-
-        if self.params["verbose"]:
-            search_stats["networks"].append((ts, new_net, ops))
-            search_stats["best_networks"].append(best_network)
+            # worked.add(canonical_new_net)
 
         return best_network
 
-    def exhaustive(self, net: TensorNetwork, max_ops = 3):
+    def exhaustive(self, net: TensorNetwork, max_ops = 5):
         """Perform an exhaustive enumeration."""
         target_tensor = net.contract()
 
@@ -135,6 +135,7 @@ class SearchEngine:
             "errors": [],
             "ops": [],
         }
+        logging_time = 0
         start = time.time()
 
         network = copy.deepcopy(net)
@@ -156,6 +157,7 @@ class SearchEngine:
             # print(net.canonicalize())
             # net.draw()
             # plt.show()
+            
 
             # can we perform split?
             for n in curr_net.network.nodes:
@@ -175,16 +177,21 @@ class SearchEngine:
                             tuple(j for j in indices if j not in comb),
                             delta=delta
                         )
+                        ts = time.time() - start - logging_time
                         best_network = self.add_wodup(
                             best_network,
                             new_net,
                             new_delta,
                             worked,
                             worklist,
-                            search_stats,
-                            time.time() - start,
                             ops + 1,
                         )
+
+                        verbose_start = time.time()
+                        if self.params["verbose"]:
+                            log_stats(search_stats, target_tensor, ts, new_net, ops+1, best_network)
+                        verbose_end = time.time()
+                        logging_time += verbose_end - verbose_start
 
             # can we perform merge?
             for n in curr_net.network.nodes:
@@ -192,37 +199,30 @@ class SearchEngine:
                     if n < m:
                         new_net = copy.deepcopy(curr_net)
                         new_net.merge(n, m)
+                        ts = time.time() - start - logging_time
                         best_network = self.add_wodup(
                             best_network,
                             new_net,
                             delta,
                             worked,
                             worklist,
-                            search_stats,
-                            time.time() - start,
                             ops + 1,
                         )
 
+                        verbose_start = time.time()
+                        if self.params["verbose"]:
+                            log_stats(search_stats, target_tensor, ts, new_net, ops+1, best_network)
+                        verbose_end = time.time()
+                        logging_time += verbose_end - verbose_start
+
         end = time.time()
 
-        if self.params["verbose"]:
-            for ((ts, n, ops), bn) in zip(search_stats["networks"], search_stats["best_networks"]):
-                search_stats["ops"].append((ts, ops))
-                search_stats["costs"].append((ts, n.cost()))
-                err = approx_error(target_tensor, n)
-                search_stats["errors"].append((ts, err))
-                search_stats["best_cost"].append((ts, bn.cost()))
-
-        search_stats["time"] = end - start
+        search_stats["time"] = end - start - logging_time
         search_stats["best_network"] = best_network
         search_stats["cr_core"] = best_network.cost() / np.prod([i.size for i in net.free_indices()])
         search_stats["cr_start"] = best_network.cost() / net.cost()
         err = approx_error(target_tensor, best_network)
         search_stats["reconstruction_error"] = err
-
-        # remove temporary stats
-        search_stats.pop("networks")
-        search_stats.pop("best_networks")
 
         return search_stats
 
