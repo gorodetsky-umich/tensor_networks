@@ -225,8 +225,8 @@ class SearchEngine:
 
         search_stats["time"] = end - start - logging_time
         search_stats["best_network"] = best_network
-        search_stats["cr_core"] = best_network.cost() / np.prod([i.size for i in net.free_indices()])
-        search_stats["cr_start"] = best_network.cost() / net.cost()
+        search_stats["cr_core"] = np.prod([i.size for i in net.free_indices()]) / best_network.cost()
+        search_stats["cr_start"] = net.cost() / best_network.cost()
         err = approx_error(target_tensor, best_network)
         search_stats["reconstruction_error"] = err
         search_stats["count"] = count

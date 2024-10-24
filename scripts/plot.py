@@ -59,7 +59,7 @@ def plot_x_by_time(tag, filename, figure_type, column_tag):
 
         time, data = list(zip(*stats[column]))
         if column_tag == "compression" or column_tag == "best_compression":
-            data = [d / (18 * 120 * 120 * 12) for d in data]
+            data = [(18 * 120 * 120 * 12) / d for d in data] # TODO: this is should be changed for a different input.
 
         _, ax = plt.subplots(1, 1)
         ax.plot(time, data, marker=".")
