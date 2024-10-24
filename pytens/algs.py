@@ -1327,23 +1327,14 @@ def round_ttsum(
     ttsum.network.nodes[dim - 1]["tensor"].update_val_size(gr_list[-1])
     gr_list = [gr_list[-1] @ gr_list[-1].T]
 
-    gl_list = [np.concatenate([f.value(0) for f in factors_list], axis=1)]
-
-    ttsum.network.nodes[0]["tensor"].update_val_size(gl_list[-1])
-    gl_list = [gl_list[-1].T @ gl_list[-1]]
+    gl = np.concatenate([f.value(0) for f in factors_list], axis=1)
+    ttsum.network.nodes[0]["tensor"].update_val_size(gl)
 
     # Collect gram matrices from right to left
     for i in range(dim - 2, 0, -1):
         gr_list.append(
             next_gram_sum(
                 gr_list[-1], [f.value(i) for f in factors_list], "rl"
-            )
-        )
-
-    for i in range(1, dim - 1, 1):
-        gl_list.append(
-            next_gram_sum(
-                gl_list[-1], [f.value(i) for f in factors_list], "lr"
             )
         )
 
@@ -1357,7 +1348,11 @@ def round_ttsum(
         sh = list(ttsum.value(i).shape)
         core_next, shp1 = core_info(i + 1)
 
-        eigl, vl = np.linalg.eigh(gl_list[i])
+        gl = ttsum.value(i).reshape((-1, sh[-1])).T @ ttsum.value(i).reshape(
+            (-1, sh[-1])
+        )
+
+        eigl, vl = np.linalg.eigh(gl)
         eigr, vr = np.linalg.eigh(gr_list[i + 1])
 
         eigl = np.abs(eigl)
