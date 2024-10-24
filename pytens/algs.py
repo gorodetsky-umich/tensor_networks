@@ -12,6 +12,7 @@ import itertools
 import numpy as np
 import opt_einsum as oe
 import networkx as nx
+import hashlib
 
 from .utils import delta_svd
 
@@ -680,51 +681,6 @@ class TensorNetwork:
 
         return _postorder(None, name)
 
-    def canonicalize(self) -> Tuple:
-        """Canonicalize the tensor network into a standard representation"""
-        # free indices remain the same
-        # we choose the node contains the first free index as the root
-        free_indices = sorted(self.free_indices())
-        first_free = free_indices[0]
-        for n in self.network.nodes:
-            if first_free in self.network.nodes[n]["tensor"].indices:
-                root = n
-                break
-
-        result = []
-        queue: List[Tuple[NodeName, List[Index]]] = [(root, [])]
-        visited = set()
-        while len(queue) > 0:
-            pending = []
-            level_result = set()
-            for n, parent_indices in queue:
-                visited.add(n)
-                n_indices = self.network.nodes[n]["tensor"].indices
-                n_ordered, n_parent = [], []
-                n_unordered: Dict[int, int] = {}
-                for i in n_indices:
-                    if i in free_indices:
-                        n_ordered.append(i)
-                    elif i in parent_indices:
-                        n_parent.append(i.size)
-                    else:
-                        n_unordered[i.size] = n_unordered.get(i.size, 0) + 1
-
-                n_shape = IsoShape(sorted(n_ordered) + n_parent, n_unordered)
-                level_result.add(n_shape)
-
-                for nbr in self.network.neighbors(n):
-                    if nbr not in visited:
-                        pending.append((nbr, n_indices))
-
-            # print("before sort", list(level_result))
-            # print("after sort", sorted(list(level_result)))
-            result.append(tuple(sorted(list(level_result))))
-            queue = pending
-
-        # print(result)
-        return tuple(result)
-
     def cost(self) -> int:
         """Compute the cost for the tensor network.
 
@@ -737,6 +693,68 @@ class TensorNetwork:
             cost += n_cost
 
         return int(cost)
+
+    def __hash__(self):
+        # find the node with first free index and use it as the tree root
+        free_indices = sorted(self.free_indices())
+        root = None
+        for n, d in self.network.nodes(data=True):
+            if free_indices[0] in d["tensor"].indices:
+                root = n
+                break
+
+        visited = {}
+        def _postorder(name: NodeName):
+            """Hash the nodes by their postorder"""
+            visited[name] = 1
+            children_rs = []
+            nbrs = list(self.network.neighbors(name))
+            for n in nbrs:
+                if n not in visited:
+                    # Process children before the current node.
+                    children_rs.append((n, _postorder(n)))
+
+            sorted_children_rs = tuple(sorted(children_rs, key=lambda x: x[1]))
+            indices = self.network.nodes[name]["tensor"].indices
+            parent_index = None
+            children_indices = {}
+            self_free_indices = []
+            for i, index in enumerate(indices):
+                matched = False
+                for n in self.network.neighbors(name):
+                    n_indices = self.network.nodes[n]["tensor"].indices
+                    if index in n_indices:
+                        
+                        if n in visited and visited[n] == 1:
+                            parent_index = i
+                            matched = True
+                        elif n in visited and visited[n] == 2:
+                            children_indices[n] = i
+                            matched = True
+                        else:
+                            print("Unexpected index", index)
+
+                if not matched:
+                    self_free_indices.append(index)
+
+            # reshape the matrix into free_indices x parent_index x sorted_children_indices
+            permuted_indices = [indices.index(i) for i in sorted(self_free_indices)]
+            if parent_index is not None:
+                permuted_indices.append(parent_index)
+            permuted_indices.extend([children_indices[n] for n, _ in sorted_children_rs])
+            permuted_value = np.ascontiguousarray(self.network.nodes[name]["tensor"].value.transpose(permuted_indices))
+            permuted_value.flags.writeable = False
+            value_hash = hashlib.sha256(permuted_value.data)
+            # print(permuted_indices)
+            # print(permuted_value)
+            # print(value_hash.hexdigest())
+
+            visited[name] = 2
+            h = hashlib.sha256(repr((value_hash.hexdigest(), tuple([h for _, h in sorted_children_rs]))).encode())
+            # print(name, h.hexdigest())
+            return hash(h.hexdigest())
+
+        return _postorder(root)
 
     def __lt__(self, other: Self) -> bool:
         return self.cost() < other.cost()

@@ -20,8 +20,10 @@ class Runner:
     def run(self, benchmark: Benchmark, repeat: int = 1):
         """Run a benchmark for the given repeated times."""
         net = benchmark.to_network()
-        if self.params["engine"] == "exhaustive":
-            search_engine = self.engine.exhaustive
+        if self.params["engine"] == "dfs":
+            search_engine = self.engine.dfs
+        elif self.params["engine"] == "bfs":
+            search_engine = self.engine.bfs
         else:
             raise RuntimeError("unrecognized search engine")
 
@@ -58,7 +60,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--pattern", type=str, required=True, help="Path pattern of the selected benchmarks")
-    parser.add_argument("--engine", type=str, default="exhaustive", help="Type of the search engine")
+    parser.add_argument("--engine", type=str, choices=["bfs", "dfs"], help="Type of the search engine")
     parser.add_argument("--repeat", type=int, default=1, help="Number of repeats to run for each benchmark")
     parser.add_argument("--eps", type=float, help="Error target")
     parser.add_argument("--verbose", action="store_true", help="Whether to perform verbose logging")
@@ -69,7 +71,7 @@ if __name__ == "__main__":
     runner = Runner(args.__dict__)
 
     all_stats = []
-    print(f"{'Name':35}\t{'Time':>10}\t{'RE':>10}\t{'CR_core':>10}\t{'CR_start':>10}\t{'Best time':>10}\t{'Max ops':>10}")
+    print(f"{'Name':35}\t{'Time':>10}\t{'RE':>10}\t{'CR_core':>10}\t{'CR_start':>10}\t{'Best_time':>10}\t{'Max_ops':>10}")
     for benchmark_file in glob.glob(args.pattern):
         with open(benchmark_file, "r", encoding="utf-8") as benchmark_fd:
             benchmark_dict = json.load(benchmark_fd)

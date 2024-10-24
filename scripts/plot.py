@@ -14,6 +14,8 @@ all_figures = [
     # compression
     "cost_by_time",
     "best_cost_by_time",
+    "compression_by_time",
+    "best_compression_by_time",
     # other
     "ops_by_time",
 ]
@@ -48,8 +50,18 @@ def plot_x_by_time(tag, filename, figure_type, column_tag):
     with open(filename, "r", encoding="utf-8") as f:
         all_stats = json.load(f)
         stats = all_stats[-1]
-        time, data = list(zip(*stats[column_tag]))
-        _, [ax, ax_lower] = plt.subplots(2, 1)
+        if column_tag == "compression":
+            column = "costs"
+        elif column_tag == "best_compression":
+            column = "best_cost"
+        else:
+            column = column_tag
+
+        time, data = list(zip(*stats[column]))
+        if column_tag == "compression" or column_tag == "best_compression":
+            data = [d / (18 * 120 * 120 * 12) for d in data]
+
+        _, ax = plt.subplots(1, 1)
         ax.plot(time, data, marker=".")
         ax.hlines([max(data), min(data)], xmin=time[0], xmax=time[-1], colors='red', linestyles='dashed')
         ax.set_ylabel(column_tag)
@@ -57,12 +69,12 @@ def plot_x_by_time(tag, filename, figure_type, column_tag):
         plt.yticks([x for x in list(plt.yticks()[0]) if x >= 0] + [max(data), min(data)])
 
         # zoom into the details
-        ax_lower.plot(time[100:], data[100:], marker=".")
-        ax_lower.set_ylabel(column_tag)
-        ax_lower.set_xlabel("time (s)")
+        # ax_lower.plot(time[100:], data[100:], marker=".")
+        # ax_lower.set_ylabel(column_tag)
+        # ax_lower.set_xlabel("time (s)")
 
         plt.tight_layout()
-        plt.savefig(f"{tag}_{figure_type}.png")
+        plt.savefig(f"{tag}/{figure_type}.png")
         plt.close()
 
 def plot_error_box(tag, filename):
@@ -100,3 +112,9 @@ if __name__ == "__main__":
 
     if "best_cost_by_time" in args.figures:
         plot_x_by_time(args.output, args.file, "best_cost_by_time", "best_cost")
+
+    if "compression_by_time" in args.figures:
+        plot_x_by_time(args.output, args.file, "compression_by_time", "compression")
+
+    if "best_compression_by_time" in args.figures:
+        plot_x_by_time(args.output, args.file, "best_compression_by_time", "best_compression")

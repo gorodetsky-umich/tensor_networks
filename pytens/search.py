@@ -93,8 +93,11 @@ class MyConfig:
 class EnumState:
     """Enumeration state."""
     network: TensorNetwork
-    delta: float
     ops: int
+    delta: float
+
+    def __lt__(self, other):
+        return self.network < other.network and self.ops < other.ops and self.delta < other.delta
 
 class SearchEngine:
     """Tensor network topology search engine."""
@@ -113,18 +116,125 @@ class SearchEngine:
         """Add a network to a worked set to remove duplicates."""
         # new_net.draw()
         # plt.show()
-        # canonical_new_net = new_net.canonicalize()
-        if True: #canonical_new_net not in worked:
-            if best_network is None or best_network.cost() > new_net.cost():
-                best_network = new_net
+        # new_net_hash = hash(new_net)
+        # if new_net_hash not in worked:
+        if best_network is None or best_network.cost() > new_net.cost():
+            best_network = new_net
 
-            worklist.append(EnumState(new_net, delta, ops))
-            # worked.add(canonical_new_net)
+        # if new_net.cost() < 2 * best_network.cost():
+        worklist.append(EnumState(new_net, ops, delta))
+        # worked.add(new_net_hash)
 
         return best_network
 
-    def exhaustive(self, net: TensorNetwork, max_ops = 5):
-        """Perform an exhaustive enumeration."""
+    def dfs(self, net: TensorNetwork, max_ops: int = 4, timeout: float = 3600, budget: int = 5000):
+        """Perform an exhaustive enumeration with the DFS algorithm."""
+        target_tensor = net.contract()
+
+        search_stats = {
+            "networks": [],
+            "best_networks": [],
+            "best_cost": [],
+            "costs": [],
+            "errors": [],
+            "ops": [],
+        }
+        logging_time = 0
+        start = time.time()
+
+        network = copy.deepcopy(net)
+        delta = self.params["eps"] * net.norm()
+        best_network = net
+        worked = set()
+        # worked.add(hash(network))
+        count = 0
+
+        def helper(curr_net: TensorNetwork, curr_ops: int, curr_delta: float):
+            # curr_net.draw()
+            # plt.show()
+            nonlocal best_network
+            nonlocal logging_time
+            nonlocal search_stats
+            nonlocal start
+            nonlocal count
+
+            count += 1
+
+            if curr_ops >= max_ops:
+                return
+            
+            if time.time() - start > timeout:
+                return
+
+            # can we perform split?
+            for n in curr_net.network.nodes:
+                indices = curr_net.network.nodes[n]["tensor"].indices
+                indices = range(len(indices))
+                # get all partitions of indices
+                for sz in range(1, len(indices) // 2 + 1):
+                    combs = list(itertools.combinations(indices, sz))
+                    if len(indices) % 2 == 0 and sz == len(indices) // 2:
+                        combs = combs[: len(combs) // 2]
+
+                    for comb in combs:
+                        new_net = copy.deepcopy(curr_net)
+                        try:
+                            _, new_delta = new_net.split(
+                                n,
+                                comb,
+                                tuple(j for j in indices if j not in comb),
+                                delta=curr_delta
+                            )
+                        except Exception:
+                            continue
+
+                        if new_net.cost() < best_network.cost():
+                            best_network = new_net
+
+                        ts = time.time() - start - logging_time
+                        verbose_start = time.time()
+                        if self.params["verbose"]:
+                            # print(time.time() - start)
+                            log_stats(search_stats, target_tensor, ts, new_net, curr_ops+1, best_network)
+                        verbose_end = time.time()
+                        logging_time += verbose_end - verbose_start
+
+                    
+                        helper(new_net, curr_ops+1, new_delta)
+
+                # can we perform merge?
+                for m in curr_net.network.neighbors(n):
+                    if n < m:
+                        new_net = copy.deepcopy(curr_net)
+                        new_net.merge(n, m)
+                        if new_net.cost() < best_network.cost():
+                            best_network = new_net
+                        
+                        ts = time.time() - start - logging_time
+
+                        verbose_start = time.time()
+                        if self.params["verbose"]:
+                            log_stats(search_stats, target_tensor, ts, new_net, curr_ops+1, best_network)
+                        verbose_end = time.time()
+                        logging_time += verbose_end - verbose_start
+
+                        helper(new_net, curr_ops+1, curr_delta)
+
+        helper(network, 0, delta)
+        end = time.time()
+
+        search_stats["time"] = end - start - logging_time
+        search_stats["best_network"] = best_network
+        search_stats["cr_core"] = best_network.cost() / np.prod([i.size for i in net.free_indices()])
+        search_stats["cr_start"] = best_network.cost() / net.cost()
+        err = approx_error(target_tensor, best_network)
+        search_stats["reconstruction_error"] = err
+        search_stats["count"] = count
+
+        return search_stats
+
+    def bfs(self, net: TensorNetwork, max_ops = 4, timeout = 3600):
+        """Perform an exhaustive enumeration with the BFS algorithm."""
         target_tensor = net.contract()
 
         search_stats = {
@@ -142,22 +252,21 @@ class SearchEngine:
         delta = self.params["eps"] * net.norm()
 
         worked = set()
-        worklist = [EnumState(network, delta, 0)]
-        worked.add(network.canonicalize())
+        worklist = [EnumState(network, 0, delta)]
         best_network = None
+        count = 0
 
         while len(worklist) != 0:
             st = worklist.pop(0)
             curr_net = st.network
             ops = st.ops
             delta = st.delta
-            if ops == max_ops:
-                continue
 
             # print(net.canonicalize())
             # net.draw()
             # plt.show()
-            
+            if time.time() - start >= timeout:
+                break
 
             # can we perform split?
             for n in curr_net.network.nodes:
@@ -186,6 +295,7 @@ class SearchEngine:
                             worklist,
                             ops + 1,
                         )
+                        count += 1
 
                         verbose_start = time.time()
                         if self.params["verbose"]:
@@ -193,8 +303,6 @@ class SearchEngine:
                         verbose_end = time.time()
                         logging_time += verbose_end - verbose_start
 
-            # can we perform merge?
-            for n in curr_net.network.nodes:
                 for m in curr_net.network.neighbors(n):
                     if n < m:
                         new_net = copy.deepcopy(curr_net)
@@ -208,12 +316,16 @@ class SearchEngine:
                             worklist,
                             ops + 1,
                         )
+                        count += 1
 
                         verbose_start = time.time()
                         if self.params["verbose"]:
                             log_stats(search_stats, target_tensor, ts, new_net, ops+1, best_network)
                         verbose_end = time.time()
                         logging_time += verbose_end - verbose_start
+
+                if count > 10000:
+                    break
 
         end = time.time()
 
@@ -375,7 +487,7 @@ if __name__ == "__main__":
     with open(args.log, "w", encoding="utf-8") as f:
         for i in range(10):
             engine = SearchEngine({"tag": args.tag})
-            stats = engine.exhaustive(target)
+            stats = engine.bfs(target)
             f.write(f"{i},{stats['time']},{stats['reconstruction_error']}\n")
             stats["best_network"].draw()
             plt.savefig(f"{args.tag}_result.png")

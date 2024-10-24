@@ -348,13 +348,43 @@ class TestTree(unittest.TestCase):
             self.tree.network.add_edge(root, n)
 
 
-    # def test_tree_canonicalize(self):
-    #     # plt.figure(1)
-    #     # self.tree.draw()
-    #     # plt.figure(2)
-    #     # self.tree2.draw()
-    #     # plt.show()
-    #     self.assertNotEqual(self.tree.canonicalize(), self.tree2.canonicalize())
+    def test_tree_canonicalize(self):
+        x = np.random.randn(3,4,5)
+        single_node1 = TensorNetwork()
+        indices1 = [Index("i",3), Index("j",4), Index("k",5)]
+        single_node1.add_node("x", Tensor(x, indices1))
+
+        single_node2 = TensorNetwork()
+        indices2 = [Index("j",4), Index("i",3), Index("k",5)]
+        single_node2.add_node("y", Tensor(x.transpose(1,0,2), indices2))
+
+        self.assertEqual(hash(single_node1), hash(single_node2))
+
+        # test symmetry
+        tree1 = TensorNetwork()
+        u = np.random.randn(2,3,4)
+        u_indices = [Index("iu", 2), Index("ju", 3), Index("ku", 4)]
+        v = np.random.randn(4,5,6)
+        v_indices = [Index("iv", 4), Index("jv", 5), Index("kv", 6)]
+        root = np.random.randn(2, 4, 3)
+        root_indices = [Index("iu", 2), Index("iv", 4), Index("f", 3)]
+        tree1.add_node("root", Tensor(root, root_indices))
+        tree1.add_node("u", Tensor(u, u_indices))
+        tree1.add_node("v", Tensor(v, v_indices))
+        tree1.add_edge("root", "u")
+        tree1.add_edge("root", "v")
+
+        tree2 = TensorNetwork()
+        root_indices2 = [Index("iv", 4), Index("iu", 2),  Index("f", 3)]
+        tree2.add_node("root", Tensor(root.transpose(1,0,2), root_indices2))
+        u_indices2 = [Index("ju", 3), Index("ku", 4), Index("iu", 2), ]
+        tree2.add_node("u", Tensor(u.transpose(1,2,0), u_indices2))
+        v_indices2 = [Index("kv", 6), Index("iv", 4), Index("jv", 5), ]
+        tree2.add_node("v", Tensor(v.transpose(2,0,1), v_indices2))
+        tree2.add_edge("root", "u")
+        tree2.add_edge("root", "v")
+
+        self.assertEqual(hash(tree1), hash(tree2))
 
 if __name__ == "__main__":
     unittest.main()
