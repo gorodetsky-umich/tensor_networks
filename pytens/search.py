@@ -127,7 +127,7 @@ class SearchEngine:
 
         return best_network
 
-    def dfs(self, net: TensorNetwork, max_ops: int = 4, timeout: float = 3600, budget: int = 5000):
+    def dfs(self, net: TensorNetwork, max_ops: int = 5, timeout: float = 3600 * 10, budget: int = 5000):
         """Perform an exhaustive enumeration with the DFS algorithm."""
         target_tensor = net.contract()
 
@@ -160,6 +160,7 @@ class SearchEngine:
 
             count += 1
 
+            worked.add(curr_net.canonical_structure())
             if curr_ops >= max_ops:
                 return
             
@@ -223,6 +224,7 @@ class SearchEngine:
         helper(network, 0, delta)
         end = time.time()
 
+        print("unique structures", len(worked))
         search_stats["time"] = end - start - logging_time
         search_stats["best_network"] = best_network
         search_stats["cr_core"] = np.prod([i.size for i in net.free_indices()]) / best_network.cost()

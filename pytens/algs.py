@@ -41,7 +41,7 @@ class Index:
         return Index(name, self.size)
 
     def __lt__(self, other: Self) -> bool:
-        return str(self.name) < str(other.name) and self.size < other.size
+        return str(self.name) < str(other.name)
 
 
 @dataclass
@@ -326,7 +326,7 @@ class TensorNetwork:
     def free_indices(self) -> List[Index]:
         """Get the free indices."""
         icount = self.all_indices()
-        free_indices = [i for i, v in icount.items() if v == 1]
+        free_indices = sorted([i for i, v in icount.items() if v == 1])
         return free_indices
 
     def get_contraction_index(
@@ -357,7 +357,8 @@ class TensorNetwork:
         Need to respect the edges, currently not using edges
         """
         all_indices = self.all_indices()
-        free_indices = [i for i, v in all_indices.items() if v == 1]
+        free_indices = sorted([i for i, v in all_indices.items() if v == 1])
+        print("sorted", free_indices)
 
         mapping = {
             name: chr(i + 97) for i, name in enumerate(all_indices.keys())
@@ -389,6 +390,7 @@ class TensorNetwork:
         logger.debug("Contraction string = %s", estr)
         out = oe.contract(estr, *arrs, optimize="auto")
         indices = [eargs.output_str_index_map[s] for s in eargs.output_str]
+        print("out indices", indices)
         tens = Tensor(out, indices)
         return tens
 
@@ -561,15 +563,16 @@ class TensorNetwork:
         # svd decompose the data into specified index partition
         [u, v], delta = x.split(left_indices, right_indices, mode, delta)
 
+        x_nbrs = list(self.network.neighbors(node_name))
+        self.network.remove_node(node_name)
+
         new_index = self.fresh_index()
-        u_name = self.fresh_node()
+        u_name = node_name
         self.add_node(u_name, u.rename_indices({"r_split": new_index}))
         v_name = self.fresh_node()
         self.add_node(v_name, v.rename_indices({"r_split": new_index}))
-        self.add_edge(u_name, v_name)
-
-        x_nbrs = self.network.neighbors(node_name)
-        for y in list(x_nbrs):
+        
+        for y in x_nbrs:
             y_inds = self.network.nodes[y]["tensor"].indices
             if any(i in y_inds for i in u.indices):
                 self.add_edge(u_name, y)
@@ -583,7 +586,7 @@ class TensorNetwork:
                     v.indices,
                 )
 
-        self.network.remove_node(node_name)
+        self.add_edge(u_name, v_name)
 
         return (u_name, v_name), delta
 
@@ -597,20 +600,55 @@ class TensorNetwork:
         t1 = self.network.nodes[name1]["tensor"]
         t2 = self.network.nodes[name2]["tensor"]
         result = t1.contract(t2)
-        new_node = self.fresh_node()
-        self.add_node(new_node, result)
-        for n in self.network.neighbors(name1):
-            if n != name2:
-                self.add_edge(new_node, n)
 
-        for m in self.network.neighbors(name2):
-            if m != name1:
-                self.add_edge(new_node, m)
-
-        self.network.remove_node(name1)
+        n2_nbrs = list(self.network.neighbors(name2))
         self.network.remove_node(name2)
+        self.network.nodes[name1]["tensor"] = result
+        for n in n2_nbrs:
+            if n != name1:
+                self.add_edge(name1, n)
 
-        return new_node
+        return name1
+
+    def optimize(self, node_name: NodeName, delta: float, visited: set = None) -> NodeName:
+        """Optimize the tree rooted at the given node."""
+        if visited is None:
+            visited = set()
+
+        # import matplotlib.pyplot as plt
+        # self.draw()
+        # plt.show()
+        node_indices = self.network.nodes[node_name]["tensor"].indices
+        for idx in node_indices:
+            if idx in visited:
+                continue
+
+            shared_index = None
+            nbr = None
+            for nbr in self.network.neighbors(node_name):
+                nbr_indices = self.network.nodes[nbr]["tensor"].indices
+                if idx in nbr_indices:
+                    shared_index = idx
+                    print("shared", idx, "with", nbr)
+                    break
+
+            if shared_index is None:
+                continue
+
+            curr_indices = self.network.nodes[node_name]["tensor"].indices
+            left_indices = [curr_indices.index(i) for i in curr_indices if i != idx]
+            right_indices = [curr_indices.index(idx)]            
+            [node_name, v], delta = self.split(node_name, left_indices, right_indices, delta=delta)
+            # self.draw()
+            # plt.show()
+            nbr = self.merge(nbr, v)
+            visited_index = self.get_contraction_index(node_name, nbr)
+            for idx in visited_index:
+                visited.add(idx)
+            self.optimize(nbr, delta, visited)
+
+        return node_name, delta
+
 
     def orthonormalize(self, name: NodeName) -> NodeName:
         """Orthonormalize the environment network for the specified node.
@@ -694,7 +732,12 @@ class TensorNetwork:
 
         return int(cost)
 
-    def __hash__(self):
+    def canonical_structure(self):
+        """Compute the canonical structure of the tensor network.
+        
+        This method ignores all values, keeps all free indices and edge labels.
+        If the resulted topology is the same, we consider 
+        """
         # find the node with first free index and use it as the tree root
         free_indices = sorted(self.free_indices())
         root = None
@@ -717,7 +760,6 @@ class TensorNetwork:
             sorted_children_rs = tuple(sorted(children_rs, key=lambda x: x[1]))
             indices = self.network.nodes[name]["tensor"].indices
             parent_index = None
-            children_indices = {}
             self_free_indices = []
             for i, index in enumerate(indices):
                 matched = False
@@ -726,10 +768,9 @@ class TensorNetwork:
                     if index in n_indices:
                         
                         if n in visited and visited[n] == 1:
-                            parent_index = i
+                            parent_index = index
                             matched = True
                         elif n in visited and visited[n] == 2:
-                            children_indices[n] = i
                             matched = True
                         else:
                             print("Unexpected index", index)
@@ -737,22 +778,10 @@ class TensorNetwork:
                 if not matched:
                     self_free_indices.append(index)
 
-            # reshape the matrix into free_indices x parent_index x sorted_children_indices
-            permuted_indices = [indices.index(i) for i in sorted(self_free_indices)]
-            if parent_index is not None:
-                permuted_indices.append(parent_index)
-            permuted_indices.extend([children_indices[n] for n, _ in sorted_children_rs])
-            permuted_value = np.ascontiguousarray(self.network.nodes[name]["tensor"].value.transpose(permuted_indices))
-            permuted_value.flags.writeable = False
-            value_hash = hashlib.sha256(permuted_value.data)
-            # print(permuted_indices)
-            # print(permuted_value)
-            # print(value_hash.hexdigest())
-
             visited[name] = 2
-            h = hashlib.sha256(repr((value_hash.hexdigest(), tuple([h for _, h in sorted_children_rs]))).encode())
-            # print(name, h.hexdigest())
-            return hash(h.hexdigest())
+            features = (tuple(sorted(self_free_indices)), tuple([h for _, h in sorted_children_rs]))
+            # print(name, features)
+            return hash(features)
 
         return _postorder(root)
 
