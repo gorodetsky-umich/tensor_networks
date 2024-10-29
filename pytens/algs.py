@@ -358,7 +358,6 @@ class TensorNetwork:
         """
         all_indices = self.all_indices()
         free_indices = sorted([i for i, v in all_indices.items() if v == 1])
-        print("sorted", free_indices)
 
         mapping = {
             name: chr(i + 97) for i, name in enumerate(all_indices.keys())
@@ -390,7 +389,6 @@ class TensorNetwork:
         logger.debug("Contraction string = %s", estr)
         out = oe.contract(estr, *arrs, optimize="auto")
         indices = [eargs.output_str_index_map[s] for s in eargs.output_str]
-        print("out indices", indices)
         tens = Tensor(out, indices)
         return tens
 
@@ -547,6 +545,8 @@ class TensorNetwork:
         right_indices: Sequence[int],
         mode: str = "svd",
         delta: float = 0.1,
+        with_orthonormal: bool = True,
+        preview = False,
     ) -> Tuple[Tuple[NodeName, NodeName], float]:
         """Split a node by the specified index partition.
 
@@ -556,12 +556,18 @@ class TensorNetwork:
         delta: threshold used in truncated SVD
         """
         # To ensure the error bound in SVD, we first orthornormalize its env.
-        if mode == "svd":
-            node_name = self.orthonormalize(node_name)
+        if not preview:
+            if mode == "svd" and with_orthonormal:
+                node_name = self.orthonormalize(node_name)
 
-        x = self.network.nodes[node_name]["tensor"]
-        # svd decompose the data into specified index partition
-        [u, v], delta = x.split(left_indices, right_indices, mode, delta)
+            x = self.network.nodes[node_name]["tensor"]
+            # svd decompose the data into specified index partition
+            [u, v], remaining_delta = x.split(left_indices, right_indices, mode, delta)
+        else:
+            x = self.network.nodes[node_name]["tensor"]
+            u = Tensor(None, [x.indices[i] for i in left_indices] + [Index("r_split", -1)])
+            v = Tensor(None, [Index("r_split", -1)] + [x.indices[i] for i in right_indices])
+            remaining_delta = delta
 
         x_nbrs = list(self.network.neighbors(node_name))
         self.network.remove_node(node_name)
@@ -588,9 +594,9 @@ class TensorNetwork:
 
         self.add_edge(u_name, v_name)
 
-        return (u_name, v_name), delta
+        return (u_name, v_name), remaining_delta
 
-    def merge(self, name1: NodeName, name2: NodeName) -> NodeName:
+    def merge(self, name1: NodeName, name2: NodeName, preview=False) -> NodeName:
         """Merge two specified nodes into one."""
         if not self.network.has_edge(name1, name2):
             raise RuntimeError(
@@ -599,7 +605,10 @@ class TensorNetwork:
 
         t1 = self.network.nodes[name1]["tensor"]
         t2 = self.network.nodes[name2]["tensor"]
-        result = t1.contract(t2)
+        if not preview:
+            result = t1.contract(t2)
+        else:
+            result = Tensor(None, t1.indices + t2.indices)
 
         n2_nbrs = list(self.network.neighbors(name2))
         self.network.remove_node(name2)
@@ -610,17 +619,22 @@ class TensorNetwork:
 
         return name1
 
-    def optimize(self, node_name: NodeName, delta: float, visited: set = None) -> NodeName:
+    def optimize(self, node_name: NodeName, delta: float, visited: set = None) -> Tuple[NodeName, float]:
         """Optimize the tree rooted at the given node."""
-        if visited is None:
-            visited = set()
-
+        # print("optimize", node_name)
         # import matplotlib.pyplot as plt
-        # self.draw()
-        # plt.show()
+        if visited is None:
+            initial_optimize = True
+            visited = set()
+        else:
+            initial_optimize = False
+
         node_indices = self.network.nodes[node_name]["tensor"].indices
+        kept_indices = []
+        free_indices = []
         for idx in node_indices:
             if idx in visited:
+                kept_indices.append(idx)
                 continue
 
             shared_index = None
@@ -629,25 +643,43 @@ class TensorNetwork:
                 nbr_indices = self.network.nodes[nbr]["tensor"].indices
                 if idx in nbr_indices:
                     shared_index = idx
-                    print("shared", idx, "with", nbr)
+                    # print("shared", idx, "with", nbr)
                     break
 
             if shared_index is None:
+                free_indices.append(idx)
                 continue
 
             curr_indices = self.network.nodes[node_name]["tensor"].indices
             left_indices = [curr_indices.index(i) for i in curr_indices if i != idx]
-            right_indices = [curr_indices.index(idx)]            
-            [node_name, v], delta = self.split(node_name, left_indices, right_indices, delta=delta)
+            right_indices = [curr_indices.index(idx)]
+            [node_name, v], delta = self.split(node_name, left_indices, right_indices, delta=delta, with_orthonormal=False)
             # self.draw()
             # plt.show()
-            nbr = self.merge(nbr, v)
+            self.merge(nbr, v)
+            # self.draw()
+            # plt.show()
             visited_index = self.get_contraction_index(node_name, nbr)
             for idx in visited_index:
                 visited.add(idx)
-            self.optimize(nbr, delta, visited)
+            r, delta = self.optimize(nbr, delta, visited)
+            self.merge(node_name, r)
+            # self.draw()
+            # plt.show()
 
-        return node_name, delta
+        if not initial_optimize:
+            node_indices = self.network.nodes[node_name]["tensor"].indices
+            left_indices, right_indices = [], []
+            for i, idx in enumerate(node_indices):
+                if idx in free_indices or idx not in kept_indices:
+                    left_indices.append(i)
+                else:
+                    right_indices.append(i)
+            [_, r], _ = self.split(node_name, left_indices, right_indices, mode="qr")
+
+        # self.draw()
+        # plt.show()
+        return r, delta
 
 
     def orthonormalize(self, name: NodeName) -> NodeName:
@@ -922,7 +954,7 @@ class TensorNetwork:
                     new_graph.add_edge(node, name1)
 
         try:
-            pos = nx.planar_layout(new_graph)
+            pos = nx.spring_layout(new_graph)
         except:
             pos = nx.circular_layout(new_graph)
 
@@ -957,12 +989,12 @@ class TensorNetwork:
         edge_labels = {}
         for u, v in self.network.edges():
             indices = self.get_contraction_index(u, v)
-            labels = [f"{i.name}:{i.size}" for i in indices]
+            labels = [f"{i.size}" for i in indices]
             label = "-".join(labels)
             edge_labels[(u, v)] = label
         nx.draw_networkx_edges(new_graph, pos, ax=ax)
         nx.draw_networkx_edge_labels(
-            new_graph, pos, ax=ax, edge_labels=edge_labels
+            new_graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
         )
 
 

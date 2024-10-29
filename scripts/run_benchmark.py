@@ -24,6 +24,8 @@ class Runner:
             search_engine = self.engine.dfs
         elif self.params["engine"] == "bfs":
             search_engine = self.engine.bfs
+        elif self.params["engine"] == "mcts":
+            search_engine = self.engine.mcts
         else:
             raise RuntimeError("unrecognized search engine")
 
@@ -60,7 +62,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--pattern", type=str, required=True, help="Path pattern of the selected benchmarks")
-    parser.add_argument("--engine", type=str, choices=["bfs", "dfs"], help="Type of the search engine")
+    parser.add_argument("--engine", type=str, choices=["bfs", "dfs", "mcts"], help="Type of the search engine")
     parser.add_argument("--repeat", type=int, default=1, help="Number of repeats to run for each benchmark")
     parser.add_argument("--eps", type=float, help="Error target")
     parser.add_argument("--verbose", action="store_true", help="Whether to perform verbose logging")
@@ -94,13 +96,18 @@ if __name__ == "__main__":
                 with open(alog_name, "r", encoding="utf-8") as alog_file:
                     all_log = json.load(alog_file)[0]
                     # get the time that reaches the best network
-                    best_cost = all_log["best_cost"][-1][1]
-                    for ts, c in all_log["best_cost"]:
-                        if c == best_cost:
-                            first_best_cost = ts
-                            break
+                    if "best_cost" in all_log:
+                        best_cost = all_log["best_cost"][-1][1]
+                        for ts, c in all_log["best_cost"]:
+                            if c == best_cost:
+                                first_best_cost = ts
+                                break
 
-                    max_ops = all_log["ops"][-1][1]
+                        max_ops = all_log["ops"][-1][1]
+                    else:
+                        best_cost = 0
+                        first_best_cost = 0
+                        max_ops = 0
             else:
                 first_best_cost = None
                 max_ops = None
