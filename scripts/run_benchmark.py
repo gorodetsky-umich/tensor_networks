@@ -26,6 +26,8 @@ class Runner:
             search_engine = self.engine.bfs
         elif self.params["engine"] == "mcts":
             search_engine = self.engine.mcts
+        elif self.params["engine"] == "beam":
+            search_engine = self.engine.beam
         else:
             raise RuntimeError("unrecognized search engine")
 
@@ -62,9 +64,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--pattern", type=str, required=True, help="Path pattern of the selected benchmarks")
-    parser.add_argument("--engine", type=str, choices=["bfs", "dfs", "mcts"], help="Type of the search engine")
+    parser.add_argument("--engine", type=str, choices=["bfs", "dfs", "mcts", "beam"], help="Type of the search engine")
     parser.add_argument("--repeat", type=int, default=1, help="Number of repeats to run for each benchmark")
     parser.add_argument("--eps", type=float, help="Error target")
+    parser.add_argument("--max_ops", type=int, default=5, help="Maximum number of operations to search for")
+    parser.add_argument("--beam_size", type=int,)
     parser.add_argument("--verbose", action="store_true", help="Whether to perform verbose logging")
     parser.add_argument("--collect_only", action="store_true", help="Collect log data into one single file")
 

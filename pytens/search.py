@@ -7,7 +7,7 @@ import heapq
 import math
 import random
 import argparse
-from typing import Sequence, Dict, Set, List, Tuple, Any
+from typing import Sequence, Dict, Set, List, Tuple, Self
 from pydantic.dataclasses import dataclass
 
 import networkx as nx
@@ -137,6 +137,9 @@ class SearchState:
             return 0
         
         return self.network.cost() <= self.threshold * total_cost
+    
+    def __lt__(self, other: Self) -> bool:
+        return self.network.cost() > other.network.cost()
 
 class Node:
     def __init__(self, state, parent=None):
@@ -237,6 +240,45 @@ class MCTS:
 
         return current_state.get_result(self.initial_cost)
 
+class BeamSearch:
+    """Beam search with a given beam size."""
+    def __init__(self, params):
+        self.params = params
+        self.heap = None
+        self.initial_cost = 0
+        self.best_network = None
+    
+    def search(self, initial_state):
+        """Perform the beam search from the given initial state."""
+        self.initial_cost = initial_state.network.cost()
+        self.best_network = initial_state.network
+        self.heap = [initial_state]
+        
+        for _ in range(self.params["max_ops"]):
+            start = time.time()
+            # maintain a set of networks of at most k
+            self.step()
+            print("one step time", time.time() - start)
+
+    def step(self):
+        """Make a step in a beam search."""
+        next_level = []
+        while len(self.heap) > 0:
+            state = heapq.heappop(self.heap)
+            for ac in state.get_legal_actions():
+                new_state = state.take_action(ac)
+                if new_state.is_noop:
+                    continue
+
+                if len(next_level) < self.params["beam_size"]:
+                    heapq.heappush(next_level, new_state)
+                elif next_level[0] < new_state:
+                    heapq.heappushpop(next_level, new_state)
+
+                if new_state.network.cost() < self.best_network.cost():
+                    self.best_network = new_state.network
+
+        self.heap = next_level
 
 def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
     """Compute the reconstruction error.
@@ -346,7 +388,7 @@ class SearchEngine:
             best_network = new_net
 
         # if new_net.cost() < 2 * best_network.cost():
-        if ops < 3:
+        if ops < self.params["max_ops"]:
             worklist.append(EnumState(new_net, ops, delta))
         # worked.add(new_net_hash)
 
@@ -356,6 +398,7 @@ class SearchEngine:
         """Perform the A-star search with a priority queue"""
 
     def mcts(self, net: TensorNetwork, budget: int = 10000):
+        """Run the MCTS as a search engine."""
         engine = MCTS()
         delta = self.params["eps"] * net.norm()
         initial_state = SearchState(net, delta, max_ops=8, threshold=0.2)
@@ -378,6 +421,29 @@ class SearchEngine:
         plt.show()
         return stats
 
+    def beam(self, net: TensorNetwork):
+        """Run the beam search as a search engine."""
+        engine = BeamSearch(self.params)
+        delta = self.params["eps"] * net.norm()
+        initial_state = SearchState(net, delta)
+
+        start = time.time()
+        engine.search(initial_state)
+        end = time.time()
+
+        best = engine.best_network
+
+        stats = {}
+        stats["time"] = end - start
+        target_tensor = net.contract().value
+        stats["cr_core"] = np.prod(target_tensor.shape) / best.cost()
+        stats["cr_start"] = net.cost() / best.cost()
+        stats["reconstruction_error"] = np.linalg.norm(best.contract().value - target_tensor) / np.linalg.norm(target_tensor)
+        stats["best_network"] = best
+        
+        best.draw()
+        plt.show()
+        return stats
 
     def dfs(self, net: TensorNetwork, max_ops: int = 4, timeout: float = 3600 * 10, budget: int = 5000):
         """Perform an exhaustive enumeration with the DFS algorithm."""
@@ -540,7 +606,7 @@ class SearchEngine:
 
         return search_stats
 
-    def bfs(self, net: TensorNetwork, max_ops = 3, timeout = 3600):
+    def bfs(self, net: TensorNetwork, timeout = 3600):
         """Perform an exhaustive enumeration with the BFS algorithm."""
         target_tensor = net.contract()
 
@@ -586,14 +652,20 @@ class SearchEngine:
                         combs = combs[: len(combs) // 2]
 
                     for comb in combs:
-                        print("split", n, [curr_indices[i] for i in comb])
                         new_net = copy.deepcopy(curr_net)
-                        _, new_delta = new_net.split(
+                        
+                        [u, v], new_delta = new_net.split(
                             n,
                             comb,
                             tuple(j for j in indices if j not in comb),
                             delta=delta
                         )
+                        new_index = new_net.get_contraction_index(u, v)[0]
+                        left_size = np.prod([curr_indices[i].size for i in comb])
+                        right_size = np.prod([curr_indices[i].size for i in indices if i not in comb])
+                        if new_index.size >= min(left_size, right_size):
+                            continue
+
                         ts = time.time() - start - logging_time
                         best_network = self.add_wodup(
                             best_network,
@@ -632,15 +704,15 @@ class SearchEngine:
                         verbose_end = time.time()
                         logging_time += verbose_end - verbose_start
 
-                if count > 10000:
-                    break
+                # if count > 10000:
+                #     break
 
         end = time.time()
 
         search_stats["time"] = end - start - logging_time
         search_stats["best_network"] = best_network
-        search_stats["cr_core"] = best_network.cost() / np.prod([i.size for i in net.free_indices()])
-        search_stats["cr_start"] = best_network.cost() / net.cost()
+        search_stats["cr_core"] = np.prod([i.size for i in net.free_indices()]) / best_network.cost()
+        search_stats["cr_start"] = net.cost() / best_network.cost()
         err = approx_error(target_tensor, best_network)
         search_stats["reconstruction_error"] = err
 
