@@ -10,6 +10,7 @@ import argparse
 from typing import Sequence, Dict, Set, List, Tuple, Self
 from pydantic.dataclasses import dataclass
 
+import pickle
 import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,8 +22,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--tag", type=str)
 parser.add_argument("--log", type=str)
 
+class Action:
+    def execute(self):
+        raise NotImplementedError
 
-class Split:
+class Split(Action):
     """Split action."""
 
     def __init__(
@@ -44,14 +48,16 @@ class Split:
     def execute(self, network: TensorNetwork, delta: float) -> Tuple[bool, float]:
         """Execute a split action."""
         node_indices = network.network.nodes[self.node]["tensor"].indices
+        print("node indices", node_indices)
         left_dims = [node_indices[i].size for i in self.left_indices]
         right_dims = [node_indices[i].size for i in self.right_indices]
         [u, v], new_delta = network.split(self.node, self.left_indices, self.right_indices, delta=delta)
         index_sz = network.get_contraction_index(u, v)[0].size
         index_max = min(np.prod(left_dims), np.prod(right_dims))
+        print("result index", index_sz, "theorectical max", index_max, "left_dims", left_dims, "right_dims", right_dims)
         return index_sz == index_max, new_delta
 
-class Merge:
+class Merge(Action):
     """Merge action."""
 
     def __init__(self, node1: NodeName, node2: NodeName):
@@ -70,7 +76,8 @@ class Merge:
         return network
 
 class SearchState:
-    def __init__(self, net, delta, threshold=0.1, max_ops = 5):
+    """Class for representation of intermediate search states."""
+    def __init__(self, net: TensorNetwork, delta: float, threshold: float = 0.1, max_ops: int = 5):
         self.network = net
         self.curr_delta = delta
         self.last_action = None      # Last action taken to reach this state
@@ -106,7 +113,7 @@ class SearchState:
 
         return actions
 
-    def take_action(self, action):
+    def take_action(self, action: Action):
         """Return a new GameState after taking the specified action."""
         if isinstance(action, Split):
             new_net = copy.deepcopy(self.network)
@@ -129,20 +136,23 @@ class SearchState:
         new_state.is_noop = isinstance(action, Split) and is_noop
         return new_state
 
-    def is_terminal(self):
-        return len(self.network.network.nodes) >= self.max_ops or self.is_noop
+    def is_terminal(self) -> bool:
+        """Whether the current state is a terminal state."""
+        return self.is_noop or len(self.network.network.nodes) >= self.max_ops
     
-    def get_result(self, total_cost):
+    def get_result(self, total_cost: float) -> float:
+        """Whether the current state succeeds or not."""
         if self.is_noop:
             return 0
         
-        return self.network.cost() <= self.threshold * total_cost
+        return float(self.network.cost() <= self.threshold * total_cost)
     
     def __lt__(self, other: Self) -> bool:
         return self.network.cost() > other.network.cost()
 
 class Node:
-    def __init__(self, state, parent=None):
+    """Representation of one node in MCTS."""
+    def __init__(self, state: SearchState, parent: Self = None):
         self.state = state                  # Game state for this node
         self.parent = parent                # Parent node
         self.children = []                  # List of child nodes
@@ -153,7 +163,7 @@ class Node:
         """Check if all possible moves have been expanded."""
         return len(self.children) == len(self.state.get_legal_actions())
 
-    def best_child(self, exploration_weight=1.41):
+    def best_child(self, exploration_weight:float = 1.41) -> Self:
         """Use UCB1 to select the best child node."""
         choices_weights = []
         for child in self.children:
@@ -187,7 +197,7 @@ class Node:
         self.children.append(child_node)
         return child_node
 
-    def backpropagate(self, result):
+    def backpropagate(self, result: int):
         """Backpropagate the result of the simulation up the tree."""
         self.visits += 1
         self.wins += result
@@ -195,12 +205,14 @@ class Node:
             self.parent.backpropagate(result)
 
 class MCTS:
-    def __init__(self, exploration_weight=1.41):
+    """The MCTS search engine."""
+    def __init__(self, exploration_weight: float = 1.41):
         self.exploration_weight = exploration_weight
         self.initial_cost = 0
         self.best_network = None
 
-    def search(self, initial_state, simulations=1000):
+    def search(self, initial_state: SearchState, simulations: int=1000):
+        """Perform the mcts search."""
         root = Node(initial_state)
         self.initial_cost = initial_state.network.cost()
         self.best_network = initial_state.network
@@ -214,7 +226,19 @@ class MCTS:
             node.backpropagate(result)
             print("one simulation time", time.time() - start)
 
-    def select(self, node):
+        # do several samples and printout the networks
+        for i in range(10):
+            print("sample", i)
+            node = root
+            while not node.state.is_terminal():
+                if len(node.children) <= 0:
+                    break
+
+                node = node.best_child(self.exploration_weight)
+                node.state.network.draw()
+                plt.show()
+
+    def select(self, node: Node) -> Node:
         """Select a leaf node."""
         while not node.state.is_terminal():
             if node.is_fully_expanded():
@@ -223,14 +247,24 @@ class MCTS:
                 return node
         return node
 
-    def simulate(self, node):
+    def simulate(self, node: Node) -> float:
         """Run a random simulation from the given node to a terminal state."""
         current_state = node.state
+        if current_state.is_noop:
+            print(current_state.is_terminal())
+            current_state.network.draw()
+            plt.show()
         start = time.time()
         step = 0
         while not current_state.is_terminal():
             action = random.choice(current_state.get_legal_actions())
+            print("simulating with action", action)
+
+            current_state.network.draw()
+            plt.show()
+            
             current_state = current_state.take_action(action)
+            print("is current state noop?", current_state.is_noop)
             step += 1
 
         print("complete", step, "steps in", time.time() - start)
@@ -238,6 +272,8 @@ class MCTS:
         if current_state.network.cost() < self.best_network.cost():
             self.best_network = current_state.network
 
+        current_state.network.draw()
+        plt.show()
         return current_state.get_result(self.initial_cost)
 
 class BeamSearch:
@@ -416,7 +452,7 @@ class SearchEngine:
         stats["cr_start"] = net.cost() / best.cost()
         stats["reconstruction_error"] = np.linalg.norm(best.contract().value - target_tensor) / np.linalg.norm(target_tensor)
         stats["best_network"] = best
-        
+
         best.draw()
         plt.show()
         return stats

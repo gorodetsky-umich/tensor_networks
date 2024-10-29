@@ -272,6 +272,15 @@ class Tensor:
 
         return [u_tensor, v_tensor], d
 
+    def permute(self, target_indices):
+        """Return a new tensor with indices permuted by the specified order."""
+        if not target_indices:
+            return self
+        
+        print("permuting", self.indices, "into", target_indices)
+        value = np.permute_dims(self.value, tuple(target_indices))
+        indices = [self.indices[i] for i in target_indices]
+        return Tensor(value, indices)
 
 # @dataclass(frozen=True, eq=True)
 @dataclass(eq=True)
@@ -697,53 +706,82 @@ class TensorNetwork:
             visited[name] = 1
             children_rs = []
             nbrs = list(self.network.neighbors(name))
+            permute_indices = []
+            merged = name
             for n in nbrs:
                 if n not in visited:
                     # Process children before the current node.
-                    children_rs.append(_postorder(name, n))
+                    c = _postorder(name, n)
+                    indices = self.network.nodes[merged]["tensor"].indices
+                    permute_index = indices.index(self.get_contraction_index(merged, c)[0])
+                    permute_indices = list(range(permute_index))
+                    permute_indices.append(len(indices) - 1)
+                    permute_indices.extend(list(range(permute_index, len(indices) - 1)))
+                    merged = self.merge(merged, c)
+                    
+                    # restore the last index into the permute_index position
+                    self.network.nodes[merged]["tensor"] = self.network.nodes[merged]["tensor"].permute(permute_indices)
 
-            # Subsume r values from its children.
-            merged = name
-            for c in children_rs:
-                merged = self.merge(merged, c)
+            # after the merging, the indices should be in the correct order.
+            if pname is None:
+                # since split relying on ordered indices, we should restore the index order here.
+                
+                return merged
+            
+            left_indices, right_indices = [], []
+            merged_indices = self.network.nodes[merged]["tensor"].indices
+            # print(merged_indices)
+            for i, index in enumerate(merged_indices):
+                common_index = None
+                for n in self.network.neighbors(merged):
+                    n_indices = self.network.nodes[n]["tensor"].indices
+                    if index in n_indices:
+                        common_index = i
 
-            r = merged
-            if pname is not None:
-                left_indices, right_indices = [], []
-                merged_indices = self.network.nodes[merged]["tensor"].indices
-                for i, index in enumerate(merged_indices):
-                    common_index = None
-                    for n in self.network.neighbors(merged):
-                        n_indices = self.network.nodes[n]["tensor"].indices
-                        if index in n_indices:
-                            common_index = i
+                        # The edge direction is determined by
+                        # whether a neighbor node has been processed.
+                        # In post-order traversal, if a neighbor has been
+                        # processed before the current node, it is view as
+                        # a child of the current node.
+                        # Otherwise, it is viewed as the parent.
+                        # The edge direction matters in orthonormalization
+                        # because the q part should include indices
+                        # shared with its children and the r part should
+                        # include indices shared with its parent.
+                        # We use the left_indices to keep track of indices
+                        # shared with children, and right_indices to keep
+                        # track of indices shared with the parent.
+                        if n not in visited or visited[n] == 2:
+                            left_indices.append(common_index)
+                        else:
+                            right_indices.append(common_index)
 
-                            # The edge direction is determined by
-                            # whether a neighbor node has been processed.
-                            # In post-order traversal, if a neighbor has been
-                            # processed before the current node, it is view as
-                            # a child of the current node.
-                            # Otherwise, it is viewed as the parent.
-                            # The edge direction matters in orthonormalization
-                            # because the q part should include indices
-                            # shared with its children and the r part should
-                            # include indices shared with its parent.
-                            # We use the left_indices to keep track of indices
-                            # shared with children, and right_indices to keep
-                            # track of indices shared with the parent.
-                            if n not in visited or visited[n] == 2:
-                                left_indices.append(common_index)
-                            else:
-                                right_indices.append(common_index)
+                        break
 
-                            break
+                if common_index is None:
+                    left_indices.append(i)
 
-                    if common_index is None:
-                        left_indices.append(i)
+            (q, r), _ = self.split(
+                merged, left_indices, right_indices, mode="qr"
+            )
+            # this split changes the index orders, which affects the outer split result.
+            # q has the indices r_split x right_indices
+            # but we want r_split to replace the original left_indices
+            # so we need to permute this tensor
+            permute_indices = []
+            for i, li in enumerate(left_indices):
+                if li < right_indices[0]:
+                    permute_indices.append(li)
+                else:
+                    permute_indices.append(len(left_indices))
+                    permute_indices.extend([idx - 1 for idx in left_indices[i:]])
+                    break
+            if len(permute_indices) != len(left_indices) + 1:
+                permute_indices.append(len(left_indices))
 
-                (_, r), _ = self.split(
-                    merged, left_indices, right_indices, mode="qr"
-                )
+            # print(left_indices, right_indices, permute_indices)
+            # print(self.network.nodes[q]["tensor"].indices)
+            self.network.nodes[q]["tensor"] = self.network.nodes[q]["tensor"].permute(permute_indices)
 
             visited[name] = 2
             visited[merged] = 2
