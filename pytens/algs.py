@@ -276,8 +276,7 @@ class Tensor:
         """Return a new tensor with indices permuted by the specified order."""
         if not target_indices:
             return self
-        
-        print("permuting", self.indices, "into", target_indices)
+
         value = np.permute_dims(self.value, tuple(target_indices))
         indices = [self.indices[i] for i in target_indices]
         return Tensor(value, indices)
@@ -483,7 +482,7 @@ class TensorNetwork:
 
         tn = TensorNetwork()
         tn.network = u
-        
+
         # print("ATTACH TN: ", tn)
         # print("self is: ", self)
         return tn
@@ -586,7 +585,7 @@ class TensorNetwork:
         self.add_node(u_name, u.rename_indices({"r_split": new_index}))
         v_name = self.fresh_node()
         self.add_node(v_name, v.rename_indices({"r_split": new_index}))
-        
+
         for y in x_nbrs:
             y_inds = self.network.nodes[y]["tensor"].indices
             if any(i in y_inds for i in u.indices):
@@ -704,7 +703,6 @@ class TensorNetwork:
         def _postorder(pname: Optional[NodeName], name: NodeName) -> NodeName:
             """Postorder traversal the network from a given node name."""
             visited[name] = 1
-            children_rs = []
             nbrs = list(self.network.neighbors(name))
             permute_indices = []
             merged = name
@@ -712,22 +710,21 @@ class TensorNetwork:
                 if n not in visited:
                     # Process children before the current node.
                     c = _postorder(name, n)
+
+                    # since split relying on ordered indices, we should restore the index order here.
                     indices = self.network.nodes[merged]["tensor"].indices
                     permute_index = indices.index(self.get_contraction_index(merged, c)[0])
                     permute_indices = list(range(permute_index))
                     permute_indices.append(len(indices) - 1)
                     permute_indices.extend(list(range(permute_index, len(indices) - 1)))
                     merged = self.merge(merged, c)
-                    
+
                     # restore the last index into the permute_index position
                     self.network.nodes[merged]["tensor"] = self.network.nodes[merged]["tensor"].permute(permute_indices)
 
-            # after the merging, the indices should be in the correct order.
             if pname is None:
-                # since split relying on ordered indices, we should restore the index order here.
-                
                 return merged
-            
+
             left_indices, right_indices = [], []
             merged_indices = self.network.nodes[merged]["tensor"].indices
             # print(merged_indices)
@@ -802,11 +799,11 @@ class TensorNetwork:
 
         return int(cost)
 
-    def canonical_structure(self):
+    def canonical_structure(self, consider_ranks:bool=False):
         """Compute the canonical structure of the tensor network.
-        
+
         This method ignores all values, keeps all free indices and edge labels.
-        If the resulted topology is the same, we consider 
+        If the resulted topology is the same, we consider
         """
         # find the node with first free index and use it as the tree root
         free_indices = sorted(self.free_indices())
@@ -825,32 +822,20 @@ class TensorNetwork:
             for n in nbrs:
                 if n not in visited:
                     # Process children before the current node.
-                    children_rs.append((n, _postorder(n)))
+                    children_rs.append(_postorder(n))
 
-            sorted_children_rs = tuple(sorted(children_rs, key=lambda x: x[1]))
+            sorted_children_rs = tuple(sorted(children_rs))
             indices = self.network.nodes[name]["tensor"].indices
-            parent_index = None
-            self_free_indices = []
-            for i, index in enumerate(indices):
-                matched = False
-                for n in self.network.neighbors(name):
-                    n_indices = self.network.nodes[n]["tensor"].indices
-                    if index in n_indices:
-                        
-                        if n in visited and visited[n] == 1:
-                            parent_index = index
-                            matched = True
-                        elif n in visited and visited[n] == 2:
-                            matched = True
-                        else:
-                            print("Unexpected index", index)
-
-                if not matched:
-                    self_free_indices.append(index)
+            all_free_indices = self.free_indices()
+            ranks = tuple(sorted([i.size for i in indices]))
+            self_free_indices = tuple(sorted([i for i in indices if i in all_free_indices]))
 
             visited[name] = 2
-            features = (tuple(sorted(self_free_indices)), tuple([h for _, h in sorted_children_rs]))
-            # print(name, features)
+            if consider_ranks:
+                features = (self_free_indices, ranks, sorted_children_rs)
+            else:
+                features = (self_free_indices, sorted_children_rs)
+            
             return hash(features)
 
         return _postorder(root)
@@ -933,7 +918,7 @@ class TensorNetwork:
 
         while node_idx != len(self.network.nodes):
             tensor = self.network.nodes[node]["tensor"]
-            
+
             for n in self.network.neighbors(node):
                 if n != node_idx - 1:
                     next_node = n
@@ -978,7 +963,7 @@ class TensorNetwork:
         for index in free_indices:
             if index.size == 1:
                 continue
-            
+
             free_graph.add_node(f"{index.name}-f-{index.size}")
 
         new_graph = nx.compose(self.network, free_graph)

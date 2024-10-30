@@ -3,6 +3,8 @@
 from typing import Any, Dict
 import json
 import os
+import pickle
+
 import matplotlib.pyplot as plt
 
 from benchmarks.benchmark import Benchmark
@@ -48,6 +50,9 @@ class Runner:
                 stats = search_engine(net)
                 f.write(f"{i},{stats['time']},{stats['reconstruction_error']},{stats['cr_core']},{stats['cr_start']}\n")
                 bn = stats.pop("best_network")
+                with open(f"{output_dir}/{log_name}.pkl", "wb") as f:
+                    pickle.dump(bn, f)
+
                 bn.draw()
                 plt.savefig(f"{output_dir}/{log_name}_result.png")
                 plt.close()
@@ -68,7 +73,12 @@ if __name__ == "__main__":
     parser.add_argument("--repeat", type=int, default=1, help="Number of repeats to run for each benchmark")
     parser.add_argument("--eps", type=float, help="Error target")
     parser.add_argument("--max_ops", type=int, default=5, help="Maximum number of operations to search for")
-    parser.add_argument("--beam_size", type=int,)
+    parser.add_argument("--beam_size", type=int, help="Specify the beam size during beam search")
+    parser.add_argument("--prune", action="store_true", help="Whether to perform pruning during BFS or DFS")
+    parser.add_argument("--consider_ranks", action="store_true", help="Whether to consider edge ranks during pruning")
+    parser.add_argument("--optimize", action="store_true", help="Whether to optimize the found structure by global optimization")
+    parser.add_argument("--no-heuristic", action="store_true", help="Disable prune of no truncation")
+    parser.add_argument("--timeout", type=float, default=3600, help="Timeout limit")
     parser.add_argument("--verbose", action="store_true", help="Whether to perform verbose logging")
     parser.add_argument("--collect_only", action="store_true", help="Collect log data into one single file")
 
@@ -100,7 +110,7 @@ if __name__ == "__main__":
                 with open(alog_name, "r", encoding="utf-8") as alog_file:
                     all_log = json.load(alog_file)[0]
                     # get the time that reaches the best network
-                    if "best_cost" in all_log:
+                    if "best_cost" in all_log and all_log["best_cost"]:
                         best_cost = all_log["best_cost"][-1][1]
                         for ts, c in all_log["best_cost"]:
                             if c == best_cost:

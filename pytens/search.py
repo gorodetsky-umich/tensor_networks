@@ -7,10 +7,9 @@ import heapq
 import math
 import random
 import argparse
-from typing import Sequence, Dict, Set, List, Tuple, Self
+from typing import Sequence, Dict, List, Tuple, Self
 from pydantic.dataclasses import dataclass
 
-import pickle
 import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,9 +21,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--tag", type=str)
 parser.add_argument("--log", type=str)
 
+
 class Action:
-    def execute(self):
-        raise NotImplementedError
+    """Base action."""
 
 class Split(Action):
     """Split action."""
@@ -48,14 +47,16 @@ class Split(Action):
     def execute(self, network: TensorNetwork, delta: float) -> Tuple[bool, float]:
         """Execute a split action."""
         node_indices = network.network.nodes[self.node]["tensor"].indices
-        print("node indices", node_indices)
+        # print("node indices", node_indices)
         left_dims = [node_indices[i].size for i in self.left_indices]
         right_dims = [node_indices[i].size for i in self.right_indices]
-        [u, v], new_delta = network.split(self.node, self.left_indices, self.right_indices, delta=delta)
+        [u, v], new_delta = network.split(
+            self.node, self.left_indices, self.right_indices, delta=delta
+        )
         index_sz = network.get_contraction_index(u, v)[0].size
         index_max = min(np.prod(left_dims), np.prod(right_dims))
-        print("result index", index_sz, "theorectical max", index_max, "left_dims", left_dims, "right_dims", right_dims)
         return index_sz == index_max, new_delta
+
 
 class Merge(Action):
     """Merge action."""
@@ -75,15 +76,20 @@ class Merge(Action):
         network.merge(self.node1, self.node2)
         return network
 
+
 class SearchState:
     """Class for representation of intermediate search states."""
-    def __init__(self, net: TensorNetwork, delta: float, threshold: float = 0.1, max_ops: int = 5):
+
+    def __init__(
+        self, net: TensorNetwork, delta: float, threshold: float = 0.1, max_ops: int = 5
+    ):
         self.network = net
         self.curr_delta = delta
-        self.last_action = None      # Last action taken to reach this state
+        self.last_action = None  # Last action taken to reach this state
         self.max_ops = max_ops
         self.threshold = threshold
         self.is_noop = False
+        self.used_ops = 0
 
     def get_legal_actions(self):
         """Return a list of all legal actions in this state."""
@@ -128,42 +134,59 @@ class SearchState:
             is_noop = False
         else:
             raise TypeError("Unrecognized action type")
-        
+
         # new_net.draw()
         # plt.show()
-        new_state = SearchState(new_net, new_delta, max_ops=self.max_ops, threshold=self.threshold)
+        new_state = SearchState(
+            new_net, new_delta, max_ops=self.max_ops, threshold=self.threshold
+        )
         new_state.last_action = action
+        new_state.used_ops = self.used_ops + 1
         new_state.is_noop = isinstance(action, Split) and is_noop
         return new_state
+
+    def optimize(self):
+        """Optimize the current structure."""
+        free_indices = self.network.free_indices()
+        root = None
+        for n, t in self.network.network.nodes(data=True):
+            if free_indices[0] in t["tensor"].indices:
+                root = n
+                break
+
+        root = self.network.orthonormalize(root)
+        _, self.curr_delta = self.network.optimize(root, self.curr_delta)
 
     def is_terminal(self) -> bool:
         """Whether the current state is a terminal state."""
         return self.is_noop or len(self.network.network.nodes) >= self.max_ops
-    
+
     def get_result(self, total_cost: float) -> float:
         """Whether the current state succeeds or not."""
         if self.is_noop:
             return 0
-        
+
         return float(self.network.cost() <= self.threshold * total_cost)
-    
+
     def __lt__(self, other: Self) -> bool:
         return self.network.cost() > other.network.cost()
 
+
 class Node:
     """Representation of one node in MCTS."""
+
     def __init__(self, state: SearchState, parent: Self = None):
-        self.state = state                  # Game state for this node
-        self.parent = parent                # Parent node
-        self.children = []                  # List of child nodes
-        self.visits = 0                     # Number of times this node was visited
-        self.wins = 0                       # Number of wins after visiting this node
+        self.state = state  # Game state for this node
+        self.parent = parent  # Parent node
+        self.children = []  # List of child nodes
+        self.visits = 0  # Number of times this node was visited
+        self.wins = 0  # Number of wins after visiting this node
 
     def is_fully_expanded(self):
         """Check if all possible moves have been expanded."""
         return len(self.children) == len(self.state.get_legal_actions())
 
-    def best_child(self, exploration_weight:float = 1.41) -> Self:
+    def best_child(self, exploration_weight: float = 1.41) -> Self:
         """Use UCB1 to select the best child node."""
         choices_weights = []
         for child in self.children:
@@ -172,7 +195,9 @@ class Node:
             elif child.state.is_terminal() and child.wins == 0:
                 weight = 0
             else:
-                weight = (child.wins / child.visits) + exploration_weight * math.sqrt(math.log(self.visits) / child.visits)
+                weight = (child.wins / child.visits) + exploration_weight * math.sqrt(
+                    math.log(self.visits) / child.visits
+                )
 
             choices_weights.append(weight)
 
@@ -184,13 +209,21 @@ class Node:
         """Expand by creating a new child node for a random untried action."""
         legal_actions = self.state.get_legal_actions()
         tried_actions = [child.state.last_action for child in self.children]
-        untried_actions = [action for action in legal_actions if action not in tried_actions]
+        untried_actions = [
+            action for action in legal_actions if action not in tried_actions
+        ]
 
         action = random.choice(untried_actions)
         start = time.time()
         next_state = self.state.take_action(action)
         if isinstance(action, Split):
-            print("completing the action", action, self.state.network.network.nodes[action.node]["tensor"].indices, "takes", time.time() - start)
+            print(
+                "completing the action",
+                action,
+                self.state.network.network.nodes[action.node]["tensor"].indices,
+                "takes",
+                time.time() - start,
+            )
         else:
             print("completing the action", action, "takes", time.time() - start)
         child_node = Node(state=next_state, parent=self)
@@ -204,39 +237,28 @@ class Node:
         if self.parent:
             self.parent.backpropagate(result)
 
+
 class MCTS:
     """The MCTS search engine."""
+
     def __init__(self, exploration_weight: float = 1.41):
         self.exploration_weight = exploration_weight
         self.initial_cost = 0
         self.best_network = None
 
-    def search(self, initial_state: SearchState, simulations: int=1000):
+    def search(self, initial_state: SearchState, simulations: int = 1000):
         """Perform the mcts search."""
         root = Node(initial_state)
         self.initial_cost = initial_state.network.cost()
         self.best_network = initial_state.network
-        
+
         for _ in range(simulations):
-            start = time.time()
             node = self.select(root)
             if not node.state.is_terminal():
                 node = node.expand()
             result = self.simulate(node)
             node.backpropagate(result)
-            print("one simulation time", time.time() - start)
-
-        # do several samples and printout the networks
-        for i in range(10):
-            print("sample", i)
-            node = root
-            while not node.state.is_terminal():
-                if len(node.children) <= 0:
-                    break
-
-                node = node.best_child(self.exploration_weight)
-                node.state.network.draw()
-                plt.show()
+            # print("one simulation time", time.time() - start)
 
     def select(self, node: Node) -> Node:
         """Select a leaf node."""
@@ -249,47 +271,41 @@ class MCTS:
 
     def simulate(self, node: Node) -> float:
         """Run a random simulation from the given node to a terminal state."""
-        current_state = node.state
-        if current_state.is_noop:
-            print(current_state.is_terminal())
-            current_state.network.draw()
-            plt.show()
-        start = time.time()
+        curr_state = node.state
+        prev_state = node.state
         step = 0
-        while not current_state.is_terminal():
-            action = random.choice(current_state.get_legal_actions())
-            print("simulating with action", action)
-
-            current_state.network.draw()
-            plt.show()
-            
-            current_state = current_state.take_action(action)
-            print("is current state noop?", current_state.is_noop)
+        while not curr_state.is_terminal():
+            prev_state = curr_state
+            action = random.choice(curr_state.get_legal_actions())
+            curr_state = curr_state.take_action(action)
             step += 1
 
-        print("complete", step, "steps in", time.time() - start)
+        # print("complete", step, "steps in", time.time() - start)
+        best_candidate = curr_state
+        if curr_state.is_noop:
+            best_candidate = prev_state
 
-        if current_state.network.cost() < self.best_network.cost():
-            self.best_network = current_state.network
+        if best_candidate.network.cost() < self.best_network.cost():
+            self.best_network = best_candidate.network
 
-        current_state.network.draw()
-        plt.show()
-        return current_state.get_result(self.initial_cost)
+        return curr_state.get_result(self.initial_cost)
+
 
 class BeamSearch:
     """Beam search with a given beam size."""
+
     def __init__(self, params):
         self.params = params
         self.heap = None
         self.initial_cost = 0
         self.best_network = None
-    
+
     def search(self, initial_state):
         """Perform the beam search from the given initial state."""
         self.initial_cost = initial_state.network.cost()
         self.best_network = initial_state.network
         self.heap = [initial_state]
-        
+
         for _ in range(self.params["max_ops"]):
             start = time.time()
             # maintain a set of networks of at most k
@@ -316,6 +332,7 @@ class BeamSearch:
 
         self.heap = next_level
 
+
 def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
     """Compute the reconstruction error.
 
@@ -327,22 +344,37 @@ def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
     net_value = net.contract().value
     perm = [net_free_indices.index(i) for i in target_free_indices]
     net_value = net_value.transpose(perm)
-    error = float(np.linalg.norm(net_value - tensor.value) / np.linalg.norm(tensor.value))
+    error = float(
+        np.linalg.norm(net_value - tensor.value) / np.linalg.norm(tensor.value)
+    )
     return error
 
-def log_stats(search_stats, target_tensor, ts, n, ops, bn):
-    search_stats["ops"].append((ts, ops))
-    search_stats["costs"].append((ts, n.cost()))
-    err = approx_error(target_tensor, n)
+
+def log_stats(
+    search_stats: dict,
+    target_tensor: np.ndarray,
+    ts: float,
+    st: SearchState,
+    bn: TensorNetwork,
+):
+    """Log statistics of a given state."""
+    search_stats["ops"].append((ts, st.used_ops))
+    search_stats["costs"].append((ts, st.network.cost()))
+    err = approx_error(target_tensor, st.network)
     search_stats["errors"].append((ts, err))
     search_stats["best_cost"].append((ts, bn.cost()))
 
+
 class MyConfig:
-    arbitrary_types_allowed=True
+    """Configuring data classes"""
+
+    arbitrary_types_allowed = True
+
 
 @dataclass(config=MyConfig)
 class EnumState:
     """Enumeration state."""
+
     network: TensorNetwork
     ops: int
     delta: float
@@ -355,14 +387,20 @@ class EnumState:
         else:
             return self.delta < other.delta
 
+
 class StructureFactory:
+    """Pure structure generation."""
+
     def __init__(self):
         self.space = nx.DiGraph()
 
-    def initialize(self, network: TensorNetwork, max_ops: int = 10):
+    def initialize(self, network: TensorNetwork, max_ops: int = 6):
+        """Initial the factory with all possible structures 
+        up to a given maximum number of operations.
+        """
         if max_ops == 0:
             return
-        
+
         curr_node = network.canonical_structure()
         for n in network.network.nodes:
             curr_indices = network.network.nodes[n]["tensor"].indices
@@ -379,15 +417,21 @@ class StructureFactory:
                         n,
                         comb,
                         tuple(j for j in indices if j not in comb),
-                        preview=True
+                        preview=True,
                     )
 
                     new_node = new_net.canonical_structure()
                     # print("checking", new_node)
                     if new_node not in self.space.nodes:
                         self.space.add_node(new_node, network=new_net)
-                    self.space.add_edge(curr_node, new_node, action=Split(n, comb, tuple(j for j in indices if j not in comb)))
-                    self.initialize(new_net, max_ops-1)
+                    self.space.add_edge(
+                        curr_node,
+                        new_node,
+                        action=Split(
+                            n, comb, tuple(j for j in indices if j not in comb)
+                        ),
+                    )
+                    self.initialize(new_net, max_ops - 1)
 
             # can we perform merge?
             for m in network.network.neighbors(n):
@@ -399,7 +443,8 @@ class StructureFactory:
                     if new_node not in self.space.nodes:
                         self.space.add_node(new_node, network=new_net)
                     self.space.add_edge(curr_node, new_node, action=Merge(n, m))
-                    self.initialize(new_net, max_ops-1)
+                    self.initialize(new_net, max_ops - 1)
+
 
 class SearchEngine:
     """Tensor network topology search engine."""
@@ -407,26 +452,32 @@ class SearchEngine:
     def __init__(self, params: Dict):
         self.params = params
 
-    def add_wodup(self,
+    def add_wodup(
+        self,
         best_network: TensorNetwork,
-        new_net: TensorNetwork,
-        delta: float,
-        worked: Set[Tuple],
-        worklist: List[TensorNetwork],
-        ops: int,
+        new_st: SearchState,
+        worked: set,
+        worklist: List[SearchState],
     ) -> TensorNetwork:
         """Add a network to a worked set to remove duplicates."""
         # new_net.draw()
         # plt.show()
         # new_net_hash = hash(new_net)
         # if new_net_hash not in worked:
-        if best_network is None or best_network.cost() > new_net.cost():
-            best_network = new_net
+        if best_network is None or best_network.cost() > new_st.network.cost():
+            best_network = new_st.network
 
-        # if new_net.cost() < 2 * best_network.cost():
-        if ops < self.params["max_ops"]:
-            worklist.append(EnumState(new_net, ops, delta))
-        # worked.add(new_net_hash)
+        h = new_st.network.canonical_structure(
+            consider_ranks=self.params["consider_ranks"]
+        )
+        if self.params["prune"]:
+            if h in worked:
+                return best_network
+            else:
+                worked.add(h)
+
+        if new_st.used_ops < self.params["max_ops"]:
+            worklist.append(new_st)
 
         return best_network
 
@@ -450,7 +501,9 @@ class SearchEngine:
         target_tensor = net.contract().value
         stats["cr_core"] = np.prod(target_tensor.shape) / best.cost()
         stats["cr_start"] = net.cost() / best.cost()
-        stats["reconstruction_error"] = np.linalg.norm(best.contract().value - target_tensor) / np.linalg.norm(target_tensor)
+        stats["reconstruction_error"] = np.linalg.norm(
+            best.contract().value - target_tensor
+        ) / np.linalg.norm(target_tensor)
         stats["best_network"] = best
 
         best.draw()
@@ -474,14 +527,19 @@ class SearchEngine:
         target_tensor = net.contract().value
         stats["cr_core"] = np.prod(target_tensor.shape) / best.cost()
         stats["cr_start"] = net.cost() / best.cost()
-        stats["reconstruction_error"] = np.linalg.norm(best.contract().value - target_tensor) / np.linalg.norm(target_tensor)
+        stats["reconstruction_error"] = np.linalg.norm(
+            best.contract().value - target_tensor
+        ) / np.linalg.norm(target_tensor)
         stats["best_network"] = best
-        
+
         best.draw()
         plt.show()
         return stats
 
-    def dfs(self, net: TensorNetwork, max_ops: int = 4, timeout: float = 3600 * 10, budget: int = 5000):
+    def dfs(
+        self,
+        net: TensorNetwork,
+    ):
         """Perform an exhaustive enumeration with the DFS algorithm."""
         target_tensor = net.contract()
 
@@ -499,10 +557,10 @@ class SearchEngine:
         network = copy.deepcopy(net)
         delta = self.params["eps"] * net.norm()
         best_network = net
-        worked = set()
+        worked = set([network.canonical_structure()])
         count = 0
 
-        def helper(curr_net: TensorNetwork, curr_ops: int, curr_delta: float):
+        def helper(curr_st: SearchState):
             # plt.figure(curr_net.canonical_structure())
             nonlocal best_network
             nonlocal logging_time
@@ -512,129 +570,50 @@ class SearchEngine:
 
             count += 1
 
-            # canon = curr_net.canonical_structure()
-            # if canon == 1666526642026772368:
-            #     curr_net.draw()
-            #     plt.show()
+            if self.params["prune"]:
+                h = curr_st.network.canonical_structure(
+                    consider_ranks=self.params["consider_ranks"]
+                )
+                if h in worked:
+                    return
+                else:
+                    worked.add(h)
 
-            frees = curr_net.free_indices()
-            # if len(curr_net.network.nodes) == 4 and all(len(d["tensor"].indices) <= 3 and len(set(d["tensor"].indices).intersection(set(frees))) == 1 for _, d in curr_net.network.nodes(data=True)):
-            #     curr_net.draw()
-            #     plt.show()
-            # print(len(curr_net.network.nodes))
-            # for n, d in curr_net.network.nodes(data=True):
-            #     print(n, len(d["tensor"].indices))
-            #     print(n, len(set(d["tensor"].indices).intersection(set(frees))))
-            # curr_net.draw()
-            # plt.show()
-
-            # if (curr_ops, canon) in worked:
-            #     print("prune")
-            #     return
-            
-            # # print("keep")            
-            # worked.add((curr_ops, canon))
-
-            if curr_ops >= max_ops:
-                return
-            
-            if time.time() - start > timeout:
+            if curr_st.used_ops >= self.params["max_ops"]:
                 return
 
-            # can we perform split?
-            for n in curr_net.network.nodes:
-                curr_indices = curr_net.network.nodes[n]["tensor"].indices
-                indices = range(len(curr_indices))
-                # get all partitions of indices
-                for sz in range(1, len(indices) // 2 + 1):
-                    combs = list(itertools.combinations(indices, sz))
-                    if len(indices) % 2 == 0 and sz == len(indices) // 2:
-                        combs = combs[: len(combs) // 2]
+            if time.time() - start > self.params["timeout"]:
+                return
 
-                    for comb in combs:
-                        new_net = copy.deepcopy(curr_net)
-                        try:
-                            # print("split", n, [curr_indices[i] for i in comb])
-                            #TODO: look ahead and check whether this is a duplicate
-                            [u, v], new_delta = new_net.split(
-                                n,
-                                comb,
-                                tuple(j for j in indices if j not in comb),
-                                delta=curr_delta
-                            )
-                            if new_net.canonical_structure() == -4013424694000593114:
-                                print(curr_net.canonical_structure())
-                                curr_net.draw()
-                                plt.show()
-                            # index_uv = new_net.get_contraction_index(u, v)[0]
-                            # after split, we already orthonormalized the env
-                            # print("before optimize")
-                            # _, new_delta = new_net.optimize(v, new_delta)
-                            # if len(new_net.network.nodes) == 5 and all(len(d["tensor"].indices) <= 3 for _, d in new_net.network.nodes(data=True)):
-                            #     plt.subplot(211)
-                            #     curr_net.draw()
-                            #     plt.subplot(212)
-                            #     new_net.draw()
-                            #     plt.show()
-                            # after update, we need to orthonormalize the env before next optimization
-                            # print("before normalize")
-                            # new_net.draw()
-                            # plt.show()
-                            # u = new_net.orthonormalize(u)
-                            # print("after optimize")
-                            # index_uv = new_net.get_contraction_index(u, v)[0]
-                            # _, new_delta = new_net.optimize(u, new_delta, set([index_uv]))
-                        except np.linalg.LinAlgError as e:
-                            print("exception", e)
-                            continue
+            for ac in curr_st.get_legal_actions():
+                new_st = curr_st.take_action(ac)
+                # new_st.network.draw()
+                # plt.show()
+                if not self.params["no_heuristic"] and new_st.is_noop:
+                    continue
 
-                        if new_net.cost() < best_network.cost():
-                            best_network = new_net
+                if new_st.network.cost() < best_network.cost():
+                    best_network = new_st.network
 
-                        ts = time.time() - start - logging_time
-                        verbose_start = time.time()
-                        if self.params["verbose"]:
-                            # print(time.time() - start)
-                            log_stats(search_stats, target_tensor, ts, new_net, curr_ops+1, best_network)
-                        verbose_end = time.time()
-                        logging_time += verbose_end - verbose_start
+                ts = time.time() - start - logging_time
+                verbose_start = time.time()
+                if self.params["verbose"]:
+                    log_stats(search_stats, target_tensor, ts, new_st, best_network)
+                verbose_end = time.time()
+                logging_time += verbose_end - verbose_start
 
-                        helper(new_net, curr_ops+1, new_delta)
-
-                # can we perform merge?
-                for m in curr_net.network.neighbors(n):
-                    if n < m:
-                        new_net = copy.deepcopy(curr_net)
-                        # print("merge", n, m)
-                        new_net.merge(n, m)
-                        # plt.subplot(211)
-                        # curr_net.draw()
-                        # plt.subplot(212)
-                        # new_net.draw()
-                        # plt.show()
-                        if new_net.cost() < best_network.cost():
-                            best_network = new_net
-                        
-                        ts = time.time() - start - logging_time
-
-                        verbose_start = time.time()
-                        if self.params["verbose"]:
-                            log_stats(search_stats, target_tensor, ts, new_net, curr_ops+1, best_network)
-                        verbose_end = time.time()
-                        logging_time += verbose_end - verbose_start
-
-                        helper(new_net, curr_ops+1, curr_delta)
+                helper(new_st)
 
                 # plt.close(curr_net.canonical_structure())
 
-        helper(network, 0, delta)
+        helper(SearchState(network, delta))
         end = time.time()
 
-        print("unique structures", len(worked))
-        print("best hash", best_network.canonical_structure())
         search_stats["time"] = end - start - logging_time
         search_stats["best_network"] = best_network
-        search_stats["cr_core"] = np.prod([i.size for i in net.free_indices()]) / best_network.cost()
+        search_stats["cr_core"] = (
+            np.prod([i.size for i in net.free_indices()]) / best_network.cost()
+        )
         search_stats["cr_start"] = net.cost() / best_network.cost()
         err = approx_error(target_tensor, best_network)
         search_stats["reconstruction_error"] = err
@@ -642,7 +621,7 @@ class SearchEngine:
 
         return search_stats
 
-    def bfs(self, net: TensorNetwork, timeout = 3600):
+    def bfs(self, net: TensorNetwork):
         """Perform an exhaustive enumeration with the BFS algorithm."""
         target_tensor = net.contract()
 
@@ -661,98 +640,59 @@ class SearchEngine:
         delta = self.params["eps"] * net.norm()
 
         worked = set()
-        worklist = [EnumState(network, 0, delta)]
+        worklist = [SearchState(network, delta)]
+        worked.add(network.canonical_structure())
         best_network = None
         count = 0
 
         while len(worklist) != 0:
             st = worklist.pop(0)
-            curr_net = st.network
-            ops = st.ops
-            delta = st.delta
 
-            # print(net.canonicalize())
-            # net.draw()
-            # plt.show()
-            if time.time() - start >= timeout:
+            if time.time() - start >= self.params["timeout"]:
                 break
 
-            # can we perform split?
-            for n in curr_net.network.nodes:
-                curr_indices = curr_net.network.nodes[n]["tensor"].indices
-                indices = range(len(curr_indices))
-                # get all partitions of indices
-                for sz in range(1, len(indices) // 2 + 1):
-                    combs = list(itertools.combinations(indices, sz))
-                    if len(indices) % 2 == 0 and sz == len(indices) // 2:
-                        combs = combs[: len(combs) // 2]
+            for ac in st.get_legal_actions():
+                # plt.subplot(2,1,1)
+                # st.network.draw()
+                new_st = st.take_action(ac)
+                # plt.subplot(2,1,2)
+                # new_st.network.draw()
+                # plt.show()
+                if not self.params["no_heuristic"] and new_st.is_noop:
+                    continue
 
-                    for comb in combs:
-                        new_net = copy.deepcopy(curr_net)
-                        
-                        [u, v], new_delta = new_net.split(
-                            n,
-                            comb,
-                            tuple(j for j in indices if j not in comb),
-                            delta=delta
-                        )
-                        new_index = new_net.get_contraction_index(u, v)[0]
-                        left_size = np.prod([curr_indices[i].size for i in comb])
-                        right_size = np.prod([curr_indices[i].size for i in indices if i not in comb])
-                        if new_index.size >= min(left_size, right_size):
-                            continue
+                if self.params["optimize"]:
+                    new_st.optimize()
 
-                        ts = time.time() - start - logging_time
-                        best_network = self.add_wodup(
-                            best_network,
-                            new_net,
-                            new_delta,
-                            worked,
-                            worklist,
-                            ops + 1,
-                        )
-                        count += 1
+                ts = time.time() - start - logging_time
+                best_network = self.add_wodup(
+                    best_network,
+                    new_st,
+                    worked,
+                    worklist,
+                )
+                count += 1
 
-                        verbose_start = time.time()
-                        if self.params["verbose"]:
-                            log_stats(search_stats, target_tensor, ts, new_net, ops+1, best_network)
-                        verbose_end = time.time()
-                        logging_time += verbose_end - verbose_start
-
-                for m in curr_net.network.neighbors(n):
-                    if n < m:
-                        new_net = copy.deepcopy(curr_net)
-                        new_net.merge(n, m)
-                        ts = time.time() - start - logging_time
-                        best_network = self.add_wodup(
-                            best_network,
-                            new_net,
-                            delta,
-                            worked,
-                            worklist,
-                            ops + 1,
-                        )
-                        count += 1
-
-                        verbose_start = time.time()
-                        if self.params["verbose"]:
-                            log_stats(search_stats, target_tensor, ts, new_net, ops+1, best_network)
-                        verbose_end = time.time()
-                        logging_time += verbose_end - verbose_start
-
-                # if count > 10000:
-                #     break
+                verbose_start = time.time()
+                if self.params["verbose"]:
+                    log_stats(search_stats, target_tensor, ts, new_st, best_network)
+                verbose_end = time.time()
+                logging_time += verbose_end - verbose_start
 
         end = time.time()
 
         search_stats["time"] = end - start - logging_time
         search_stats["best_network"] = best_network
-        search_stats["cr_core"] = np.prod([i.size for i in net.free_indices()]) / best_network.cost()
+        search_stats["cr_core"] = (
+            np.prod([i.size for i in net.free_indices()]) / best_network.cost()
+        )
         search_stats["cr_start"] = net.cost() / best_network.cost()
         err = approx_error(target_tensor, best_network)
         search_stats["reconstruction_error"] = err
+        search_stats["count"] = count
 
         return search_stats
+
 
 def test_case_3():
     """Test exhaustive search.
@@ -894,9 +834,21 @@ def test_case_5():
 
 if __name__ == "__main__":
     factory = StructureFactory()
-    a = np.random.randn(14,16,18,20,22)
+    a = np.random.randn(14, 16, 18, 20, 22)
     initial_net = TensorNetwork()
-    initial_net.add_node("G", Tensor(a, [Index("a", 14), Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22)]))
+    initial_net.add_node(
+        "G",
+        Tensor(
+            a,
+            [
+                Index("a", 14),
+                Index("I0", 16),
+                Index("I1", 18),
+                Index("I2", 20),
+                Index("I3", 22),
+            ],
+        ),
+    )
     factory.initialize(initial_net, max_ops=5)
     print(len(factory.space.nodes))
     print(len(factory.space.edges))
