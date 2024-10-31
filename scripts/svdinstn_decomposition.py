@@ -6,6 +6,7 @@ import opt_einsum as oe
 import timeit
 import time
 
+from pytens import TensorNetwork, Tensor, Index
 gamma = 0.0015
 rho = 0.001
 mu = 0.1
@@ -36,15 +37,36 @@ def fold(X: np.ndarray, dims: List[int], mode: int):
     return X.transpose(permute_indices)
 
 class FCTN:
-    def __init__(self, target):
-        self.target = target
+    def __init__(self, target: np.ndarray,
+                 timeout: float,
+                 eps: float = 1e-3):
+        
         self.G = {}
         self.S = {}
+        self.stats = {}
+        self.timeout = timeout
+        self.eps = eps
+
+        # Conert TN to numpy array
+        if isinstance(target, TensorNetwork):
+            self.stats['init_cost'] = target.cost()
+            if target.network.number_of_nodes() == 1:
+                target = target.value(next(iter(target.network.nodes())))
+            else:
+                target = target.contract().value
+        elif isinstance(target, np.ndarray):
+            self.stats['init_cost'] = np.prod(target.shape)
+        else:
+            raise ValueError('Target should be either a TensorNetwork object or a numpy ndarray')
+        
+        self.target = target
         self.indices = self.target.shape
         self.N = len(self.indices)
 
     def initialize(self):
         print("======= Start =======")
+        print("Target shape : ", self.target.shape)
+        start = time.time()
         # initialize S and R by calculating the mean of all mode-(t,l) slices of the target
         ranks = np.zeros((self.N, self.N), dtype=int)
         for t in range(self.N):
@@ -70,6 +92,9 @@ class FCTN:
         for i, idx in enumerate(self.indices):
             dims = tuple(ranks[:i, i]) + (idx,) + tuple(ranks[i, i+1:])
             self.G[i] = np.ones(dims) / np.sqrt(idx)
+        
+        end = time.time()
+        self.init_time = end - start
 
     def _get_index_id(self, i, j):
         # if i == j, it returns the index Ii
@@ -345,7 +370,13 @@ class FCTN:
             err = np.linalg.norm(X - old_X) / np.linalg.norm(old_X)
             re = np.linalg.norm(X - self.target) / np.linalg.norm(self.target)
             print("Iteration:", it, "Time:", time.time() - start, "Error:", err, "RE:", re)
-            if err < 1e-3:
+            
+            if re < self.eps:
+                print("Converged!")
+                break
+
+            if (self.init_time + time.time() - start) > self.timeout:
+                print("Timeout")
                 break
 
             if it % 100 == 0:
@@ -360,7 +391,50 @@ class FCTN:
                 s_tl = self.S[(t, l)]
                 print(f"rank({t}, {l}) =", len(s_tl[s_tl!=0]))
 
+        end = time.time()
+
+        # Collect stats
+        self.stats['reconstruction_error'] = float(re)
+        self.stats['convergence'] = float(err)
+        final_cst = cost(self)
+        self.stats['cost'] = int(final_cst)
+        self.stats['cr_start'] = float(self.stats['init_cost'] / final_cst)
+        self.stats['cr_core'] = float(np.prod(self.target.shape) / final_cst)
+        self.stats['time'] = float(self.init_time + (end - start))
+
         return re
+
+    def to_tensor_network(self):
+        """
+        Collects the resultant cores post-optimization and
+        converts them to a TensorNetwork object. 
+        """
+        tn = TensorNetwork()
+        k = 0
+        index_tracker = {}
+        for g in self.G.keys():
+            index = []
+            for j, size in enumerate(self.G[g].shape):
+                index_tracker[(g, j)] = k
+                index.append(Index(k, size))
+                k += 1
+            tens = Tensor(self.G[g], index.copy())
+            tn.add_node(g, tens)
+
+        for s in self.S.keys():
+            i, j = s
+            size = self.S[s].shape[0]
+            index = [Index(index_tracker[(i, j)], size),
+                     Index(index_tracker[(j, i)], size)]
+            tens = Tensor(np.diag(self.S[s]), index.copy())
+            tn.add_node(s, tens)
+            tn.add_edge(i, s)
+            tn.add_edge(s, j)
+
+        self.tn = tn
+        
+        # Collect stats
+        self.stats['best_network'] = tn
 
 def same_topology(tn1, tn2):
     N = len(tn1.G)

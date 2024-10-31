@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from benchmarks.benchmark import Benchmark
 from pytens.search import SearchEngine
+from scripts.svdinstn_decomposition import FCTN
 
 def eps_to_str(eps: float) -> str:
     return "".join(f"{eps:.2f}".split('.'))
@@ -30,6 +31,8 @@ class Runner:
             search_engine = self.engine.mcts
         elif self.params["engine"] == "beam":
             search_engine = self.engine.beam
+        elif self.params["engine"] == "svdinstn":
+            search_engine = FCTN
         else:
             raise RuntimeError("unrecognized search engine")
 
@@ -47,7 +50,16 @@ class Runner:
         all_stats = []
         with open(f"{output_dir}/{log_name}.log", "w", encoding="utf-8") as f:
             for i in range(repeat):
-                stats = search_engine(net)
+                if self.params["engine"] == "svdinstn":
+                    fctn = search_engine(net,self.params["timeout"],
+                                         self.params["eps"])
+                    fctn.initialize()
+                    fctn.decompose()
+                    fctn.to_tensor_network()
+                    stats = fctn.stats
+                else: 
+                    stats = search_engine(net)
+                
                 f.write(f"{i},{stats['time']},{stats['reconstruction_error']},{stats['cr_core']},{stats['cr_start']}\n")
                 bn = stats.pop("best_network")
                 with open(f"{output_dir}/{log_name}.pkl", "wb") as f:
@@ -69,7 +81,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--pattern", type=str, required=True, help="Path pattern of the selected benchmarks")
-    parser.add_argument("--engine", type=str, choices=["bfs", "dfs", "mcts", "beam"], help="Type of the search engine")
+    parser.add_argument("--engine", type=str, choices=["bfs", "dfs", "mcts", "beam", "svdinstn"], help="Type of the search engine")
     parser.add_argument("--repeat", type=int, default=1, help="Number of repeats to run for each benchmark")
     parser.add_argument("--eps", type=float, help="Error target")
     parser.add_argument("--max_ops", type=int, default=5, help="Maximum number of operations to search for")
