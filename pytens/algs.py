@@ -1406,6 +1406,176 @@ def round_ttsum(
 
     return ttsum
 
+def get_tt_rank(tt: TensorNetwork) -> list:
+    ranks = []
+    for _, data in tt.network.nodes(data=True):
+        ranks.append(data["tensor"].value.shape[-1])
+    return ranks[:-1]
+
+def get_tt_shape(tt: TensorNetwork) -> list:
+    shape = []
+    k = 0
+    for _, data in tt.network.nodes(data=True):
+        if not k:
+            shape.append(data["tensor"].value.shape[0])
+        else:
+            shape.append(data["tensor"].value.shape[1])
+        k += 1
+    return shape
+
+class rand_tt_round():
+    def __init__(self,
+                 Y: Union[TensorNetwork, List[TensorNetwork]],
+                 target_ranks: List):
+
+        self.Y = Y
+        self.sum_flag = 0
+        self.target_ranks = target_ranks
+
+        if isinstance(Y, List):
+            if isinstance(Y[0], TensorNetwork):
+                self.sum_flag = 1
+                self.Y_ranks = [get_tt_rank(y) for y in Y]
+                self.d = self.Y[0].network.number_of_nodes()
+                self.ns = len(self.Y)
+            else:
+                raise ValueError()
+
+        elif isinstance(Y, TensorNetwork):
+            self.Y_ranks = get_tt_rank(Y)
+            self.d = self.Y.network.number_of_nodes()
+
+        else: raise ValueError()
+
+    
+    def init_rand_mat(self, ranks: Optional[List] = None
+                      ) -> List[np.ndarray]:
+        if ranks is None:
+            ranks = self.target_ranks
+        
+        if self.sum_flag:
+            sh = get_tt_shape(self.Y[0])
+        else:
+            sh = get_tt_shape(self.Y)
+        R = []
+        # Initialize random TT-tensor with specified variance
+        for i in range(self.d):
+            if i == 0:
+                curr_shp = [sh[i], ranks[i]]
+            elif i == self.d - 1:
+                curr_shp = [ranks[i-1], sh[i]]
+            else:
+                curr_shp = [ranks[i-1], sh[i], ranks[i]]
+            R.append(np.random.randn(*curr_shp)/np.sqrt(np.prod(curr_shp)))
+        return R
+
+
+    def partial_contraction(self, tt: TensorNetwork,
+                            Y: List[np.ndarray],
+                            dir='rl') -> List[np.ndarray]:
+        """
+        Partial contraction of TT cores. Returns a list of contracted cores
+        W_i (by combining corresponding cores of, X[:i] and Y[:i] for lr and
+        X[i:] and Y[i:] for rl contraction)
+        """
+        W = []
+        if dir == 'rl':
+            for i in range(self.d-1, 0, -1):
+                X = tt.value(i)
+                sx = X.shape; sy = Y[i].shape
+                # tmp = np.einsum('ijk,ljm->ilkm', X[i], Y[i])
+                if i == self.d - 1:
+                    W.append(X @ Y[i].T)
+                    continue
+                tmp = (X.reshape((-1, sx[-1])) @ W[-1]).reshape((sx[0], -1))
+                tmp = tmp @ Y[i].reshape((sy[0], -1)).T
+                W.append(tmp)
+
+            W = W[::-1]
+            return W
+
+        raise ValueError()
+
+
+    def Rand_then_Orth(self):
+        assert self.sum_flag == 0, "It seems that this function is \
+                                    being used to round a TT-sum"
+        
+        R = self.init_rand_mat()
+        W = self.partial_contraction(self.Y, R, 'rl')
+        X_approx = self.Y.value(0)
+        res = copy.deepcopy(self.Y)
+
+        for i in range(self.d-1):
+            sx = list(X_approx.shape)
+            Zn = X_approx.reshape((-1, X_approx.shape[-1]))
+            Yn = Zn @ W[i]
+            q, _ = np.linalg.qr(Yn)
+            X_approx = q.reshape(sx[:-1]+[q.shape[-1]])
+            res.network.nodes[i]["tensor"].update_val_size(X_approx)
+            # X_approx.append(np.einsum('ij,jk,klm->ilm', q.T, Zn, self.Y[i+1]))
+            sy = list(self.Y.value(i+1).shape)
+            X_approx = (q.T @ Zn @ self.Y.value(i+1).reshape((sy[0], -1))
+                        ).reshape([q.shape[-1]]+sy[1:])
+
+        res.network.nodes[self.d - 1]["tensor"].update_val_size(X_approx)
+        
+        self.res = res
+
+
+    def RTO_rounding_ttsum(self):
+        assert self.sum_flag == 1, "It seems that this function is being used \
+                                    to round a single TT"
+        R = self.init_rand_mat()
+        X_approx = []
+        W = []
+        res = copy.deepcopy(self.Y[0])
+        
+        for y in self.Y:
+            X_approx.append(y.value(0))
+            W.append(self.partial_contraction(y, R))
+        X_approx = np.concatenate(X_approx, axis=1)
+        
+        for i in range(self.d-1):
+            sx = list(X_approx.shape)
+            Rk = []
+            Rkp1 = []
+            W_curr = []
+            
+            # Setup
+            for j in range(self.ns):
+                sh = self.Y[j].value(i).shape
+                Rk.append(sh[-1])
+                Rkp1.append(self.Y[j].value(i+1).shape[-1])
+                W_curr.append(W[j][i])
+
+            Rksum = np.sum(Rk)
+            Rkp1sum = np.sum(Rkp1)
+            Rkcumsum = np.cumsum([0]+Rk)
+
+            # Start
+            Zn = X_approx.reshape((-1, sx[-1]))
+            Yn = Zn @ np.concatenate(W_curr, axis=0)
+            q, _ = np.linalg.qr(Yn)
+            self.target_ranks[i] = min(self.target_ranks[i], q.shape[-1])
+            Mn = (q.T @ Zn)
+            X_approx = q.reshape((sx[:-1]+[self.target_ranks[i]]))
+            res.network.nodes[i]["tensor"].update_val_size(X_approx)
+            Xnp1 = []
+            for j in range(self.ns):
+                shp1 = self.Y[j].value(i+1).shape
+                tmp = Mn[:, Rkcumsum[j]:Rkcumsum[j+1]] @ self.Y[j].value(i+1).reshape((shp1[0], -1))
+                Xnp1.append(tmp.reshape((-1, Rkp1[j])))
+            
+            if i < self.d - 2:
+                X_approx = np.concatenate(Xnp1, axis=1).reshape((self.target_ranks[i], shp1[1], Rkp1sum))
+            else:
+                X_approx = (np.sum(Xnp1, axis=0).reshape((self.target_ranks[i], shp1[1])))
+                res.network.nodes[self.d - 1]["tensor"].update_val_size(X_approx)
+            
+        self.res = res
+    
+
 
 def ttop_rank1(
     indices_in: List[Index],

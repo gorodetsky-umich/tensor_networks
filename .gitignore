@@ -172,3 +172,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 >>>>>>> cbd02c9d1c8700b57ef1fe058704b8bc160b5339
+
+# Files from exhaustive search
+data/
+output/
+testing.py

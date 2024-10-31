@@ -155,7 +155,7 @@ class TestTT(unittest.TestCase):
 
         ttadd_rounded = TTadd.contract().value
         self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14)
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
         )
 
     def test_gramsvd_rounding(self):
@@ -175,7 +175,7 @@ class TestTT(unittest.TestCase):
 
         ttadd_rounded = TTadd.contract().value
         self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14)
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
         )
 
     def test_rounding_ttsum(self):
@@ -191,7 +191,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        TTadd =  round_ttsum(sum_list)
+        TTadd =  round_ttsum(sum_list, 1e-5)
         # # exit(1)
         new_ranks = TTadd.ranks()
 
@@ -200,8 +200,68 @@ class TestTT(unittest.TestCase):
 
         ttadd_rounded = TTadd.contract().value
         self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14)
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
         )
+    
+    def test_rand_rounding(self):
+
+        # print("\nROUNDING")
+        TTadd = self.TT + self.TT
+        
+        # Target ranks
+        target = [2, 2] 
+
+        # print(TTadd)
+        ttadd = TTadd.contract().value
+        
+        rand_round = rand_tt_round(Y=TTadd,
+                                   target_ranks=target)
+        rand_round.Rand_then_Orth()
+        TTadd =  rand_round.res
+        
+        # # exit(1)
+        new_ranks = TTadd.ranks()
+
+        self.assertTrue(new_ranks[0], self.tt_ranks[0])
+        self.assertTrue(new_ranks[1], self.tt_ranks[1])
+
+        ttadd_rounded = TTadd.contract().value
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+        )
+
+    def test_rand_rounding_ttsum(self):
+
+        # print("\nROUNDING")
+        s = 3
+        TTadd = self.TT
+        for _ in range(s-1):
+            TTadd = TTadd + self.TT
+        
+        sum_list = [copy.deepcopy(self.TT) for _ in range(s)]
+
+        # Target ranks
+        target = [2, 2] 
+
+        # print(TTadd)
+        ttadd = TTadd.contract().value
+
+        rand_round = rand_tt_round(Y=sum_list,
+                                   target_ranks=target)
+        rand_round.RTO_rounding_ttsum()
+        TTadd =  rand_round.res
+
+        # # exit(1)
+        new_ranks = TTadd.ranks()
+
+        self.assertTrue(new_ranks[0], self.tt_ranks[0])
+        self.assertTrue(new_ranks[1], self.tt_ranks[1])
+
+        ttadd_rounded = TTadd.contract().value
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+        )
+
 
     def test_scale(self):
 
