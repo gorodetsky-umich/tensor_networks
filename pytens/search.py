@@ -299,6 +299,12 @@ class BeamSearch:
         self.heap = None
         self.initial_cost = 0
         self.best_network = None
+        self.stats = {
+            "split": 0,
+            "merge": 0,
+            "split time": 0,
+            "count": 0,
+        }
 
     def search(self, initial_state):
         """Perform the beam search from the given initial state."""
@@ -307,21 +313,32 @@ class BeamSearch:
         self.heap = [initial_state]
 
         for _ in range(self.params["max_ops"]):
-            start = time.time()
+            # start = time.time()
             # maintain a set of networks of at most k
             self.step()
-            print("one step time", time.time() - start)
+            # print("one step time", time.time() - start)
+
+        print(self.stats)
 
     def step(self):
         """Make a step in a beam search."""
         next_level = []
+        
         while len(self.heap) > 0:
             state = heapq.heappop(self.heap)
             for ac in state.get_legal_actions():
+                action_start = time.time()
                 new_state = state.take_action(ac)
+                if isinstance(ac, Split):
+                    self.stats["split time"] += time.time() - action_start
+                    self.stats["split"] += 1
+                else:
+                    self.stats["merge"] += 1
+
                 if new_state.is_noop:
                     continue
 
+                self.stats["count"] += 1
                 if len(next_level) < self.params["beam_size"]:
                     heapq.heappush(next_level, new_state)
                 elif next_level[0] < new_state:
@@ -506,8 +523,8 @@ class SearchEngine:
         ) / np.linalg.norm(target_tensor)
         stats["best_network"] = best
 
-        best.draw()
-        plt.show()
+        # best.draw()
+        # plt.show()
         return stats
 
     def beam(self, net: TensorNetwork):
@@ -532,8 +549,8 @@ class SearchEngine:
         ) / np.linalg.norm(target_tensor)
         stats["best_network"] = best
 
-        best.draw()
-        plt.show()
+        # best.draw()
+        # plt.show()
         return stats
 
     def dfs(

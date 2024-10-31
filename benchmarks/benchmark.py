@@ -207,6 +207,7 @@ def start_from_ht(data_dir: str, name: str, eps: float):
 
 
 if __name__ == "__main__":
+    """Main function that surpresses errors"""
     # Uncomment for converting single cores into benchmarks
     # for f in glob.glob("data/SVDinsTN/*/*.npy"):
     #     name = f.split('/')[-2]
@@ -247,4 +248,30 @@ if __name__ == "__main__":
     #     b = Benchmark(**benchmark_obj)
     #     print(b.name)
     #     print(b.nodes)
-    pass
+
+    # Script for creating benchmark files from SVDinsTN dataset
+    import cv2
+    imgs = []
+    name = "truck"
+    for i, f in enumerate(glob.glob(f"/Users/zhgguo/Downloads/{name}_rectified/*.png")):
+        if i % 17 >= 9:
+            continue
+
+        if i // 17 >= 9:
+            break
+
+        img = cv2.imread(f)
+        img = cv2.resize(img, (40, 60))
+        imgs.append(img)
+
+    stacked_x = np.stack(imgs, axis=0).reshape(9, 9, 40, 60, 3).transpose(2,3,4,0,1)
+    convert_single_value_to_benchmark(name, "SVDinsTN", data=stacked_x)
+
+    # Script for creating benchmark files from tnGPS dataset
+    # import cv2
+    # for i, f in enumerate(glob.glob("/Users/zhgguo/Downloads/BSDS300/images/test/*.jpg")[:10]):
+    #     img = cv2.imread(f)
+    #     img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #     img = cv2.resize(img, (256, 256))
+    #     name = f"bsd_test_{i}"
+    #     convert_single_value_to_benchmark(name, "tnGPS", data=img.reshape(4,4,4,4,4,4,4,4))

@@ -6,7 +6,7 @@ import opt_einsum as oe
 import timeit
 import time
 
-gamma = 0.0015
+gamma = 1e-3
 rho = 0.001
 mu = 0.1
 
@@ -448,8 +448,9 @@ if __name__ == "__main__":
         for i in range(1):
             print("Repeat", i)
             # prepare the data
-            target_fctn = test_case_3()
-            target = target_fctn.tnprod(target_fctn.G)
+            # target_fctn = test_case_3()
+            # target = target_fctn.tnprod(target_fctn.G)
+            target = np.load("data/SVDinsTN/bunny/data.npy")
             fctn = FCTN(target)
 
             start = time.time()
