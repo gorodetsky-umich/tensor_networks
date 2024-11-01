@@ -191,7 +191,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        TTadd =  round_ttsum(sum_list, 1e-5, False)
+        TTadd =  round_ttsum(sum_list)
         # # exit(1)
         new_ranks = TTadd.ranks()
 
