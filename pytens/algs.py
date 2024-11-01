@@ -269,6 +269,12 @@ class TensorNetwork:
         """Add a node to the network."""
         self.network.add_node(name, tensor=tensor)
 
+    def node_tensor(self, node_name: NodeName) -> None:
+        return self.network.nodes[node_name]["tensor"]
+
+    def set_node_tensor(self, node_name: NodeName, value: Tensor):
+        self.network.nodes[node_name]["tensor"] = value
+        
     def add_edge(self, name1: NodeName, name2: NodeName) -> None:
         """Add an edget to the network."""
         self.network.add_edge(name1, name2)
@@ -1582,7 +1588,7 @@ def ttop_sum_apply(
     on_ind = 0
     for jj in range(num_sum):
         new_core = cores[jj][ii](v)
-        new_core = np.reshape(new_core, (v.shape[0], -1))
+        new_core = np.reshape(new_core, (core.shape[0], -1))
         core[:, on_ind : on_ind + new_core.shape[1]] = new_core
         on_ind += new_core.shape[1]
     tt_out.add_node(ii, Tensor(core, indices))
