@@ -950,8 +950,7 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
 
 
 def gram_svd_round(
-    tn: TensorNetwork, eps: float, threshold: float = 1e-14
-) -> TensorNetwork:
+    tn: TensorNetwork, eps: float) -> TensorNetwork:
     """
     Description: Modifies the input tensor network and returns the
     rounded version by implementing the Gram-SVD based rounding
@@ -1020,13 +1019,18 @@ def gram_svd_round(
         eigl = np.abs(eigl)
         eigr = np.abs(eigr)
 
-        maskl = eigl < threshold
-        maskr = eigr < threshold
-        eigl[maskl] = 0
-        eigr[maskr] = 0
-
         eigl12 = np.sqrt(eigl)
         eigr12 = np.sqrt(eigr)
+
+
+        threshold = np.ceil(np.log10(np.max(eigl12)*1e-8))
+        eigl12 = np.round(eigl12, min(-int(threshold), 16))
+        threshold = np.ceil(np.log10(np.max(eigr12)*1e-8))
+        eigr12 = np.round(eigr12, min(-int(threshold), 16))
+
+        maskl = eigl12 == 0
+        maskr = eigr12 == 0
+
         eiglm12 = np.zeros_like(eigl12)
         eigrm12 = np.zeros_like(eigr12)
         eiglm12[~maskl] = 1 / eigl12[~maskl]
@@ -1068,7 +1072,6 @@ def tt_round(
     tn: TensorNetwork,
     eps: float,
     orthogonalize: bool = True,
-    threshold: float = 1e-14,
 ) -> TensorNetwork:
     """Round a tensor train.
 
@@ -1135,7 +1138,7 @@ def tt_round(
         return out
 
     # elif orthogonalize == False
-    return gram_svd_round(tn, eps, threshold)
+    return gram_svd_round(tn, eps)
 
 
 # Rounding sum of TT cores
@@ -1294,7 +1297,6 @@ def next_gram_sum(
 def round_ttsum(
     factors_list: list[TensorNetwork],
     eps: float = 1e-14,
-    threshold: float = 1e-10,
 ) -> TensorNetwork:
     """Round a list of tensor networks that should be summed."""
 
@@ -1357,14 +1359,18 @@ def round_ttsum(
 
         eigl = np.abs(eigl)
         eigr = np.abs(eigr)
-        maskl = eigl < threshold
-        maskr = eigr < threshold
-
-        eigl[maskl] = 0
-        eigr[maskr] = 0
-
+        
         eigl12 = np.sqrt(eigl)
         eigr12 = np.sqrt(eigr)
+
+        threshold = np.ceil(np.log10(np.max(eigl12)*1e-8))
+        eigl12 = np.round(eigl12, min(-int(threshold), 16))
+        threshold = np.ceil(np.log10(np.max(eigr12)*1e-8))
+        eigr12 = np.round(eigr12, min(-int(threshold), 16))
+
+        maskl = eigl12 == 0
+        maskr = eigr12 == 0
+
         eiglm12 = np.zeros_like(eigl12)
         eigrm12 = np.zeros_like(eigr12)
         eiglm12[~maskl] = 1 / eigl12[~maskl]
