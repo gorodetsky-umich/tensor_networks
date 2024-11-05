@@ -1575,6 +1575,55 @@ class rand_tt_round():
             
         self.res = res
     
+    def round(self):
+        if self.sum_flag:
+            self.RTO_rounding_ttsum()
+        else:
+            self.Rand_then_Orth()
+
+def tt_rand_plus_round(tn: Union[TensorNetwork, List[TensorNetwork]],
+                       eps: float,
+                       rank_bound: list[int]
+                       ) -> TensorNetwork:
+    """
+    Uses randomized rounding as a preconditioner to lower the ranks of
+    the Tensor Train to the specified target rank before truncating the
+    ranks further to a specified tolerance (eps) using SVD.
+    
+    Issues right now: 
+        - Total error accumulated post rounding is unknown due to initi-
+        al rank-based truncation.
+        - Need to adjust the eps in SVD-based truncation so that total
+        error stays consistent with the global prespecified tolerance. 
+    """
+    
+    rand_rounded_tn = rand_tt_round(Y=tn,
+                                    target_ranks=rank_bound)
+    rand_rounded_tn.round()
+    res = rand_rounded_tn.res
+    dim = rand_rounded_tn.d
+
+    for i in range(dim-1, 0, -1):
+        tens_curr = res.value(i)
+        sh = list(tens_curr.shape)
+        tens_next = res.value(i-1)
+        
+        delta = eps/(dim - 1)**0.5
+
+        trunc_svd = delta_svd(tens_curr.reshape((sh[0], -1)), delta, True)
+
+        tens_curr = trunc_svd.v.reshape([-1]+sh[1:])
+        if i == 1:
+            tens_next = np.einsum('jk,kl->jl', tens_next,
+                                  trunc_svd.u * trunc_svd.s[np.newaxis, :])
+        else:
+            tens_next = np.einsum('ijk,kl->ijl', tens_next,
+                                  trunc_svd.u * trunc_svd.s[np.newaxis, :])
+
+        res.network.nodes[i]["tensor"].update_val_size(tens_curr)
+        res.network.nodes[i-1]["tensor"].update_val_size(tens_next)
+    
+    return res
 
 
 def ttop_rank1(
