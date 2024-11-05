@@ -1302,7 +1302,7 @@ def round_ttsum(
     factors_list: list[TensorNetwork],
     eps: float = 1e-14,
 ) -> TensorNetwork:
-    """Round a list of tensor networks that should be summed."""
+    """Round a list of tensor networks that should be summed via gram rounding method."""
 
     def eps_to_rank(s: np.ndarray, eps: float) -> int:
         tmp = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
