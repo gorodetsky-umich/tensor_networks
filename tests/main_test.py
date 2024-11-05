@@ -96,6 +96,26 @@ class TestTT(unittest.TestCase):
         self.assertEqual(ranks[0], self.tt_ranks[0] + self.tt_ranks2[0])
         self.assertEqual(ranks[1], self.tt_ranks[1] + self.tt_ranks2[1])
 
+    def test_sum_multiple_tt(self):
+
+        TT1 = rand_tt([self.x, self.u, self.v], [2, 2])
+        TT2 = rand_tt([self.x, self.u, self.v], [4, 3])
+        TT3 = rand_tt([self.x, self.u, self.v], [8, 12])
+        TT4 = rand_tt([self.x, self.u, self.v], [3, 4])
+
+        tts = [TT1, TT2, TT3, TT4]
+        tt_sum_1 = tt_sum(tts)
+        tt_sum_2 = TT1 + TT2 + TT3 + TT4
+        
+        out1 = tt_sum_1.contract().value
+        out2 = tt_sum_2.contract().value
+        # err = out1 - out2
+        # print("error = ", np.linalg.norm(err), np.linalg.norm(out1+out2))
+        self.assertTrue(np.allclose(out1, out2, atol=1e-14, rtol=1e-14))
+        ranks = tt_sum_1.ranks()
+        self.assertEqual(ranks[0], 2 + 4 + 8 + 3)
+        self.assertEqual(ranks[1], 2 + 3 + 12 + 4)
+
     def test_multiplication(self):
 
         # print("\n MULTIPLICATION")
