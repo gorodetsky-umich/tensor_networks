@@ -274,7 +274,7 @@ class TensorNetwork:
 
     def set_node_tensor(self, node_name: NodeName, value: Tensor):
         self.network.nodes[node_name]["tensor"] = value
-        
+
     def add_edge(self, name1: NodeName, name2: NodeName) -> None:
         """Add an edget to the network."""
         self.network.add_edge(name1, name2)
@@ -955,8 +955,7 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     return tn
 
 
-def gram_svd_round(
-    tn: TensorNetwork, eps: float) -> TensorNetwork:
+def gram_svd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
     """
     Description: Modifies the input tensor network and returns the
     rounded version by implementing the Gram-SVD based rounding
@@ -1028,10 +1027,9 @@ def gram_svd_round(
         eigl12 = np.sqrt(eigl)
         eigr12 = np.sqrt(eigr)
 
-
-        threshold = np.ceil(np.log10(np.max(eigl12)*1e-8))
+        threshold = np.ceil(np.log10(np.max(eigl12) * 1e-8))
         eigl12 = np.round(eigl12, min(-int(threshold), 16))
-        threshold = np.ceil(np.log10(np.max(eigr12)*1e-8))
+        threshold = np.ceil(np.log10(np.max(eigr12) * 1e-8))
         eigr12 = np.round(eigr12, min(-int(threshold), 16))
 
         maskl = eigl12 == 0
@@ -1365,13 +1363,13 @@ def round_ttsum(
 
         eigl = np.abs(eigl)
         eigr = np.abs(eigr)
-        
+
         eigl12 = np.sqrt(eigl)
         eigr12 = np.sqrt(eigr)
 
-        threshold = np.ceil(np.log10(np.max(eigl12)*1e-8))
+        threshold = np.ceil(np.log10(np.max(eigl12) * 1e-8))
         eigl12 = np.round(eigl12, min(-int(threshold), 16))
-        threshold = np.ceil(np.log10(np.max(eigr12)*1e-8))
+        threshold = np.ceil(np.log10(np.max(eigr12) * 1e-8))
         eigr12 = np.round(eigr12, min(-int(threshold), 16))
 
         maskl = eigl12 == 0
@@ -1418,11 +1416,13 @@ def round_ttsum(
 
     return ttsum
 
+
 def get_tt_rank(tt: TensorNetwork) -> list:
     ranks = []
     for _, data in tt.network.nodes(data=True):
         ranks.append(data["tensor"].value.shape[-1])
     return ranks[:-1]
+
 
 def get_tt_shape(tt: TensorNetwork) -> list:
     shape = []
@@ -1435,11 +1435,11 @@ def get_tt_shape(tt: TensorNetwork) -> list:
         k += 1
     return shape
 
-class rand_tt_round():
-    def __init__(self,
-                 Y: Union[TensorNetwork, List[TensorNetwork]],
-                 target_ranks: List):
 
+class tt_randomized_rounding:
+    def __init__(
+        self, Y: Union[TensorNetwork, List[TensorNetwork]], target_ranks: List
+    ):
         self.Y = Y
         self.sum_flag = 0
         self.target_ranks = target_ranks
@@ -1451,20 +1451,19 @@ class rand_tt_round():
                 self.d = self.Y[0].network.number_of_nodes()
                 self.ns = len(self.Y)
             else:
-                raise ValueError()
+                raise ValueError("")
 
         elif isinstance(Y, TensorNetwork):
             self.Y_ranks = get_tt_rank(Y)
             self.d = self.Y.network.number_of_nodes()
 
-        else: raise ValueError()
+        else:
+            raise ValueError("")
 
-    
-    def init_rand_mat(self, ranks: Optional[List] = None
-                      ) -> List[np.ndarray]:
+    def init_rand_mat(self, ranks: Optional[List] = None) -> List[np.ndarray]:
         if ranks is None:
             ranks = self.target_ranks
-        
+
         if self.sum_flag:
             sh = get_tt_shape(self.Y[0])
         else:
@@ -1475,26 +1474,26 @@ class rand_tt_round():
             if i == 0:
                 curr_shp = [sh[i], ranks[i]]
             elif i == self.d - 1:
-                curr_shp = [ranks[i-1], sh[i]]
+                curr_shp = [ranks[i - 1], sh[i]]
             else:
-                curr_shp = [ranks[i-1], sh[i], ranks[i]]
-            R.append(np.random.randn(*curr_shp)/np.sqrt(np.prod(curr_shp)))
+                curr_shp = [ranks[i - 1], sh[i], ranks[i]]
+            R.append(np.random.randn(*curr_shp) / np.sqrt(np.prod(curr_shp)))
         return R
 
-
-    def partial_contraction(self, tt: TensorNetwork,
-                            Y: List[np.ndarray],
-                            dir='rl') -> List[np.ndarray]:
+    def partial_contraction(
+        self, tt: TensorNetwork, Y: List[np.ndarray], dir="rl"
+    ) -> List[np.ndarray]:
         """
         Partial contraction of TT cores. Returns a list of contracted cores
         W_i (by combining corresponding cores of, X[:i] and Y[:i] for lr and
         X[i:] and Y[i:] for rl contraction)
         """
         W = []
-        if dir == 'rl':
-            for i in range(self.d-1, 0, -1):
+        if dir == "rl":
+            for i in range(self.d - 1, 0, -1):
                 X = tt.value(i)
-                sx = X.shape; sy = Y[i].shape
+                sx = X.shape
+                sy = Y[i].shape
                 # tmp = np.einsum('ijk,ljm->ilkm', X[i], Y[i])
                 if i == self.d - 1:
                     W.append(X @ Y[i].T)
@@ -1508,32 +1507,31 @@ class rand_tt_round():
 
         raise ValueError()
 
-
     def Rand_then_Orth(self):
         assert self.sum_flag == 0, "It seems that this function is \
                                     being used to round a TT-sum"
-        
+
         R = self.init_rand_mat()
-        W = self.partial_contraction(self.Y, R, 'rl')
+        W = self.partial_contraction(self.Y, R, "rl")
         X_approx = self.Y.value(0)
         res = copy.deepcopy(self.Y)
 
-        for i in range(self.d-1):
+        for i in range(self.d - 1):
             sx = list(X_approx.shape)
             Zn = X_approx.reshape((-1, X_approx.shape[-1]))
             Yn = Zn @ W[i]
             q, _ = np.linalg.qr(Yn)
-            X_approx = q.reshape(sx[:-1]+[q.shape[-1]])
+            X_approx = q.reshape(sx[:-1] + [q.shape[-1]])
             res.network.nodes[i]["tensor"].update_val_size(X_approx)
             # X_approx.append(np.einsum('ij,jk,klm->ilm', q.T, Zn, self.Y[i+1]))
-            sy = list(self.Y.value(i+1).shape)
-            X_approx = (q.T @ Zn @ self.Y.value(i+1).reshape((sy[0], -1))
-                        ).reshape([q.shape[-1]]+sy[1:])
+            sy = list(self.Y.value(i + 1).shape)
+            X_approx = (
+                q.T @ Zn @ self.Y.value(i + 1).reshape((sy[0], -1))
+            ).reshape([q.shape[-1]] + sy[1:])
 
         res.network.nodes[self.d - 1]["tensor"].update_val_size(X_approx)
-        
-        self.res = res
 
+        self.res = res
 
     def RTO_rounding_ttsum(self):
         assert self.sum_flag == 1, "It seems that this function is being used \
@@ -1542,99 +1540,114 @@ class rand_tt_round():
         X_approx = []
         W = []
         res = copy.deepcopy(self.Y[0])
-        
+
         for y in self.Y:
             X_approx.append(y.value(0))
             W.append(self.partial_contraction(y, R))
         X_approx = np.concatenate(X_approx, axis=1)
-        
-        for i in range(self.d-1):
+
+        for i in range(self.d - 1):
             sx = list(X_approx.shape)
             Rk = []
             Rkp1 = []
             W_curr = []
-            
+
             # Setup
             for j in range(self.ns):
                 sh = self.Y[j].value(i).shape
                 Rk.append(sh[-1])
-                Rkp1.append(self.Y[j].value(i+1).shape[-1])
+                Rkp1.append(self.Y[j].value(i + 1).shape[-1])
                 W_curr.append(W[j][i])
 
             Rksum = np.sum(Rk)
             Rkp1sum = np.sum(Rkp1)
-            Rkcumsum = np.cumsum([0]+Rk)
+            Rkcumsum = np.cumsum([0] + Rk)
 
             # Start
             Zn = X_approx.reshape((-1, sx[-1]))
             Yn = Zn @ np.concatenate(W_curr, axis=0)
             q, _ = np.linalg.qr(Yn)
             self.target_ranks[i] = min(self.target_ranks[i], q.shape[-1])
-            Mn = (q.T @ Zn)
-            X_approx = q.reshape((sx[:-1]+[self.target_ranks[i]]))
+            Mn = q.T @ Zn
+            X_approx = q.reshape((sx[:-1] + [self.target_ranks[i]]))
             res.network.nodes[i]["tensor"].update_val_size(X_approx)
             Xnp1 = []
             for j in range(self.ns):
-                shp1 = self.Y[j].value(i+1).shape
-                tmp = Mn[:, Rkcumsum[j]:Rkcumsum[j+1]] @ self.Y[j].value(i+1).reshape((shp1[0], -1))
+                shp1 = self.Y[j].value(i + 1).shape
+                tmp = Mn[:, Rkcumsum[j] : Rkcumsum[j + 1]] @ self.Y[j].value(
+                    i + 1
+                ).reshape((shp1[0], -1))
                 Xnp1.append(tmp.reshape((-1, Rkp1[j])))
-            
+
             if i < self.d - 2:
-                X_approx = np.concatenate(Xnp1, axis=1).reshape((self.target_ranks[i], shp1[1], Rkp1sum))
+                X_approx = np.concatenate(Xnp1, axis=1).reshape(
+                    (self.target_ranks[i], shp1[1], Rkp1sum)
+                )
             else:
-                X_approx = (np.sum(Xnp1, axis=0).reshape((self.target_ranks[i], shp1[1])))
-                res.network.nodes[self.d - 1]["tensor"].update_val_size(X_approx)
-            
+                X_approx = np.sum(Xnp1, axis=0).reshape(
+                    (self.target_ranks[i], shp1[1])
+                )
+                res.network.nodes[self.d - 1]["tensor"].update_val_size(
+                    X_approx
+                )
+
         self.res = res
-    
+
     def round(self):
         if self.sum_flag:
             self.RTO_rounding_ttsum()
         else:
             self.Rand_then_Orth()
 
-def tt_rand_plus_round(tn: Union[TensorNetwork, List[TensorNetwork]],
-                       eps: float,
-                       rank_bound: list[int]
-                       ) -> TensorNetwork:
+
+def tt_rand_plus_round(
+    tn: Union[TensorNetwork, List[TensorNetwork]],
+    eps: float,
+    rank_bound: list[int],
+) -> TensorNetwork:
     """
     Uses randomized rounding as a preconditioner to lower the ranks of
     the Tensor Train to the specified target rank before truncating the
     ranks further to a specified tolerance (eps) using SVD.
-    
-    Issues right now: 
+
+    Issues right now:
         - Total error accumulated post rounding is unknown due to initi-
         al rank-based truncation.
         - Need to adjust the eps in SVD-based truncation so that total
-        error stays consistent with the global prespecified tolerance. 
+        error stays consistent with the global prespecified tolerance.
     """
-    
-    rand_rounded_tn = rand_tt_round(Y=tn,
-                                    target_ranks=rank_bound)
+
+    rand_rounded_tn = tt_randomized_rounding(Y=tn, target_ranks=rank_bound)
     rand_rounded_tn.round()
     res = rand_rounded_tn.res
     dim = rand_rounded_tn.d
 
-    for i in range(dim-1, 0, -1):
+    for i in range(dim - 1, 0, -1):
         tens_curr = res.value(i)
         sh = list(tens_curr.shape)
-        tens_next = res.value(i-1)
-        
-        delta = eps/(dim - 1)**0.5
+        tens_next = res.value(i - 1)
+
+        delta = eps / (dim - 1) ** 0.5
 
         trunc_svd = delta_svd(tens_curr.reshape((sh[0], -1)), delta, True)
 
-        tens_curr = trunc_svd.v.reshape([-1]+sh[1:])
+        tens_curr = trunc_svd.v.reshape([-1] + sh[1:])
         if i == 1:
-            tens_next = np.einsum('jk,kl->jl', tens_next,
-                                  trunc_svd.u * trunc_svd.s[np.newaxis, :])
+            tens_next = np.einsum(
+                "jk,kl->jl",
+                tens_next,
+                trunc_svd.u * trunc_svd.s[np.newaxis, :],
+            )
         else:
-            tens_next = np.einsum('ijk,kl->ijl', tens_next,
-                                  trunc_svd.u * trunc_svd.s[np.newaxis, :])
+            tens_next = np.einsum(
+                "ijk,kl->ijl",
+                tens_next,
+                trunc_svd.u * trunc_svd.s[np.newaxis, :],
+            )
 
         res.network.nodes[i]["tensor"].update_val_size(tens_curr)
-        res.network.nodes[i-1]["tensor"].update_val_size(tens_next)
-    
+        res.network.nodes[i - 1]["tensor"].update_val_size(tens_next)
+
     return res
 
 
@@ -1789,6 +1802,7 @@ def ttop_sum(
 
     return tt_op
 
+
 def tt_sum(
     tt_in: List[TensorNetwork],
 ) -> TensorNetwork:
@@ -1797,7 +1811,6 @@ def tt_sum(
     tt_out = TensorNetwork()
     dim = tt_in[0].dim()
     for ii, node in enumerate(tt_in[0].network.nodes):
-
         inds = tt_in[0].network.nodes[node]["tensor"].indices
         core_values = [tt.value(node) for tt in tt_in]
 
@@ -1807,7 +1820,7 @@ def tt_sum(
             index_right = Index("rank_0", new_value.shape[1])
             new_inds = [index_left, index_right]
 
-        elif ii == dim-1:
+        elif ii == dim - 1:
             new_value = np.vstack(core_values)
             index_left = Index(f"rank_{ii-1}", new_value.shape[0])
             index_right = Index(inds[1].name, inds[1].size)
@@ -1824,13 +1837,13 @@ def tt_sum(
                 increment_left = core_value.shape[0]
                 increment_right = core_value.shape[2]
                 new_value[
-                    on_rank_left:on_rank_left+increment_left,
+                    on_rank_left : on_rank_left + increment_left,
                     :,
-                    on_rank_right:on_rank_right+increment_right
+                    on_rank_right : on_rank_right + increment_right,
                 ] = core_value
                 on_rank_left += increment_left
                 on_rank_right += increment_right
-            
+
             index_left = Index(f"rank_{ii-1}", new_value.shape[0])
             index_middle = Index(inds[1].name, inds[1].size)
             index_right = Index(f"rank_{ii}", new_value.shape[2])
@@ -1841,6 +1854,7 @@ def tt_sum(
             tt_out.add_edge(ii - 1, ii)
 
     return tt_out
+
 
 def ttop_sum_apply(
     tt_in: TensorNetwork,

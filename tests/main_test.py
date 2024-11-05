@@ -234,7 +234,7 @@ class TestTT(unittest.TestCase):
         # print(TTadd)
         ttadd = TTadd.contract().value
         
-        rand_round = rand_tt_round(Y=TTadd,
+        rand_round = tt_randomized_rounding(Y=TTadd,
                                    target_ranks=target)
         rand_round.Rand_then_Orth()
         TTadd =  rand_round.res
@@ -266,8 +266,8 @@ class TestTT(unittest.TestCase):
         # print(TTadd)
         ttadd = TTadd.contract().value
 
-        rand_round = rand_tt_round(Y=sum_list,
-                                   target_ranks=target)
+        rand_round = tt_randomized_rounding(Y=sum_list,
+                                            target_ranks=target)
         rand_round.RTO_rounding_ttsum()
         TTadd =  rand_round.res
 
