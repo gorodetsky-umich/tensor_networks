@@ -4,6 +4,7 @@
 *#*
 *.prof*
 *DS_Store*
+flycheck*
 
 local_scratch/*
 apps/transport_solver/results/*
