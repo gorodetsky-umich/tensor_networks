@@ -1564,6 +1564,58 @@ def ttop_sum(
 
     return tt_op
 
+def tt_sum(
+    tt_in: List[TensorNetwork],
+) -> TensorNetwork:
+    """Sum a set of tensor trains."""
+
+    tt_out = TensorNetwork()
+    dim = tt_in[0].dim()
+    for ii, node in enumerate(tt_in[0].network.nodes):
+
+        inds = tt_in[0].network.nodes[node]["tensor"].indices
+        core_values = [tt.value(node) for tt in tt_in]
+
+        if ii == 0:
+            new_value = np.hstack(core_values)
+            index_left = Index(inds[0].name, inds[0].size)
+            index_right = Index("rank_0", new_value.shape[1])
+            new_inds = [index_left, index_right]
+
+        elif ii == dim-1:
+            new_value = np.vstack(core_values)
+            index_left = Index(f"rank_{ii-1}", new_value.shape[0])
+            index_right = Index(inds[1].name, inds[1].size)
+            new_inds = [index_left, index_right]
+
+        else:
+            rank_left = np.sum([v.shape[0] for v in core_values])
+            rank_right = np.sum([v.shape[2] for v in core_values])
+            new_shape = (rank_left, core_values[0].shape[1], rank_right)
+            new_value = np.zeros(new_shape)
+            on_rank_left = 0
+            on_rank_right = 0
+            for core_value in core_values:
+                increment_left = core_value.shape[0]
+                increment_right = core_value.shape[2]
+                new_value[
+                    on_rank_left:on_rank_left+increment_left,
+                    :,
+                    on_rank_right:on_rank_right+increment_right
+                ] = core_value
+                on_rank_left += increment_left
+                on_rank_right += increment_right
+            
+            index_left = Index(f"rank_{ii-1}", new_value.shape[0])
+            index_middle = Index(inds[1].name, inds[1].size)
+            index_right = Index(f"rank_{ii}", new_value.shape[2])
+            new_inds = [index_left, index_middle, index_right]
+
+        tt_out.add_node(ii, Tensor(new_value, new_inds))
+        if ii > 0:
+            tt_out.add_edge(ii - 1, ii)
+
+    return tt_out
 
 def ttop_sum_apply(
     tt_in: TensorNetwork,
