@@ -166,7 +166,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        TTadd =  tt_round(TTadd, 1e-5)
+        TTadd =  tt_svd_round(TTadd, 1e-5)
         # # exit(1)
         new_ranks = TTadd.ranks()
 
@@ -186,7 +186,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        TTadd =  tt_round(TTadd, 1e-5, False)
+        TTadd =  tt_gramsvd_round(TTadd, 1e-5)
         # # exit(1)
         new_ranks = TTadd.ranks()
 
@@ -198,7 +198,7 @@ class TestTT(unittest.TestCase):
             np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
         )
 
-    def test_rounding_ttsum(self):
+    def test_gram_rounding_ttsum(self):
         # print("\nROUNDING")
         s = 3
         TTadd = self.TT
@@ -211,7 +211,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        TTadd =  round_ttsum(sum_list, 1e-5)
+        TTadd =  tt_sum_gramsvd_round(sum_list, 1e-5)
         # # exit(1)
         new_ranks = TTadd.ranks()
 
@@ -234,10 +234,8 @@ class TestTT(unittest.TestCase):
         # print(TTadd)
         ttadd = TTadd.contract().value
         
-        rand_round = tt_randomized_rounding(Y=TTadd,
-                                   target_ranks=target)
-        rand_round.Rand_then_Orth()
-        TTadd =  rand_round.res
+        TTadd =  tt_randomized_round(y=TTadd,
+                                     target_ranks=target)
         
         # # exit(1)
         new_ranks = TTadd.ranks()
@@ -266,10 +264,8 @@ class TestTT(unittest.TestCase):
         # print(TTadd)
         ttadd = TTadd.contract().value
 
-        rand_round = tt_randomized_rounding(Y=sum_list,
-                                            target_ranks=target)
-        rand_round.RTO_rounding_ttsum()
-        TTadd =  rand_round.res
+        TTadd =  tt_sum_randomized_round(y=sum_list,
+                                         target_ranks=target)
 
         # # exit(1)
         new_ranks = TTadd.ranks()
