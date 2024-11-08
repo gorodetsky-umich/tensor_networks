@@ -329,6 +329,12 @@ class TensorNetwork:  # pylint: disable=R0904
         inner_indices = self.inner_indices()
         return [r.size for r in inner_indices]
 
+    def shape(self) -> List[int]:
+        """Get the shape of tensor represented \
+            by the TensorNetwork."""
+        free_indices = self.free_indices()
+        return [i.size for i in free_indices]
+
     def einsum_args(self) -> EinsumArgs:
         """Compute einsum args.
 
@@ -970,6 +976,51 @@ def eps_to_rank(s: np.ndarray, eps: float) -> int:
     return res
 
 
+def gram_eig_and_svd(
+    gl: np.ndarray, gr: np.ndarray, delta: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """ Implements eigenvalue decomposition + svd to \
+        the gram matrices of a TT-core and returns the \
+        low-rank factors """
+    eigl, vl = np.linalg.eigh(gl)
+    eigr, vr = np.linalg.eigh(gr)
+    eigl = np.abs(eigl)
+    eigr = np.abs(eigr)
+
+    eigl12 = np.sqrt(eigl)
+    eigr12 = np.sqrt(eigr)
+
+    threshold = np.ceil(np.log10(np.max(eigl12) * 1e-8))
+    eigl12 = np.round(eigl12, min(-int(threshold), 16))
+    threshold = np.ceil(np.log10(np.max(eigr12) * 1e-8))
+    eigr12 = np.round(eigr12, min(-int(threshold), 16))
+
+    maskl = eigl12 == 0
+    maskr = eigr12 == 0
+
+    eiglm12 = np.zeros_like(eigl12)
+    eigrm12 = np.zeros_like(eigr12)
+    eiglm12[~maskl] = 1 / eigl12[~maskl]
+    eigrm12[~maskr] = 1 / eigr12[~maskr]
+
+    # eiglm12 = np.nan_to_num(eiglm12, nan=0, posinf=0, neginf=0)
+    # eigrm12 = np.nan_to_num(eigrm12, nan=0, posinf=0, neginf=0)
+
+    tmp = (eigl12[:, np.newaxis] * vl.T) @ (vr * eigr12[np.newaxis, :])
+
+    u, s, v = np.linalg.svd(tmp)
+    rk = min(tmp.shape[0], tmp.shape[1], eps_to_rank(s, delta))
+
+    u = u[:, :rk]
+    s = s[:rk]
+    v = v[:rk, :]
+
+    curr_val = vl @ (eiglm12[:, np.newaxis] * u)
+
+    next_val = (s[:, np.newaxis] * v * eigrm12[np.newaxis, :]) @ vr.T
+    return curr_val, next_val
+
+
 def tt_gramsvd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
     """
     Description: Modifies the input tensor network and returns the
@@ -1029,49 +1080,12 @@ def tt_gramsvd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
             (-1, sh[-1])
         )
 
-        eigl, vl = np.linalg.eigh(gl)
-        eigr, vr = np.linalg.eigh(gr_list[i + 1])
-        eigl = np.abs(eigl)
-        eigr = np.abs(eigr)
+        curr_val, next_val = gram_eig_and_svd(gl, gr_list[i + 1], delta)
 
-        eigl12 = np.sqrt(eigl)
-        eigr12 = np.sqrt(eigr)
+        curr_val = tn.value(i).reshape((-1, sh[-1])) @ curr_val
+        next_val = next_val @ tn.value(i + 1).reshape((shp1[0], -1))
 
-        threshold = np.ceil(np.log10(np.max(eigl12) * 1e-8))
-        eigl12 = np.round(eigl12, min(-int(threshold), 16))
-        threshold = np.ceil(np.log10(np.max(eigr12) * 1e-8))
-        eigr12 = np.round(eigr12, min(-int(threshold), 16))
-
-        maskl = eigl12 == 0
-        maskr = eigr12 == 0
-
-        eiglm12 = np.zeros_like(eigl12)
-        eigrm12 = np.zeros_like(eigr12)
-        eiglm12[~maskl] = 1 / eigl12[~maskl]
-        eigrm12[~maskr] = 1 / eigr12[~maskr]
-
-        # eiglm12 = np.nan_to_num(eiglm12, nan=0, posinf=0, neginf=0)
-        # eigrm12 = np.nan_to_num(eigrm12, nan=0, posinf=0, neginf=0)
-
-        tmp = (eigl12[:, np.newaxis] * vl.T) @ (vr * eigr12[np.newaxis, :])
-        u, s, v = np.linalg.svd(tmp)
-        rk = min(tmp.shape[0], tmp.shape[1], eps_to_rank(s, delta))
-
-        u = u[:, :rk]
-        s = s[:rk]
-        v = v[:rk, :]
-
-        curr_val = (
-            tn.value(i).reshape((-1, sh[-1]))
-            @ vl
-            @ (eiglm12[:, np.newaxis] * u)
-        )
-        next_val = (
-            (s[:, np.newaxis] * v * eigrm12[np.newaxis, :])
-            @ vr.T
-            @ tn.value(i + 1).reshape((shp1[0], -1))
-        )
-
+        rk = curr_val.shape[-1]
         sh[-1] = rk
         shp1[0] = rk
         curr_val = curr_val.reshape(sh)
@@ -1351,46 +1365,9 @@ def tt_sum_gramsvd_round(
             (-1, sh[-1])
         )
 
-        eigl, vl = np.linalg.eigh(gl)
-        eigr, vr = np.linalg.eigh(gr_list[i + 1])
+        curr_val, next_val = gram_eig_and_svd(gl, gr_list[i + 1], delta)
 
-        eigl = np.abs(eigl)
-        eigr = np.abs(eigr)
-
-        eigl12 = np.sqrt(eigl)
-        eigr12 = np.sqrt(eigr)
-
-        threshold = np.ceil(np.log10(np.max(eigl12) * 1e-8))
-        eigl12 = np.round(eigl12, min(-int(threshold), 16))
-        threshold = np.ceil(np.log10(np.max(eigr12) * 1e-8))
-        eigr12 = np.round(eigr12, min(-int(threshold), 16))
-
-        maskl = eigl12 == 0
-        maskr = eigr12 == 0
-
-        eiglm12 = np.zeros_like(eigl12)
-        eigrm12 = np.zeros_like(eigr12)
-        eiglm12[~maskl] = 1 / eigl12[~maskl]
-        eigrm12[~maskr] = 1 / eigr12[~maskr]
-
-        # eiglm12 = np.nan_to_num(eiglm12, nan=0, posinf=0, neginf=0)
-        # eigrm12 = np.nan_to_num(eigrm12, nan=0, posinf=0, neginf=0)
-
-        tmp = (eigl12[:, np.newaxis] * vl.T) @ (vr * eigr12[np.newaxis, :])
-
-        u, s, v = np.linalg.svd(tmp)
-        rk = min(tmp.shape[0], tmp.shape[1], eps_to_rank(s, delta))
-        u = u[:, :rk]
-        s = s[:rk]
-        v = v[:rk, :]
-
-        curr_val = (
-            ttsum.value(i).reshape((-1, sh[-1]))
-            @ vl
-            @ (eiglm12[:, np.newaxis] * u)
-        )
-
-        next_val = (s[:, np.newaxis] * v * eigrm12[np.newaxis, :]) @ vr.T
+        curr_val = ttsum.value(i).reshape((-1, sh[-1])) @ curr_val
         if i == (dim - 2):
             next_val = next_val @ ttsum.value(dim - 1)
         else:
@@ -1398,6 +1375,7 @@ def tt_sum_gramsvd_round(
                 next_val, core_next, False, False, False
             )
 
+        rk = curr_val.shape[-1]
         sh[-1] = rk
         shp1[0] = rk
 
@@ -1408,19 +1386,6 @@ def tt_sum_gramsvd_round(
         ttsum.network.nodes[i + 1]["tensor"].update_val_size(next_val)
 
     return ttsum
-
-
-def get_tt_shape(tt: TensorNetwork) -> list:
-    """Returns the shape of the tensor represented by the TT"""
-    shape = []
-    k = 0
-    for _, data in tt.network.nodes(data=True):
-        if not k:
-            shape.append(data["tensor"].value.shape[0])
-        else:
-            shape.append(data["tensor"].value.shape[1])
-        k += 1
-    return shape
 
 
 class TTRandRound:
@@ -1459,7 +1424,7 @@ class TTRandRound:
         if ranks is None:
             ranks = self.target_ranks
 
-        sh = get_tt_shape(self.y[0] if isinstance(self.y, list) else self.y)
+        sh = self.y[0].shape() if isinstance(self.y, list) else self.y.shape()
         r = []
         # Initialize random TT-tensor with specified variance
         for i in range(self.d):
