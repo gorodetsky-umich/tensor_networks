@@ -36,7 +36,7 @@ To run just listing one can do
 ```
 make lint
 ```
-this requires pylint, flake8 and pyproject-flake8 to be installed
+this requires pylint, flake8 and flake8-pyproject (note this is different from pyproject-flake8) to be installed for python 3.12.
 
 ## POTENTIAL ISSUES:
 0. currently edges are not actually used to determine contraction path, just index names. This causes issues when contracting when attaching tensors of edges are the same

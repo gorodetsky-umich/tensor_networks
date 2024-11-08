@@ -26,7 +26,7 @@ dependencies = [
   "ruff",
   "pylint",
   "flake8",
-  "pyproject-flake8"
+  "flake8-pyproject"
 ]
 
 [tool.setuptools]
@@ -75,7 +75,8 @@ exclude = [
         "old",
         "build",
         "dist",
-        "pytens/__init__.py", 
+        "pytens/__init__.py",
+		"*flycheck*"
         ]
 
 [tool.mypy]
