@@ -958,6 +958,18 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     return tn
 
 
+def eps_to_rank(s: np.ndarray, eps: float) -> int:
+    """Tranlates the matrix approximation error \
+    to rank in a truncated SVD"""
+    tmp = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
+    res: int = int(np.argmax(tmp))
+    if res == 0 and not tmp[0]:
+        return int(s.shape[0])
+    if res == 0 and tmp[0]:
+        return 1
+    return res
+
+
 def tt_gramsvd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
     """
     Description: Modifies the input tensor network and returns the
@@ -967,21 +979,16 @@ def tt_gramsvd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
     [1] - H. Al Daas, G. Ballard and L. Manning, "Parallel Tensor-
     Train Rounding using Gram SVD," 2022 IEEE International Parallel
     and Distributed Processing Symposium (IPDPS), Lyon, France, 2022,
-    pp. 930-940, doi: 10.1109/IPDPS53621.2022.00095.
-    """
-
-    def eps_to_rank(s: np.ndarray, eps: float) -> int:
-        tmp = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
-        res: int = int(np.argmax(tmp))
-        if res == 0 and not tmp[0]:
-            return int(s.shape[0])
-        if res == 0 and tmp[0]:
-            return 1
-        return res
+    pp. 930-940, doi: 10.1109/IPDPS53621.2022.00095."""
 
     def next_gram(
         gram_now: np.ndarray, core_next: np.ndarray, order: str = "lr"
     ) -> np.ndarray:
+        """ Calculates the Gram matrix corresponding to the next \
+        TT-core using the Gram matrix corresponding to the \
+        current core. For example, if order == "lr" (left to \
+        right sweep), the function outputs a matrix of size \
+        R_{k} x R{k} from a matrix of size R_{k-1} x R_{k-1}"""
         snext = core_next.shape
         if order == "lr":
             tmp = (gram_now.T @ core_next.reshape((snext[0], -1))).reshape(
@@ -1251,7 +1258,7 @@ def multiply_core_unfolding(
                 ] @ cores_list[i].reshape((rk[i], -1))
             return res
 
-    raise ValueError()
+    raise ValueError("Invalid options")
 
 
 def next_gram_sum(
@@ -1297,16 +1304,9 @@ def tt_sum_gramsvd_round(
     factors_list: list[TensorNetwork],
     eps: float = 1e-14,
 ) -> TensorNetwork:
-    """Round a list of tensor networks that should be summed via gram rounding method."""
-
-    def eps_to_rank(s: np.ndarray, eps: float) -> int:
-        tmp = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
-        res: int = int(np.argmax(tmp))
-        if res == 0 and not tmp[0]:
-            return int(s.shape[0])
-        if res == 0 and tmp[0]:
-            return 1
-        return res
+    """
+    Round a list of tensor networks that should
+    be summed via gram rounding method"""
 
     def core_info(k: int) -> tuple[list, list]:
         cores = [f.value(k) for f in factors_list]
@@ -1450,7 +1450,9 @@ class TTRandRound:
             self.d = y.network.number_of_nodes()
 
         else:
-            raise ValueError("")
+            raise ValueError(f"Invalid type for y ({type(y)}). \
+                             Argument y only accepts a list of \
+                             TensorNetworks or a TensorNetwork")
 
     def init_rand_mat(self, ranks: Optional[List] = None) -> List[np.ndarray]:
         """Generates a list of random TT-cores. Individual entries
