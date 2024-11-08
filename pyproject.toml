@@ -26,7 +26,7 @@ dependencies = [
   "ruff",
   "pylint",
   "flake8",
-  "flake8-pyproject"
+  "pyproject-flake8"
 ]
 
 [tool.setuptools]
@@ -51,7 +51,7 @@ extension-pkg-allow-list = []
 extension-pkg-whitelist = []
 fail-on = []
 fail-under = 10
-ignore = ["CVS"]
+ignore = ["CVS", "*flycheck*"]
 ignore-paths = []
 ignore-patterns = ["^\\.#"]
 ignored-modules = []
@@ -60,7 +60,7 @@ load-plugins = []
 msg-template = ""
 # output-format =
 persistent = true
-py-version = 3.8
+py-version = 3.11
 recursive = false
 reports = false
 score = true
@@ -75,7 +75,7 @@ exclude = [
         "old",
         "build",
         "dist",
-        "__init__.py", 
+        "pytens/__init__.py", 
         ]
 
 [tool.mypy]
