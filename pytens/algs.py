@@ -258,7 +258,7 @@ class EinsumArgs:
         self.output_str = self.output_str.replace(value, replacement)
 
 
-class TensorNetwork:
+class TensorNetwork:  # pylint: disable=R0904
     """Tensor Network Base Class."""
 
     def __init__(self) -> None:
@@ -525,7 +525,7 @@ class TensorNetwork:
 
         return node
 
-    def split(  # pylint: disable=R0913
+    def split(  # pylint: disable=R0913,R0917
         self,
         node_name: NodeName,
         left_indices: Sequence[int],
@@ -1168,7 +1168,7 @@ def get_indices(
     return indices
 
 
-def multiply_core_unfolding(
+def multiply_core_unfolding(  # pylint: disable=R0912
     mat: np.ndarray,
     cores_list: list,
     v_unfolding: bool,
@@ -1304,9 +1304,7 @@ def tt_sum_gramsvd_round(
     factors_list: list[TensorNetwork],
     eps: float = 1e-14,
 ) -> TensorNetwork:
-    """
-    Round a list of tensor networks that should
-    be summed via gram rounding method"""
+    """Gram-rounding of sum of tensor trains."""
 
     def core_info(k: int) -> tuple[list, list]:
         cores = [f.value(k) for f in factors_list]
@@ -1991,7 +1989,7 @@ def ttop_apply(ttop: TensorNetwork, tt_in: TensorNetwork) -> TensorNetwork:
 
 
 @typing.no_type_check
-def gmres(  # pylint: disable=R0913
+def gmres(  # pylint: disable=R0913,R0917
     op,  # function from in to out
     rhs: TensorNetwork,
     x0: TensorNetwork,
