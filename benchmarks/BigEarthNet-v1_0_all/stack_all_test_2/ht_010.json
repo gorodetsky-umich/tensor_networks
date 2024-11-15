@@ -1,0 +1,145 @@
+{
+    "name": "stack_all_test_2_ht_eps_010",
+    "source": "BigEarthNet-v1_0_all",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "s_0_1",
+                    "size": 96
+                },
+                {
+                    "name": "s_0_2",
+                    "size": 96
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_0.npy"
+        },
+        {
+            "name": "G1",
+            "indices": [
+                {
+                    "name": "s_1_5",
+                    "size": 1484
+                },
+                {
+                    "name": "s_1_6",
+                    "size": 47
+                },
+                {
+                    "name": "s_0_1",
+                    "size": 96
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_1.npy"
+        },
+        {
+            "name": "G2",
+            "indices": [
+                {
+                    "name": "s_2_3",
+                    "size": 50
+                },
+                {
+                    "name": "s_2_4",
+                    "size": 6
+                },
+                {
+                    "name": "s_0_2",
+                    "size": 96
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_2.npy"
+        },
+        {
+            "name": "G3",
+            "indices": [
+                {
+                    "name": "I3",
+                    "size": 120
+                },
+                {
+                    "name": "s_2_3",
+                    "size": 50
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_3.npy"
+        },
+        {
+            "name": "G4",
+            "indices": [
+                {
+                    "name": "I4",
+                    "size": 12
+                },
+                {
+                    "name": "s_2_4",
+                    "size": 6
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_4.npy"
+        },
+        {
+            "name": "G5",
+            "indices": [
+                {
+                    "name": "s_5_7",
+                    "size": 18
+                },
+                {
+                    "name": "s_5_8",
+                    "size": 181
+                },
+                {
+                    "name": "s_1_5",
+                    "size": 1484
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_5.npy"
+        },
+        {
+            "name": "G6",
+            "indices": [
+                {
+                    "name": "I2",
+                    "size": 120
+                },
+                {
+                    "name": "s_1_6",
+                    "size": 47
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_6.npy"
+        },
+        {
+            "name": "G7",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 18
+                },
+                {
+                    "name": "s_5_7",
+                    "size": 18
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_7.npy"
+        },
+        {
+            "name": "G8",
+            "indices": [
+                {
+                    "name": "I1",
+                    "size": 187
+                },
+                {
+                    "name": "s_5_8",
+                    "size": 181
+                }
+            ],
+            "value": "data/BigEarthNet-v1_0_all/stack_all_test_2//010/htucker_nodes/node_8.npy"
+        }
+    ],
+    "value_file": null
+}

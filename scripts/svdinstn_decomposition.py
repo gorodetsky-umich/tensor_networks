@@ -7,9 +7,9 @@ import timeit
 import time
 
 from pytens import TensorNetwork, Tensor, Index
-gamma = 0.0015
 rho = 0.001
 mu = 0.1
+beta = 1
 
 def shrink(a, b):
     return np.maximum(a - b, 0) + np.minimum(a + b, 0)
@@ -39,6 +39,7 @@ def fold(X: np.ndarray, dims: List[int], mode: int):
 class FCTN:
     def __init__(self, target: np.ndarray,
                  timeout: float,
+                 gamma: float,
                  eps: float = 1e-3):
         
         self.G = {}
@@ -46,6 +47,7 @@ class FCTN:
         self.stats = {}
         self.timeout = timeout
         self.eps = eps
+        self.gamma = gamma
 
         # Conert TN to numpy array
         if isinstance(target, TensorNetwork):
@@ -77,7 +79,7 @@ class FCTN:
                 _, s_tl, _ = np.linalg.svd(x_tl)
                 # print(f"s_{t}_{l} shape:", s_tl.shape)
                 # print(f"s_{t}_{l}:", s_tl)
-                s_tl = shrink(s_tl, gamma * np.max(s_tl) / (abs(s_tl) + 1e-16))
+                s_tl = shrink(s_tl, self.gamma * np.max(s_tl) / (abs(s_tl) + 1e-16))
                 # print(f"after shrink s_{t}_{l}:", s_tl)
                 s_tl = s_tl[s_tl >= 1e-16]
                 self.S[(t, l)] = s_tl
@@ -323,8 +325,8 @@ class FCTN:
             s = copy.deepcopy(self.S)
             for t in range(self.N):
                 for l in range(t+1, self.N):
-                    Q[(t, l)] = self.S[(t, l)]
-                    lam = gamma * np.max(self.S[(t, l)]) * (rho + 1)
+                    Q[(t, l)] = s[(t, l)]
+                    # lam = gamma * np.max(self.S[(t, l)]) * (rho + 1)
                     # H = self._contract_rest([('S', [t, l])])
                     H_tl = self._contract_rest_s(t, l)
                     # print(np.allclose(H, H_tl))
@@ -338,11 +340,11 @@ class FCTN:
                     else:
                         ss = 5
                     for _ in range(ss):
-                        s_left = (rho * s[(t, l)] + Q[(t, l)] - P[(t, l)]) / (rho + 1)
-                        s_right = gamma * np.max(s[(t, l)]) / (abs(s[(t, l)]) + 1e-16) # lam / (rho + 1)
+                        s_left = (rho * s[(t, l)] + beta * Q[(t, l)] - P[(t, l)]) / (rho + beta)
+                        s_right = self.gamma * np.max(s[(t, l)]) / (abs(s[(t, l)]) + 1e-16) # lam / (rho + 1)
                         s[(t, l)] = shrink(s_left, s_right)
-                        Q[(t, l)] = np.linalg.pinv(H_tl.T @ H_tl + np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + s[(t, l)] + P[(t, l)])
-                        P[(t, l)] = P[(t, l)] + s[(t, l)] - Q[(t, l)]
+                        Q[(t, l)] = np.linalg.pinv(H_tl.T @ H_tl + beta * np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + beta * s[(t, l)] + P[(t, l)])
+                        P[(t, l)] = P[(t, l)] + beta * (s[(t, l)] - Q[(t, l)])
 
                     # self.S[(t, l)] = s[(t, l)]
 
@@ -371,7 +373,7 @@ class FCTN:
             re = np.linalg.norm(X - self.target) / np.linalg.norm(self.target)
             print("Iteration:", it, "Time:", time.time() - start, "Error:", err, "RE:", re)
             
-            if re < self.eps:
+            if err < 1e-3:
                 print("Converged!")
                 break
 
@@ -415,21 +417,27 @@ class FCTN:
         for g in self.G.keys():
             index = []
             for j, size in enumerate(self.G[g].shape):
-                index_tracker[(g, j)] = k
-                index.append(Index(k, size))
-                k += 1
+                if j < g:
+                    index.append(Index(index_tracker[(j,g)], size))
+                else:
+                    index_tracker[(g, j)] = k
+                    index.append(Index(k, size))
+                    k += 1
             tens = Tensor(self.G[g], index.copy())
             tn.add_node(g, tens)
 
-        for s in self.S.keys():
-            i, j = s
-            size = self.S[s].shape[0]
-            index = [Index(index_tracker[(i, j)], size),
-                     Index(index_tracker[(j, i)], size)]
-            tens = Tensor(np.diag(self.S[s]), index.copy())
-            tn.add_node(s, tens)
-            tn.add_edge(i, s)
-            tn.add_edge(s, j)
+        for i in range(len(self.G)):
+            for j in range(i+1, len(self.G)):
+                tn.add_edge(i, j)
+        # for s in self.S.keys():
+        #     i, j = s
+        #     size = self.S[s].shape[0]
+        #     index = [Index(index_tracker[(i, j)], size),
+        #              Index(index_tracker[(j, i)], size)]
+        #     tens = Tensor(np.diag(self.S[s]), index.copy())
+        #     tn.add_node(s, tens)
+        #     tn.add_edge(i, s)
+        #     tn.add_edge(s, j)
 
         self.tn = tn
         
@@ -506,7 +514,7 @@ def test_case_3():
     target_fctn.S[(2, 3)] = np.random.uniform(size=1)
     target_fctn.S[(2, 4)] = np.random.uniform(size=3)
     target_fctn.S[(3, 4)] = np.random.uniform(size=1)
-    
+
     return target_fctn
 
 if __name__ == "__main__":
@@ -518,18 +526,30 @@ if __name__ == "__main__":
     parser.add_argument("--log", type=str, help="Path to the log file")
     args = parser.parse_args()
 
-    with open(args.log, "w") as f:
-        for i in range(1):
-            print("Repeat", i)
-            # prepare the data
-            # target_fctn = test_case_3()
-            # target = target_fctn.tnprod(target_fctn.G)
-            target = np.load("data/SVDinsTN/bunny/data.npy")
-            fctn = FCTN(target)
+    target = np.random.randn(18,120,120,12)
+    fctn = FCTN(target, None, None)
+    for t in range(4):
+        fctn.G[t] = np.load(f"/Users/zhgguo/Documents/projects/FCTNFR/G{t+1}.npy")
+        for l in range(t+1,4):
+            fctn.S[(t,l)] = np.load(f"/Users/zhgguo/Documents/projects/FCTNFR/S{t+1}_{l+1}.npy")
 
-            start = time.time()
-            fctn.initialize()
-            re = fctn.decompose()
-            end = time.time()
+    print(np.prod(target.shape) / cost(fctn))
+    fctn.to_tensor_network()
+    fctn.tn.draw()
+    import matplotlib.pyplot as plt
+    plt.show()
+    # with open(args.log, "w") as f:
+    #     for i in range(1):
+    #         print("Repeat", i)
+    #         # prepare the data
+    #         # target_fctn = test_case_3()
+    #         # target = target_fctn.tnprod(target_fctn.G)
+    #         target = np.load("data/SVDinsTN/bunny/data.npy")
+    #         fctn = FCTN(target)
 
-            f.write(f"{i}, {end-start}, {re}, {same_topology(target_fctn, fctn)}, {cost(fctn)}, {cost(fctn) / np.prod(target.shape)}\n")
+    #         start = time.time()
+    #         fctn.initialize()
+    #         re = fctn.decompose()
+    #         end = time.time()
+
+    #         f.write(f"{i}, {end-start}, {re}, {same_topology(target_fctn, fctn)}, {cost(fctn)}, {cost(fctn) / np.prod(target.shape)}\n")

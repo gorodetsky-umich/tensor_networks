@@ -1,176 +1,144 @@
 {
     "name": "order_5_structure_5_ht_eps_010",
-    "source": "transformed",
+    "source": "SVDinsTN",
     "nodes": [
         {
             "name": "G0",
             "indices": [
                 {
-                    "name": 0,
+                    "name": "s_0_1",
                     "size": 1
                 },
                 {
-                    "name": 1,
+                    "name": "s_0_2",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_0.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_0.npy"
         },
         {
             "name": "G1",
             "indices": [
                 {
-                    "name": 0,
+                    "name": "s_1_5",
                     "size": 1
                 },
                 {
-                    "name": 1,
+                    "name": "s_1_6",
                     "size": 1
                 },
                 {
-                    "name": 2,
+                    "name": "s_0_1",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_1.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_1.npy"
         },
         {
             "name": "G2",
             "indices": [
                 {
-                    "name": 0,
+                    "name": "s_2_3",
                     "size": 1
                 },
                 {
-                    "name": 1,
+                    "name": "s_2_4",
                     "size": 1
                 },
                 {
-                    "name": 2,
+                    "name": "s_0_2",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_2.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_2.npy"
         },
         {
             "name": "G3",
             "indices": [
                 {
-                    "name": 3,
-                    "size": 14
+                    "name": "s_3",
+                    "size": 20
                 },
                 {
-                    "name": 0,
+                    "name": "s_2_3",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_3.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_3.npy"
         },
         {
             "name": "G4",
             "indices": [
                 {
-                    "name": 4,
-                    "size": 16
+                    "name": "s_4",
+                    "size": 22
                 },
                 {
-                    "name": 1,
+                    "name": "s_2_4",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_4.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_4.npy"
         },
         {
             "name": "G5",
             "indices": [
                 {
-                    "name": 5,
-                    "size": 18
+                    "name": "s_5_7",
+                    "size": 1
                 },
                 {
-                    "name": 6,
+                    "name": "s_5_8",
+                    "size": 1
+                },
+                {
+                    "name": "s_1_5",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_5.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_5.npy"
         },
         {
             "name": "G6",
             "indices": [
                 {
-                    "name": 7,
-                    "size": 1
+                    "name": "I2",
+                    "size": 18
                 },
                 {
-                    "name": 8,
-                    "size": 1
-                },
-                {
-                    "name": 9,
+                    "name": "s_1_6",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_6.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_6.npy"
         },
         {
             "name": "G7",
             "indices": [
                 {
-                    "name": 7,
-                    "size": 1
+                    "name": "I3",
+                    "size": 14
                 },
                 {
-                    "name": 8,
-                    "size": 1
-                },
-                {
-                    "name": 9,
+                    "name": "s_5_7",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_7.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_7.npy"
         },
         {
             "name": "G8",
             "indices": [
                 {
-                    "name": 10,
-                    "size": 20
+                    "name": "I4",
+                    "size": 16
                 },
                 {
-                    "name": 7,
+                    "name": "s_5_8",
                     "size": 1
                 }
             ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_8.npy"
-        },
-        {
-            "name": "G9",
-            "indices": [
-                {
-                    "name": 11,
-                    "size": 22
-                },
-                {
-                    "name": 8,
-                    "size": 1
-                }
-            ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_9.npy"
-        },
-        {
-            "name": "G10",
-            "indices": [
-                {
-                    "name": 12,
-                    "size": 1
-                },
-                {
-                    "name": 13,
-                    "size": 1
-                }
-            ],
-            "value": "benchmarks/SVDinsTN//order_5_structure_5//htucker_nodes/eps_0.1_node_10.npy"
+            "value": "data/SVDinsTN/order_5_structure_5//010/htucker_nodes/node_8.npy"
         }
     ],
     "value_file": null

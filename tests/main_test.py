@@ -289,7 +289,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        TTadd.optimize(0, 1e-5)
+        TTadd.round(0, 1e-5)
         # # exit(1)
         new_ranks = TTadd.ranks()
 

@@ -28,7 +28,7 @@ class Benchmark:
     nodes: Optional[List[Node]] = None
     value_file: Optional[str] = None
 
-    def to_network(self) -> TensorNetwork:
+    def to_network(self, normalize=False) -> TensorNetwork:
         """Convert a benchmark into a tensor network."""
         network = TensorNetwork()
 
@@ -39,7 +39,9 @@ class Benchmark:
                 node_value = np.random.randn(*node_shape)
             else:
                 with open(node.value, "rb") as value_file:
-                    node_value = np.load(value_file).astype(np.float64)
+                    node_value = np.load(value_file).astype(np.float32)
+                    if normalize:
+                        node_value = node_value / np.linalg.norm(node_value)
 
             network.add_node(node.name, Tensor(node_value, node.indices))
 
@@ -153,55 +155,59 @@ def start_from_tt(data_dir: str, name: str, eps: float):
         json_str = RootModel[Benchmark](benchmark).model_dump_json(indent=4)
         json_file.write(json_str)
 
-def start_from_ht(data_dir: str, name: str, eps: float):
+def start_from_ht(data_dir: str, source: str, name: str, eps: float):
     """Generate benchmark files that start from htucker results."""
-    benchmark_dir = f"{data_dir}/{name}/"
+    ht_data_dir = f"{data_dir}/{source}/{name}/"
     eps_version = "".join(format(eps,'.2f').split("."))
     benchmark_name = f"{name}_ht_eps_{eps_version}"
-    edge_file = f"{benchmark_dir}/htucker_textfile/eps_{eps}_edges.txt"
+    edge_file = f"{ht_data_dir}/{eps_version}/htucker_nodes/edges.txt"
 
     # reconstruct the tree structure
-    parent = {}
+    edges = {}
     with open(edge_file, "r") as edge_fd:
         lines = edge_fd.readlines()
         for line in lines:
             line = line.strip()
             if line:
-                u, v = line.split('\t')
-                parent[v] = u
-
-    index_idx = 0
-    # starting from node 0 and do the traversal
-    def traverse(nodes, pindices, node_name):
-        node_file = f"{benchmark_dir}/htucker_nodes/eps_{eps}_node_{node_name}.npy"
-        node_value = np.load(node_file)
-        indices = []
-        for sz in node_value.shape:
-            if pindices is not None:
-                psizes = [i.size for i in pindices]
-                if sz in psizes:
-                    indices.append(pindices[psizes.index(sz)])
-                    pindices.pop(psizes.index(sz))
-                    continue
-
-            nonlocal index_idx
-            indices.append(Index(index_idx, sz))
-            index_idx += 1
-
-        node = Node(f"G{node_name}", indices, node_file)
-        nodes.append(node)
-
-        for u, v in parent.items():
-            if v == node_name:
-                indices = traverse(nodes, indices, u)
-
-        return pindices
+                p, cs = line.split('\t')
+                l, r = cs.split(',')
+                edges[int(p)] = (int(l), int(r))
 
     nodes = []
-    traverse(nodes, None, "0")
+    all_node_indices = set()
+    for k, v in edges.items():
+        all_node_indices.add(k)
+        all_node_indices.add(v[0])
+        all_node_indices.add(v[1])
 
-    benchmark = Benchmark(benchmark_name, "transformed", nodes)
-    with open(f"{benchmark_dir}/ht_{eps_version}.json", "w+", encoding="utf-8") as json_file:
+    for i in all_node_indices:
+        node_file = f"{ht_data_dir}/{eps_version}/htucker_nodes/node_{i}.npy"
+        node_value = np.load(node_file)
+        p = None
+        for j, jc in edges.items():
+            if i in jc:
+                p = j
+                break
+
+        if i in edges and len(node_value.shape) == 2: # root node
+            l, r = edges[i]
+            l_size, r_size = node_value.shape
+            indices = [Index(f"s_{i}_{l}", l_size), Index(f"s_{i}_{r}", r_size)]
+        elif i in edges and len(node_value.shape) == 3: # internal nodes
+            l, r = edges[i]
+            l_size, r_size, p_size = node_value.shape
+            indices = [Index(f"s_{i}_{l}", l_size), Index(f"s_{i}_{r}", r_size), Index(f"s_{p}_{i}", p_size)]
+        elif i not in edges and len(node_value.shape) == 2: # leaf nodes
+            c_size, p_size = node_value.shape
+            indices = [Index(f"s_{i}", c_size), Index(f"s_{p}_{i}", p_size)]
+        else:
+            raise RuntimeError("node", i, "does not belong to any valid category")
+
+        node = Node(f"G{i}", indices, node_file)
+        nodes.append(node)
+
+    benchmark = Benchmark(benchmark_name, source, nodes)
+    with open(f"benchmarks/{source}/{name}/ht_{eps_version}.json", "w+") as json_file:
         json_str = RootModel[Benchmark](benchmark).model_dump_json(indent=4)
         json_file.write(json_str)
 
@@ -250,22 +256,22 @@ if __name__ == "__main__":
     #     print(b.nodes)
 
     # Script for creating benchmark files from SVDinsTN dataset
-    import cv2
-    imgs = []
-    name = "truck"
-    for i, f in enumerate(glob.glob(f"/Users/zhgguo/Downloads/{name}_rectified/*.png")):
-        if i % 17 >= 9:
-            continue
+    # import cv2
+    # imgs = []
+    # name = "truck"
+    # for i, f in enumerate(glob.glob(f"/Users/zhgguo/Downloads/{name}_rectified/*.png")):
+    #     if i % 17 >= 9:
+    #         continue
 
-        if i // 17 >= 9:
-            break
+    #     if i // 17 >= 9:
+    #         break
 
-        img = cv2.imread(f)
-        img = cv2.resize(img, (40, 60))
-        imgs.append(img)
+    #     img = cv2.imread(f)
+    #     img = cv2.resize(img, (40, 60))
+    #     imgs.append(img)
 
-    stacked_x = np.stack(imgs, axis=0).reshape(9, 9, 40, 60, 3).transpose(2,3,4,0,1)
-    convert_single_value_to_benchmark(name, "SVDinsTN", data=stacked_x)
+    # stacked_x = np.stack(imgs, axis=0).reshape(9, 9, 40, 60, 3).transpose(2,3,4,0,1)
+    # convert_single_value_to_benchmark(name, "SVDinsTN", data=stacked_x)
 
     # Script for creating benchmark files from tnGPS dataset
     # import cv2
@@ -274,4 +280,21 @@ if __name__ == "__main__":
     #     img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     #     img = cv2.resize(img, (256, 256))
     #     name = f"bsd_test_{i}"
-    #     convert_single_value_to_benchmark(name, "tnGPS", data=img.reshape(4,4,4,4,4,4,4,4))
+
+    # import time
+    # x = np.load("/Users/zhgguo/Documents/projects/tensor_networks/data/BigEarthNet-v1_0_all/stack_all_test_4/data.npy")
+    # y = x.reshape(3*1122, -1)
+    # start = time.time()
+    # # q, r = np.linalg.qr(y)
+    # u, s, v = np.linalg.svd(y, False, True)
+    # # u = q @ u
+    # print("svd time", time.time() - start)
+    # print(s.shape)
+
+    source = "BigEarthNet-v1_0_all"
+    eps = 0.1
+    for name in os.listdir(f"data/{source}"):
+        if name == ".DS_Store":
+            continue
+
+        start_from_ht("data", source, name, eps)

@@ -12,7 +12,8 @@ import itertools
 import numpy as np
 import opt_einsum as oe
 import networkx as nx
-import hashlib
+import pydot
+import matplotlib.pyplot as plt
 
 from .utils import delta_svd
 
@@ -78,7 +79,7 @@ class Tensor:
 
     def update_val_size(self, value: np.ndarray) -> Self:
         """Update the tensor with a new value."""
-        assert value.ndim == len(self.indices)
+        assert value.ndim == len(self.indices), f"{value.shape}, {self.indices}"
         self.value = value
         for ii, index in enumerate(self.indices):
             self.indices[ii] = index.with_new_size(value.shape[ii])
@@ -236,6 +237,39 @@ class Tensor:
         return tens
 
     def split(
+        self,
+        left_indices: Sequence[int],
+        right_indices: Sequence[int]
+    ) -> List["Tensor"]:
+        """Split a tensor into three by SVD."""
+        permute_indices = itertools.chain(left_indices, right_indices)
+        value = np.permute_dims(self.value, tuple(permute_indices))
+        left_sz = int(np.prod([self.indices[i].size for i in left_indices]))
+        right_sz = int(np.prod([self.indices[j].size for j in right_indices]))
+        value = value.reshape(left_sz, right_sz)
+
+        result = delta_svd(value, 1e-5) # we pass a small delta value here to exclude very small eigen values
+        u = result.u
+        s = result.s
+        v = result.v
+        # d = result.remaining_delta
+
+        u = u.reshape([self.indices[i].size for i in left_indices] + [-1])
+        u_indices = [self.indices[i] for i in left_indices]
+        u_indices.append(Index("r_split_l", u.shape[-1]))
+        u_tensor = Tensor(u, u_indices)
+
+        s_indices = [Index("r_split_l", u.shape[-1]), Index("r_split_r", u.shape[-1])]
+        s_tensor = Tensor(np.diag(s), s_indices)
+
+        v = v.reshape([-1] + [self.indices[j].size for j in right_indices])
+        v_indices = [self.indices[j] for j in right_indices]
+        v_indices = [Index("r_split_r", v.shape[0])] + v_indices
+        v_tensor = Tensor(v, v_indices)
+
+        return [u_tensor, s_tensor, v_tensor]
+
+    def delta_split(
         self,
         left_indices: Sequence[int],
         right_indices: Sequence[int],
@@ -546,7 +580,50 @@ class TensorNetwork:
 
         return node
 
-    def split(  # pylint: disable=R0913
+    def split(self, node_name: NodeName,
+              left_indices: Sequence[int],
+              right_indices: Sequence[int]) -> Tuple[NodeName, NodeName, NodeName]:
+        """Perform the svd split and returns u, s, v"""
+        node_name = self.orthonormalize(node_name)
+        x = self.network.nodes[node_name]["tensor"]
+        # svd decompose the data into specified index partition
+        [u, s, v] = x.split(left_indices, right_indices)
+
+        v_name = self.fresh_node()
+        new_index_r = self.fresh_index()
+        self.add_node(v_name, v.rename_indices({"r_split_r": new_index_r}))
+        
+        u_name = node_name
+        new_index_l = self.fresh_index()
+        x_nbrs = list(self.network.neighbors(node_name))
+        self.network.remove_node(node_name)
+        self.add_node(u_name, u.rename_indices({"r_split_l": new_index_l}))
+
+        s_name = self.fresh_node()
+        self.add_node(s_name, s.rename_indices({"r_split_l": new_index_l, "r_split_r": new_index_r}))
+
+        for y in x_nbrs:
+            y_inds = self.network.nodes[y]["tensor"].indices
+            if any(i in y_inds for i in u.indices):
+                self.add_edge(u_name, y)
+            elif any(i in y_inds for i in v.indices):
+                self.add_edge(v_name, y)
+            else:
+                raise ValueError(
+                    f"Indices {y_inds} does not exist in splits (",
+                    u.indices,
+                    ",",
+                    v.indices,
+                )
+
+        self.add_edge(u_name, s_name)
+        self.add_edge(s_name, v_name)
+
+        # self.draw()
+        # plt.show()
+        return (u_name, s_name, v_name)
+
+    def delta_split(  # pylint: disable=R0913
         self,
         node_name: NodeName,
         left_indices: Sequence[int],
@@ -567,20 +644,22 @@ class TensorNetwork:
         if not preview:
             if mode == "svd" and with_orthonormal:
                 node_name = self.orthonormalize(node_name)
+                # self.draw()
+                # plt.show()
 
             x = self.network.nodes[node_name]["tensor"]
             # svd decompose the data into specified index partition
-            [u, v], remaining_delta = x.split(left_indices, right_indices, mode, delta)
+            [u, v], remaining_delta = x.delta_split(left_indices, right_indices, mode, delta)
         else:
             x = self.network.nodes[node_name]["tensor"]
             u = Tensor(None, [x.indices[i] for i in left_indices] + [Index("r_split", -1)])
             v = Tensor(None, [Index("r_split", -1)] + [x.indices[i] for i in right_indices])
             remaining_delta = delta
 
+        new_index = self.fresh_index()
         x_nbrs = list(self.network.neighbors(node_name))
         self.network.remove_node(node_name)
 
-        new_index = self.fresh_index()
         u_name = node_name
         self.add_node(u_name, u.rename_indices({"r_split": new_index}))
         v_name = self.fresh_node()
@@ -602,6 +681,8 @@ class TensorNetwork:
 
         self.add_edge(u_name, v_name)
 
+        # self.draw()
+        # plt.show()
         return (u_name, v_name), remaining_delta
 
     def merge(self, name1: NodeName, name2: NodeName, preview=False) -> NodeName:
@@ -625,15 +706,18 @@ class TensorNetwork:
             if n != name1:
                 self.add_edge(name1, n)
 
+        # self.draw()
+        # plt.show()
         return name1
 
-    def optimize(self, node_name: NodeName, delta: float, visited: set = None) -> Tuple[NodeName, float]:
+    def round(self, node_name: NodeName, delta: float, visited: set = None) -> Tuple[NodeName, float]:
         """Optimize the tree rooted at the given node."""
         # print("optimize", node_name)
         # import matplotlib.pyplot as plt
         if visited is None:
             initial_optimize = True
             visited = set()
+            self.orthonormalize(node_name)
         else:
             initial_optimize = False
 
@@ -661,19 +745,13 @@ class TensorNetwork:
             curr_indices = self.network.nodes[node_name]["tensor"].indices
             left_indices = [curr_indices.index(i) for i in curr_indices if i != idx]
             right_indices = [curr_indices.index(idx)]
-            [node_name, v], delta = self.split(node_name, left_indices, right_indices, delta=delta, with_orthonormal=False)
-            # self.draw()
-            # plt.show()
+            [node_name, v], delta = self.delta_split(node_name, left_indices, right_indices, delta=delta, with_orthonormal=False)
             self.merge(nbr, v)
-            # self.draw()
-            # plt.show()
             visited_index = self.get_contraction_index(node_name, nbr)
             for idx in visited_index:
                 visited.add(idx)
-            r, delta = self.optimize(nbr, delta, visited)
+            r, delta = self.round(nbr, delta, visited)
             self.merge(node_name, r)
-            # self.draw()
-            # plt.show()
 
         if not initial_optimize:
             node_indices = self.network.nodes[node_name]["tensor"].indices
@@ -683,12 +761,32 @@ class TensorNetwork:
                     left_indices.append(i)
                 else:
                     right_indices.append(i)
-            [_, r], _ = self.split(node_name, left_indices, right_indices, mode="qr")
+            [_, r], _ = self.delta_split(node_name, left_indices, right_indices, mode="qr")
 
         # self.draw()
         # plt.show()
         return r, delta
 
+    def compress(self):
+        """Compress the network by removing nodes 
+        where one index equals to the product of other indices.
+        """
+        for n, nd in list(self.network.nodes(data=True)):
+            indices = nd["tensor"].indices
+            deleted = False
+            for ind in indices:
+                if ind.size == np.prod([j.size for j in indices if j != ind]):
+                    # we can merge the nodes on the two ends of ind
+                    nbrs = list(self.network.neighbors(n))
+                    for nbr in nbrs:
+                        nbr_indices = self.network.nodes[nbr]["tensor"].indices
+                        if ind in nbr_indices:
+                            self.merge(nbr, n)
+                            deleted = True
+                            break
+
+                    if deleted:
+                        break
 
     def orthonormalize(self, name: NodeName) -> NodeName:
         """Orthonormalize the environment network for the specified node.
@@ -717,9 +815,12 @@ class TensorNetwork:
                     permute_indices = list(range(permute_index))
                     permute_indices.append(len(indices) - 1)
                     permute_indices.extend(list(range(permute_index, len(indices) - 1)))
+
+                    # print("before merge", self.network.nodes[merged]["tensor"].indices)
                     merged = self.merge(merged, c)
 
                     # restore the last index into the permute_index position
+                    # print("[merge] permuting", self.network.nodes[merged]["tensor"].indices, "into", permute_indices)
                     self.network.nodes[merged]["tensor"] = self.network.nodes[merged]["tensor"].permute(permute_indices)
 
             if pname is None:
@@ -758,30 +859,29 @@ class TensorNetwork:
                 if common_index is None:
                     left_indices.append(i)
 
-            (q, r), _ = self.split(
+            visited[name] = 2
+            visited[merged] = 2
+
+            # print("before split", self.network.nodes[merged]["tensor"].indices, left_indices, right_indices)
+            right_sz = np.prod([merged_indices[i].size for i in right_indices])
+            # optimization: this step creates redundant nodes, so to avoid them we directly eliminate the node with a merge
+            if len(left_indices) == 1 and merged_indices[left_indices[0]].size <= right_sz:
+                return merged
+            
+            (q, r), _ = self.delta_split(
                 merged, left_indices, right_indices, mode="qr"
             )
             # this split changes the index orders, which affects the outer split result.
             # q has the indices r_split x right_indices
             # but we want r_split to replace the original left_indices
             # so we need to permute this tensor
-            permute_indices = []
-            for i, li in enumerate(left_indices):
-                if li < right_indices[0]:
-                    permute_indices.append(li)
-                else:
-                    permute_indices.append(len(left_indices))
-                    permute_indices.extend([idx - 1 for idx in left_indices[i:]])
-                    break
-            if len(permute_indices) != len(left_indices) + 1:
-                permute_indices.append(len(left_indices))
-
-            # print(left_indices, right_indices, permute_indices)
-            # print(self.network.nodes[q]["tensor"].indices)
+            permute_indices = list(range(right_indices[0]))
+            permute_indices.append(len(left_indices))
+            permute_indices.extend(list(range(right_indices[0], len(left_indices))))
+            # print("[qr] permuting", self.network.nodes[q]["tensor"].indices, "into", permute_indices)
             self.network.nodes[q]["tensor"] = self.network.nodes[q]["tensor"].permute(permute_indices)
 
-            visited[name] = 2
-            visited[merged] = 2
+            # print("returning r for", name, "with indices", self.network.nodes[r]["tensor"].indices)
             return r
 
         return _postorder(None, name)
@@ -950,7 +1050,6 @@ class TensorNetwork:
         """Draw a networkx representation of the network."""
 
         # Define color and shape maps
-        color_map = {"A": "lightblue", "B": "lightgreen"}
         shape_map = {"A": "o", "B": "s"}
         size_map = {"A": 300, "B": 100}
         node_groups = {"A": [], "B": []}
@@ -964,22 +1063,20 @@ class TensorNetwork:
             if index.size == 1:
                 continue
 
-            free_graph.add_node(f"{index.name}-f-{index.size}")
+            free_graph.add_node(f"{index.name}-{index.size}")
 
         new_graph = nx.compose(self.network, free_graph)
         for index in free_indices:
             if index.size == 1:
                 continue
 
-            name1 = f"{index.name}-f-{index.size}"
+            name1 = f"{index.name}-{index.size}"
             for node, data in self.network.nodes(data=True):
                 if index in data["tensor"].indices:
                     new_graph.add_edge(node, name1)
 
-        try:
-            pos = nx.spring_layout(new_graph)
-        except:
-            pos = nx.circular_layout(new_graph)
+        pos = nx.drawing.nx_agraph.graphviz_layout(new_graph, prog="neato", args='-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy')
+        # pos = nx.planar_layout(new_graph)
 
         for node, data in self.network.nodes(data=True):
             node_groups["A"].append(node)
@@ -988,23 +1085,33 @@ class TensorNetwork:
             node_groups["B"].append(node)
 
         for group, nodes in node_groups.items():
-            nx.draw_networkx_nodes(
-                new_graph,
-                pos,
-                ax=ax,
-                nodelist=nodes,
-                node_color=color_map[group],
-                node_shape=shape_map[group],
-                node_size=size_map[group],
-                # with_label=with_label[group]
-            )
             if group == "A":
+                nx.draw_networkx_nodes(
+                    new_graph,
+                    pos,
+                    ax=ax,
+                    nodelist=nodes,
+                    node_color="lightblue",
+                    node_shape=shape_map[group],
+                    node_size=size_map[group],
+                )
                 node_labels = {node: node for node in node_groups["A"]}
                 nx.draw_networkx_labels(
                     new_graph, pos, ax=ax, labels=node_labels, font_size=12
                 )
-            if group == "B":
-                node_labels = {node: node for node in node_groups["B"]}
+            else:
+                nx.draw_networkx_nodes(
+                    new_graph,
+                    pos,
+                    ax=ax,
+                    nodelist=nodes,
+                    node_color=range(1, len(nodes)+1),
+                    node_shape=shape_map[group],
+                    node_size=size_map[group],
+                    cmap=plt.get_cmap("Accent"),
+                    # with_label=with_label[group]
+                )
+                node_labels = {node: node for node in node_groups[group]}
                 nx.draw_networkx_labels(
                     new_graph, pos, ax=ax, labels=node_labels, font_size=12
                 )

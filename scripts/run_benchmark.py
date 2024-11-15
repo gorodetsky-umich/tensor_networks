@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 from benchmarks.benchmark import Benchmark
 from pytens.search import SearchEngine
-from scripts.svdinstn_decomposition import FCTN
+from svdinstn_decomposition import FCTN
 
 def eps_to_str(eps: float) -> str:
     return "".join(f"{eps:.2f}".split('.'))
@@ -39,7 +39,7 @@ class Runner:
         net.draw()
 
         eps_str = eps_to_str(self.params['eps'])
-        log_name = f"{self.params['engine']}_{eps_str}"
+        log_name = f"{self.params['engine']}_{eps_str}_ops_{self.params['max_ops']}_split_{self.params['split_errors']}"
         output_dir = f"output/{benchmark.source}/{benchmark.name}/{eps_str}"
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -47,16 +47,26 @@ class Runner:
         plt.savefig(f"{output_dir}/start_from.png")
         plt.close()
 
+        net.compress()
+        net.draw()
+        plt.savefig(f"{output_dir}/start_from_compressed.png")
+        plt.close()
+
         all_stats = []
         with open(f"{output_dir}/{log_name}.log", "w", encoding="utf-8") as f:
             for i in range(repeat):
                 if self.params["engine"] == "svdinstn":
-                    fctn = search_engine(net,self.params["timeout"],
-                                         self.params["eps"])
+                    fctn = search_engine(net, timeout=self.params["timeout"],
+                                         gamma=self.params["gamma"],
+                                         eps=self.params["eps"])
                     fctn.initialize()
                     fctn.decompose()
                     fctn.to_tensor_network()
                     stats = fctn.stats
+                elif self.params["engine"] == "beam":
+                    data_name = benchmark.name.split("_ht_")[0]
+                    target_tensor = np.load(f"data/{benchmark.source}/{data_name}/data.npy")
+                    stats = search_engine(net, target_tensor)
                 else: 
                     stats = search_engine(net)
                 
@@ -90,7 +100,11 @@ if __name__ == "__main__":
     parser.add_argument("--consider_ranks", action="store_true", help="Whether to consider edge ranks during pruning")
     parser.add_argument("--optimize", action="store_true", help="Whether to optimize the found structure by global optimization")
     parser.add_argument("--no-heuristic", action="store_true", help="Disable prune of no truncation")
-    parser.add_argument("--timeout", type=float, default=3600, help="Timeout limit")
+    parser.add_argument("--single_core_start", action="store_true", help="Start from a single core instead of the given network")
+    parser.add_argument("--split_errors", type=int, default=0, help="Consider all possible ranks in each split action")
+    parser.add_argument("--guided", action="store_true", help="Whether to use neural network to guide the beam search")
+    parser.add_argument("--timeout", type=float, help="Timeout limit")
+    parser.add_argument("--gamma", type=float, default=1e-3, help="Gamma value used in SVDinsTN")
     parser.add_argument("--verbose", action="store_true", help="Whether to perform verbose logging")
     parser.add_argument("--collect_only", action="store_true", help="Collect log data into one single file")
 
@@ -112,12 +126,13 @@ if __name__ == "__main__":
             if not os.path.exists(out_dir):
                 print("Directory", out_dir, "does not exist")
 
-            slog_name = f"{out_dir}/{args.engine}_{eps_to_str(args.eps)}.log"
+            log_name = f"{args.engine}_{eps_to_str(args.eps)}_ops_{args.max_ops}_split_{args.split_errors}"
+            slog_name = f"{out_dir}/{log_name}.log"
             with open(slog_name, "r", encoding="utf-8") as slog_file:
                 line = slog_file.read().strip()
                 _, t, re, cr_core, cr_start = line.split(",")
 
-            alog_name = f"{out_dir}/{args.engine}_{eps_to_str(args.eps)}_all.log"
+            alog_name = f"{out_dir}/{log_name}_all.log"
             if os.path.exists(alog_name):
                 with open(alog_name, "r", encoding="utf-8") as alog_file:
                     all_log = json.load(alog_file)[0]

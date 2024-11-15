@@ -1,0 +1,145 @@
+{
+    "name": "order_5_structure_2_ht_eps_000",
+    "source": "SVDinsTN",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "s_0_1",
+                    "size": 72
+                },
+                {
+                    "name": "s_0_2",
+                    "size": 72
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_0.npy"
+        },
+        {
+            "name": "G1",
+            "indices": [
+                {
+                    "name": "s_1_5",
+                    "size": 144
+                },
+                {
+                    "name": "s_1_6",
+                    "size": 18
+                },
+                {
+                    "name": "s_0_1",
+                    "size": 72
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_1.npy"
+        },
+        {
+            "name": "G2",
+            "indices": [
+                {
+                    "name": "s_2_3",
+                    "size": 20
+                },
+                {
+                    "name": "s_2_4",
+                    "size": 18
+                },
+                {
+                    "name": "s_0_2",
+                    "size": 72
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_2.npy"
+        },
+        {
+            "name": "G3",
+            "indices": [
+                {
+                    "name": "s_3",
+                    "size": 20
+                },
+                {
+                    "name": "s_2_3",
+                    "size": 20
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_3.npy"
+        },
+        {
+            "name": "G4",
+            "indices": [
+                {
+                    "name": "s_4",
+                    "size": 22
+                },
+                {
+                    "name": "s_2_4",
+                    "size": 18
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_4.npy"
+        },
+        {
+            "name": "G5",
+            "indices": [
+                {
+                    "name": "s_5_7",
+                    "size": 9
+                },
+                {
+                    "name": "s_5_8",
+                    "size": 16
+                },
+                {
+                    "name": "s_1_5",
+                    "size": 144
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_5.npy"
+        },
+        {
+            "name": "G6",
+            "indices": [
+                {
+                    "name": "I2",
+                    "size": 18
+                },
+                {
+                    "name": "s_1_6",
+                    "size": 18
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_6.npy"
+        },
+        {
+            "name": "G7",
+            "indices": [
+                {
+                    "name": "I3",
+                    "size": 14
+                },
+                {
+                    "name": "s_5_7",
+                    "size": 9
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_7.npy"
+        },
+        {
+            "name": "G8",
+            "indices": [
+                {
+                    "name": "I4",
+                    "size": 16
+                },
+                {
+                    "name": "s_5_8",
+                    "size": 16
+                }
+            ],
+            "value": "data/SVDinsTN/order_5_structure_2//000/htucker_nodes/node_8.npy"
+        }
+    ],
+    "value_file": null
+}

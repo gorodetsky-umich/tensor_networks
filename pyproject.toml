@@ -28,6 +28,9 @@ dependencies = [
   "flake8",
   "flake8-pyproject",
   "pydantic", # better dataclasses
+  "pygraphviz",
+  "pydot",
+  "tensorboard",
 ]
 
 [tool.setuptools]

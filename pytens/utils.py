@@ -62,7 +62,7 @@ def delta_svd(
         try:
             u, s, v = np.linalg.svd(data, False, True)
         except np.linalg.LinAlgError:
-            print("Numpy svd did not converge, using qr+svd")
+            # print("Numpy svd did not converge, using qr+svd")
             q, r = np.linalg.qr(data)
             u, s, v = np.linalg.svd(r)
             u = q @ u
@@ -73,11 +73,14 @@ def delta_svd(
 
     slist = list(s * s)
     slist.reverse()
-    truncpost = [
-        idx
-        for idx, element in enumerate(np.cumsum(slist))
-        if element <= delta**2
-    ]
+    truncpost = []
+    for idx, element in enumerate(np.cumsum(slist)):
+        if element <= delta ** 2:
+            truncpost.append(idx)
+
+        else:
+            break
+
     truncation_rank = max(len(s) - len(truncpost), 1)
     used_delta = np.cumsum(slist)[truncpost[-1]] if len(truncpost) > 0 else 0.0
     if with_normalizing:
