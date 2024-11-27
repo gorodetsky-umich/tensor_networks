@@ -1,6 +1,7 @@
 """Tensor Network Solvers."""
 
 import copy
+import os
 import unittest
 import tempfile
 import pickle
@@ -34,12 +35,13 @@ class TestTT(unittest.TestCase):
 
     def test_save(self):
 
-        # with tempfile.NamedTemporaryFile(delete_on_close=False) as fp:
-        with tempfile.NamedTemporaryFile() as fp:
-            out = pickle.dump(self.TT, fp, pickle.HIGHEST_PROTOCOL)
-            fp.close()
+        with tempfile.TemporaryDirectory() as td:
 
-            with open(fp.name, mode='rb') as f:
+            fname = os.path.join(td, 'test')
+            with open(fname, 'wb') as fp:
+                out = pickle.dump(self.TT, fp, pickle.HIGHEST_PROTOCOL)
+
+            with open(fname, mode='rb') as f:
                 new_tt = pickle.load(f)
                 tt_ranks = new_tt.ranks()
                 self.assertEqual(tt_ranks[0], self.tt_ranks[0])
