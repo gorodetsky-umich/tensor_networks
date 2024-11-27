@@ -1,7 +1,10 @@
 """Tensor Network Solvers."""
 
 import copy
+import os
 import unittest
+import tempfile
+import pickle
 
 import numpy as np
 
@@ -30,6 +33,25 @@ class TestTT(unittest.TestCase):
         self.tt_ranks2 = [3, 4]
         self.TT2 = rand_tt([self.x, self.u, self.v], self.tt_ranks2)
 
+    def test_save(self):
+
+        with tempfile.TemporaryDirectory() as td:
+
+            fname = os.path.join(td, 'test')
+            with open(fname, 'wb') as fp:
+                out = pickle.dump(self.TT, fp, pickle.HIGHEST_PROTOCOL)
+
+            with open(fname, mode='rb') as f:
+                new_tt = pickle.load(f)
+                tt_ranks = new_tt.ranks()
+                self.assertEqual(tt_ranks[0], self.tt_ranks[0])
+                self.assertEqual(tt_ranks[1], self.tt_ranks[1])
+
+                eval_here = new_tt[0, 2, 4].value
+                eval_orig = self.TT[0, 2, 4].value
+                err = np.abs(eval_here - eval_orig)
+                self.assertTrue(err < 1e-14)
+        
     def test_ranks(self):
         tt_ranks = self.TT.ranks()
         self.assertEqual(tt_ranks[0], self.tt_ranks[0])
