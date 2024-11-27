@@ -34,8 +34,8 @@ class TestTT(unittest.TestCase):
 
     def test_save(self):
 
-        out = pickle.dumps(self.TT, pickle.HIGHEST_PROTOCOL)
-        with tempfile.NamedTemporaryFile(delete_on_close=False) as fp:
+        # with tempfile.NamedTemporaryFile(delete_on_close=False) as fp:
+        with tempfile.NamedTemporaryFile() as fp:
             out = pickle.dump(self.TT, fp, pickle.HIGHEST_PROTOCOL)
             fp.close()
 
