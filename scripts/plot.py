@@ -2,7 +2,7 @@
 
 import argparse
 import json
-import itertools
+import glob
 
 import matplotlib.pyplot as plt
 
@@ -18,6 +18,7 @@ all_figures = [
     "best_compression_by_time",
     # other
     "ops_by_time",
+    "compression_vs_time",
 ]
 
 parser = argparse.ArgumentParser()

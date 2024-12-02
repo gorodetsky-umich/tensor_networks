@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["pytens", "benchmarks"]
+packages = ["pytens", "htucker", "benchmarks"]
 
 
 [project.urls]

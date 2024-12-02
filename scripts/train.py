@@ -1,17 +1,13 @@
 """Script for neural network training."""
 
-from typing import Any, Dict
 import json
-import os
-import pickle
 import torch
 
-import matplotlib.pyplot as plt
-
 from benchmarks.benchmark import Benchmark
-from pytens.search import RLTrainer
+from pytens.search.nn import RLTrainer
 
 def eps_to_str(eps: float) -> str:
+    """Convert an epsilon to a formatted string."""
     return "".join(f"{eps:.2f}".split('.'))
 
 if __name__ == "__main__":

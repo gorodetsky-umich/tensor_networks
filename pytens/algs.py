@@ -12,7 +12,6 @@ import itertools
 import numpy as np
 import opt_einsum as oe
 import networkx as nx
-import pydot
 import matplotlib.pyplot as plt
 
 from .utils import delta_svd
@@ -592,7 +591,7 @@ class TensorNetwork:
         v_name = self.fresh_node()
         new_index_r = self.fresh_index()
         self.add_node(v_name, v.rename_indices({"r_split_r": new_index_r}))
-        
+
         u_name = node_name
         new_index_l = self.fresh_index()
         x_nbrs = list(self.network.neighbors(node_name))
@@ -669,15 +668,8 @@ class TensorNetwork:
             y_inds = self.network.nodes[y]["tensor"].indices
             if any(i in y_inds for i in u.indices):
                 self.add_edge(u_name, y)
-            elif any(i in y_inds for i in v.indices):
+            if any(i in y_inds for i in v.indices):
                 self.add_edge(v_name, y)
-            else:
-                raise ValueError(
-                    f"Indices {y_inds} does not exist in splits (",
-                    u.indices,
-                    ",",
-                    v.indices,
-                )
 
         self.add_edge(u_name, v_name)
 
@@ -768,7 +760,7 @@ class TensorNetwork:
         return r, delta
 
     def compress(self):
-        """Compress the network by removing nodes 
+        """Compress the network by removing nodes
         where one index equals to the product of other indices.
         """
         for n, nd in list(self.network.nodes(data=True)):
@@ -867,7 +859,7 @@ class TensorNetwork:
             # optimization: this step creates redundant nodes, so to avoid them we directly eliminate the node with a merge
             if len(left_indices) == 1 and merged_indices[left_indices[0]].size <= right_sz:
                 return merged
-            
+
             (q, r), _ = self.delta_split(
                 merged, left_indices, right_indices, mode="qr"
             )
@@ -935,7 +927,7 @@ class TensorNetwork:
                 features = (self_free_indices, ranks, sorted_children_rs)
             else:
                 features = (self_free_indices, sorted_children_rs)
-            
+
             return hash(features)
 
         return _postorder(root)
@@ -1126,7 +1118,6 @@ class TensorNetwork:
         nx.draw_networkx_edge_labels(
             new_graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
         )
-
 
 def vector(
     name: Union[str, int], index: Index, value: np.ndarray

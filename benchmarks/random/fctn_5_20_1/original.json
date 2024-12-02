@@ -1,0 +1,137 @@
+{
+    "name": "fctn_5_20_1",
+    "source": "random",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 20
+                },
+                {
+                    "name": "r01",
+                    "size": 2
+                },
+                {
+                    "name": "r02",
+                    "size": 3
+                },
+                {
+                    "name": "r03",
+                    "size": 2
+                },
+                {
+                    "name": "r04",
+                    "size": 4
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G1",
+            "indices": [
+                {
+                    "name": "r01",
+                    "size": 2
+                },
+                {
+                    "name": "I1",
+                    "size": 20
+                },
+                {
+                    "name": "r12",
+                    "size": 4
+                },
+                {
+                    "name": "r13",
+                    "size": 3
+                },
+                {
+                    "name": "r14",
+                    "size": 4
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G2",
+            "indices": [
+                {
+                    "name": "r02",
+                    "size": 3
+                },
+                {
+                    "name": "r12",
+                    "size": 4
+                },
+                {
+                    "name": "I2",
+                    "size": 20
+                },
+                {
+                    "name": "r23",
+                    "size": 2
+                },
+                {
+                    "name": "r24",
+                    "size": 4
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G3",
+            "indices": [
+                {
+                    "name": "r03",
+                    "size": 2
+                },
+                {
+                    "name": "r13",
+                    "size": 3
+                },
+                {
+                    "name": "r23",
+                    "size": 2
+                },
+                {
+                    "name": "I3",
+                    "size": 20
+                },
+                {
+                    "name": "r34",
+                    "size": 3
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G4",
+            "indices": [
+                {
+                    "name": "r04",
+                    "size": 4
+                },
+                {
+                    "name": "r14",
+                    "size": 4
+                },
+                {
+                    "name": "r24",
+                    "size": 4
+                },
+                {
+                    "name": "r34",
+                    "size": 3
+                },
+                {
+                    "name": "I4",
+                    "size": 20
+                }
+            ],
+            "value": null
+        }
+    ],
+    "value_file": null
+}

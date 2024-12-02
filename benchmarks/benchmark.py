@@ -1,27 +1,30 @@
 """Class for benchmark details."""
+
 from typing import List, Optional
 import os
 import glob
-import json
 import random
 
 import numpy as np
 from pydantic import RootModel
 from pydantic.dataclasses import dataclass
-import matplotlib.pyplot as plt
 
 from pytens import Index, NodeName, Tensor, TensorNetwork
+
 
 @dataclass
 class Node:
     """Class for node representation in benchmarks"""
+
     name: NodeName
     indices: List[Index]
     value: Optional[str] = None
 
+
 @dataclass
 class Benchmark:
     """Class for benchmark data storage."""
+
     name: str
     source: str
 
@@ -54,14 +57,17 @@ class Benchmark:
         for nodes in edges.values():
             nodes = list(nodes)
             for i, n1 in enumerate(nodes):
-                for n2 in nodes[i+1:]:
+                for n2 in nodes[i + 1 :]:
                     network.add_edge(n1, n2)
 
         # network.draw()
         # plt.show()
         return network
 
-def convert_single_value_to_benchmark(bench_name: str, bench_source: str, data_file: str = None, data: np.ndarray = None):
+
+def convert_single_value_to_benchmark(
+    bench_name: str, bench_source: str, data_file: str = None, data: np.ndarray = None
+):
     """Convert single numpy data files into a benchmark JSON file."""
     benchmark = Benchmark(bench_name, bench_source)
     benchmark.nodes = []
@@ -72,7 +78,7 @@ def convert_single_value_to_benchmark(bench_name: str, bench_source: str, data_f
 
     if os.path.exists(f"{benchmark_dir}/data.npy"):
         os.remove(f"{benchmark_dir}/data.npy")
-    
+
     data_dir = f"data/{bench_source}/{bench_name}"
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
@@ -94,7 +100,10 @@ def convert_single_value_to_benchmark(bench_name: str, bench_source: str, data_f
         json_str = RootModel[Benchmark](benchmark).model_dump_json(indent=4)
         json_file.write(json_str)
 
-def stack_data_to_benchmark(iters: int, source: str, stack_size: int, all_data: List[str], reshape=None):
+
+def stack_data_to_benchmark(
+    iters: int, source: str, stack_size: int, all_data: List[str], reshape=None
+):
     """Stack several data files into one and save it as a new benchmark"""
     for i in range(iters):
         name = f"stack_{stack_size}_test_{i}"
@@ -104,6 +113,7 @@ def stack_data_to_benchmark(iters: int, source: str, stack_size: int, all_data: 
 
         data = np.stack(data, axis=0).reshape(reshape)
         convert_single_value_to_benchmark(name, f"{source}_stack", data=data)
+
 
 def all_data_to_benchmarks(source: str, all_data: List[str]):
     """Stack all data files into one, reshape it, and save it as a new benchmark"""
@@ -129,48 +139,58 @@ def all_data_to_benchmarks(source: str, all_data: List[str]):
     name = "stack_all_test_3"
     convert_single_value_to_benchmark(name, source, data=data3)
 
-    data4 = data.reshape(3, 6*17*11, 120, 120, 12)
+    data4 = data.reshape(3, 6 * 17 * 11, 120, 120, 12)
     name = "stack_all_test_4"
     convert_single_value_to_benchmark(name, source, data=data4)
 
-    data5 = data.reshape(18, 17*11, 120, 120, 12).transpose(1,2,3,4,0).reshape(17*11, 120, 120, -1)
+    data5 = (
+        data.reshape(18, 17 * 11, 120, 120, 12)
+        .transpose(1, 2, 3, 4, 0)
+        .reshape(17 * 11, 120, 120, -1)
+    )
     name = "stack_all_test_5"
     convert_single_value_to_benchmark(name, source, data=data5)
+
 
 def start_from_tt(data_dir: str, name: str, eps: float):
     """Generate benchmark files that start from tensor train results."""
     benchmark_dir = f"{data_dir}/{name}/"
-    eps_version = "".join(format(eps,'.2f').split("."))
+    eps_version = "".join(format(eps, ".2f").split("."))
     benchmark_name = f"{name}_tt_eps_{eps_version}"
-    core_files = sorted(list(glob.glob(f"{benchmark_dir}/trainedCores/*{eps_version}*.npy")))
+    core_files = sorted(
+        list(glob.glob(f"{benchmark_dir}/trainedCores/*{eps_version}*.npy"))
+    )
     core_nodes = []
     for i, core_file in enumerate(core_files):
         core_i = np.load(core_file)
-        indices = [Index(2*i+j, ind) for j,ind in enumerate(core_i.shape)]
+        indices = [Index(2 * i + j, ind) for j, ind in enumerate(core_i.shape)]
         core_node = Node(f"G{i}", indices, core_file)
         core_nodes.append(core_node)
 
     benchmark = Benchmark(benchmark_name, "transformed", core_nodes)
-    with open(f"{benchmark_dir}/tt_{eps_version}.json", "w+", encoding="utf-8") as json_file:
+    with open(
+        f"{benchmark_dir}/tt_{eps_version}.json", "w+", encoding="utf-8"
+    ) as json_file:
         json_str = RootModel[Benchmark](benchmark).model_dump_json(indent=4)
         json_file.write(json_str)
+
 
 def start_from_ht(data_dir: str, source: str, name: str, eps: float):
     """Generate benchmark files that start from htucker results."""
     ht_data_dir = f"{data_dir}/{source}/{name}/"
-    eps_version = "".join(format(eps,'.2f').split("."))
+    eps_version = "".join(format(eps, ".2f").split("."))
     benchmark_name = f"{name}_ht_eps_{eps_version}"
     edge_file = f"{ht_data_dir}/{eps_version}/htucker_nodes/edges.txt"
 
     # reconstruct the tree structure
     edges = {}
-    with open(edge_file, "r") as edge_fd:
+    with open(edge_file, "r", encoding="utf-8") as edge_fd:
         lines = edge_fd.readlines()
         for line in lines:
             line = line.strip()
             if line:
-                p, cs = line.split('\t')
-                l, r = cs.split(',')
+                p, cs = line.split("\t")
+                l, r = cs.split(",")
                 edges[int(p)] = (int(l), int(r))
 
     nodes = []
@@ -189,15 +209,19 @@ def start_from_ht(data_dir: str, source: str, name: str, eps: float):
                 p = j
                 break
 
-        if i in edges and len(node_value.shape) == 2: # root node
+        if i in edges and len(node_value.shape) == 2:  # root node
             l, r = edges[i]
             l_size, r_size = node_value.shape
             indices = [Index(f"s_{i}_{l}", l_size), Index(f"s_{i}_{r}", r_size)]
-        elif i in edges and len(node_value.shape) == 3: # internal nodes
+        elif i in edges and len(node_value.shape) == 3:  # internal nodes
             l, r = edges[i]
             l_size, r_size, p_size = node_value.shape
-            indices = [Index(f"s_{i}_{l}", l_size), Index(f"s_{i}_{r}", r_size), Index(f"s_{p}_{i}", p_size)]
-        elif i not in edges and len(node_value.shape) == 2: # leaf nodes
+            indices = [
+                Index(f"s_{i}_{l}", l_size),
+                Index(f"s_{i}_{r}", r_size),
+                Index(f"s_{p}_{i}", p_size),
+            ]
+        elif i not in edges and len(node_value.shape) == 2:  # leaf nodes
             c_size, p_size = node_value.shape
             indices = [Index(f"s_{i}", c_size), Index(f"s_{p}_{i}", p_size)]
         else:
@@ -207,13 +231,85 @@ def start_from_ht(data_dir: str, source: str, name: str, eps: float):
         nodes.append(node)
 
     benchmark = Benchmark(benchmark_name, source, nodes)
-    with open(f"benchmarks/{source}/{name}/ht_{eps_version}.json", "w+") as json_file:
+    with open(
+        f"benchmarks/{source}/{name}/ht_{eps_version}.json", "w+", encoding="utf-8"
+    ) as json_file:
+        json_str = RootModel[Benchmark](benchmark).model_dump_json(indent=4)
+        json_file.write(json_str)
+
+
+def gen_fctn(num_of_nodes: int, bond_size: int, free_bond: int):
+    """Create random fully connected tensor networks."""
+    benchmark_name = f"fctn_{num_of_nodes}_{free_bond}_{bond_size}"
+    benchmark_dir = f"benchmarks/random/{benchmark_name}"
+    if not os.path.exists(benchmark_dir):
+        os.makedirs(benchmark_dir)
+
+    network = TensorNetwork()
+    index_mapping = {}
+    for i in range(num_of_nodes):
+        indices = []
+        for j in range(num_of_nodes):
+            if i == j:
+                indices.append(Index(f"I{i}", free_bond))
+            elif j < i:
+                indices.append(Index(f"r{j}{i}", index_mapping[(j, i)]))
+            else:
+                index_mapping[(i, j)] = random.randint(2, 4)
+                indices.append(Index(f"r{i}{j}", index_mapping[(i, j)]))
+                network.add_edge(f"G{i}", f"G{j}")
+
+        shape = [i.size for i in indices]
+        network.add_node(f"G{i}", Tensor(np.random.randn(*shape), indices))
+
+    # save the single core data file
+    datafile = f"data/random/{benchmark_name}/data.npy"
+    np.save(datafile, network.contract().value)
+
+    benchmark = Benchmark(
+        benchmark_name, "random", [Node("G0", network.free_indices(), datafile)]
+    )
+    with open(
+        f"benchmarks/random/{benchmark_name}/original.json", "w+", encoding="utf-8"
+    ) as json_file:
+        json_str = RootModel[Benchmark](benchmark).model_dump_json(indent=4)
+        json_file.write(json_str)
+
+
+def gen_tt(num_of_nodes: int, bond_size: int, free_bond: int):
+    """Create random tensor train benchmarks."""
+    benchmark_name = f"tt_{num_of_nodes}_{free_bond}_{bond_size}"
+    benchmark_dir = f"benchmarks/random/{benchmark_name}"
+    if not os.path.exists(benchmark_dir):
+        os.makedirs(benchmark_dir)
+
+    nodes = []
+
+    n0_indices = [Index("I0", free_bond), Index("r01", bond_size)]
+    nodes.append(Node("G0", n0_indices))
+    for i in range(1, num_of_nodes - 1):
+        indices = [
+            Index(f"r{i-1}{i}", bond_size),
+            Index(f"I{i}", free_bond),
+            Index(f"r{i}{i+1}", bond_size),
+        ]
+        nodes.append(Node(f"G{i}", indices))
+
+    nm_indices = [
+        Index(f"r{num_of_nodes-2}{num_of_nodes-1}", bond_size),
+        Index(f"I{num_of_nodes-1}", free_bond),
+    ]
+    nodes.append(nm_indices)
+
+    benchmark = Benchmark(benchmark_name, "random", nodes)
+    with open(
+        f"benchmarks/random/{benchmark_name}/original.json", "w+", encoding="utf-8"
+    ) as json_file:
         json_str = RootModel[Benchmark](benchmark).model_dump_json(indent=4)
         json_file.write(json_str)
 
 
 if __name__ == "__main__":
-    """Main function that surpresses errors"""
     # Uncomment for converting single cores into benchmarks
     # for f in glob.glob("data/SVDinsTN/*/*.npy"):
     #     name = f.split('/')[-2]
@@ -235,7 +331,6 @@ if __name__ == "__main__":
     # stack_data_to_benchmark(10, "BigEarthNet-v1_0", 11 * 17, all_data, (11, 17, 120, 120, 12))
     # # benchmarks with all data: several different reshapes
     # all_data_to_benchmarks("BigEarthNet-v1_0", all_data)
-    
 
     # for f in os.listdir("benchmarks/SVDinsTN/"):
     #     if ".DS_Store" in f:
@@ -291,10 +386,14 @@ if __name__ == "__main__":
     # print("svd time", time.time() - start)
     # print(s.shape)
 
-    source = "BigEarthNet-v1_0_all"
-    eps = 0.1
-    for name in os.listdir(f"data/{source}"):
-        if name == ".DS_Store":
-            continue
+    # source = "BigEarthNet-v1_0_all"
+    # eps = 0.1
+    # for name in os.listdir(f"data/{source}"):
+    #     if name == ".DS_Store":
+    #         continue
 
-        start_from_ht("data", source, name, eps)
+    #     start_from_ht("data", source, name, eps)
+
+    for num_nodes in range(4, 11):
+        for bidx in range(5):
+            gen_fctn(num_nodes, bidx, 20 if num_nodes < 6 else 5)
