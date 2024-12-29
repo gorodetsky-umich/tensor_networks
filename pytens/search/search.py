@@ -7,11 +7,13 @@ from typing import Dict, List
 from pydantic.dataclasses import dataclass
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 from pytens.algs import TensorNetwork, Index, Tensor
 from pytens.search.state import SearchState
 from pytens.search.beam import BeamSearch
 from pytens.search.mcts import MCTS
+from pytens.search.partition import PartitionSearch
 
 
 parser = argparse.ArgumentParser()
@@ -49,6 +51,8 @@ def log_stats(
     err = approx_error(target_tensor, st.network)
     search_stats["errors"].append((ts, err))
     search_stats["best_cost"].append((ts, bn.cost()))
+    ukey = st.network.canonical_structure()
+    search_stats["unique"][ukey] = search_stats["unique"].get(ukey, 0) + 1
 
 
 class MyConfig:
@@ -183,6 +187,10 @@ class SearchEngine:
         # plt.show()
         return stats
 
+    def partition_search(self, net: TensorNetwork):
+        engine = PartitionSearch(self.params)
+        return engine.search(net)
+
     def dfs(
         self,
         net: TensorNetwork,
@@ -197,6 +205,7 @@ class SearchEngine:
             "costs": [],
             "errors": [],
             "ops": [],
+            "unique": {},
         }
         logging_time = 0
         start = time.time()
@@ -224,19 +233,20 @@ class SearchEngine:
 
             count += 1
 
-            print(curr_st.used_ops, curr_st.network.cost(), curr_st.curr_delta)
-            print([str(ac) for ac in curr_st.past_actions])
+            # print(curr_st.used_ops, curr_st.network.cost(), curr_st.curr_delta)
+            # print([str(ac) for ac in curr_st.past_actions])
             # curr_st.network.draw()
             # plt.show()
 
-            if self.params["prune"]:
-                h = curr_st.network.canonical_structure(
-                    consider_ranks=self.params["consider_ranks"]
-                )
-                if h in worked:
-                    return
-                else:
-                    worked.add(h)
+            # if self.params["prune"]:
+            #     h = curr_st.network.canonical_structure(
+            #         consider_ranks=self.params["consider_ranks"]
+            #     )
+            #     # print(h)
+            #     if h in worked:
+            #         return
+            #     else:
+            #         worked.add(h)
 
             if curr_st.used_ops >= self.params["max_ops"]:
                 # print("max op")
@@ -245,11 +255,18 @@ class SearchEngine:
             if self.params["timeout"] is not None and time.time() - start > self.params["timeout"]:
                 return
 
-            for ac in curr_st.get_legal_actions():
-                print(ac)
-                for new_st in curr_st.take_action(ac,
-                                                  split_errors = self.params["split_errors"],
-                                                  no_heuristic = self.params["no_heuristic"]):
+            for ac in curr_st.get_legal_actions(index_actions=self.params["partition"]):
+                # print(ac)
+                if curr_st.used_ops + 1 >= self.params["max_ops"]:
+                    split_errors = 0
+                else:
+                    split_errors = self.params["split_errors"]
+
+                gen = curr_st.take_action(ac,
+                                                  split_errors = split_errors,
+                                                  no_heuristic = self.params["no_heuristic"])
+                greedy = False
+                for new_st in gen:
                     # new_st.network.draw()
                     # plt.show()
                     # if new_st.network.canonical_structure() == interested_hash:
@@ -266,7 +283,6 @@ class SearchEngine:
                         # print("noop")
                         continue
                 
-
                     if new_st.network.cost() < best_network.cost():
                         best_network = new_st.network
 
@@ -277,7 +293,62 @@ class SearchEngine:
                     verbose_end = time.time()
                     logging_time += verbose_end - verbose_start
 
+                    if self.params["prune"]:
+                        h = new_st.network.canonical_structure(
+                            consider_ranks=self.params["consider_ranks"]
+                        )
+                        # print(h)
+                        if h in worked:
+                            return
+                        else:
+                            worked.add(h)
+
+                    if new_st.used_ops >= self.params["max_ops"]:
+                        # print("max op")
+                        return
+
+                    best_before = best_network.cost()
                     helper(new_st)
+                    best_after = best_network.cost()
+                    if best_before == best_after:
+                        # if this error splitting does not bring any cost updates
+                        # further considerations are a waste of time.
+                        # jump to greedy choice
+                        greedy = True
+                        break
+
+                if greedy and self.params["split_errors"] != 0:
+                    gen = curr_st.take_action(ac, no_heuristic = self.params["no_heuristic"])
+                    for new_st in gen:
+                        if not self.params["no_heuristic"] and new_st.is_noop:
+                            # print("noop")
+                            continue
+                    
+                        if new_st.network.cost() < best_network.cost():
+                            best_network = new_st.network
+
+                        ts = time.time() - start - logging_time
+                        verbose_start = time.time()
+                        if self.params["verbose"]:
+                            log_stats(search_stats, target_tensor, ts, new_st, best_network)
+                        verbose_end = time.time()
+                        logging_time += verbose_end - verbose_start
+
+                        if self.params["prune"]:
+                            h = new_st.network.canonical_structure(
+                                consider_ranks=self.params["consider_ranks"]
+                            )
+                            # print(h)
+                            if h in worked:
+                                return
+                            else:
+                                worked.add(h)
+
+                        if new_st.used_ops >= self.params["max_ops"]:
+                            # print("max op")
+                            return
+
+                        helper(new_st)
 
                 # plt.close(curr_net.canonical_structure())
 

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from collections import Counter
 from dataclasses import dataclass
 import typing
-from typing import Dict, Optional, Union, List, Self, Tuple, Callable
+from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Any
 import itertools
 
 import numpy as np
@@ -90,6 +90,13 @@ class Tensor:
             if index.name in rename_map:
                 self.indices[ii] = index.with_new_name(rename_map[index.name])
 
+        return self
+
+    def relabel_indices(self, relabel_map: Dict[IntOrStr, Any]) -> Self:
+        """Relabel the index size."""
+        for ii, index in enumerate(self.indices):
+            if index.name in relabel_map:
+                self.indices[ii] = index.with_new_size(relabel_map[index.name])
         return self
 
     def concat_fill(
@@ -364,6 +371,12 @@ class TensorNetwork:
             data["tensor"].rename_indices(rename_map)
         return self
 
+    def relabel_indices(self, relabel_map: Dict[IntOrStr, Any]) -> Self:
+        """Relabel the indices in the network."""
+        for _, data in self.network.nodes(data=True):
+            data["tensor"].relabel_indices(relabel_map)
+        return self
+
     def free_indices(self) -> List[Index]:
         """Get the free indices."""
         icount = self.all_indices()
@@ -581,9 +594,12 @@ class TensorNetwork:
 
     def split(self, node_name: NodeName,
               left_indices: Sequence[int],
-              right_indices: Sequence[int]) -> Tuple[NodeName, NodeName, NodeName]:
+              right_indices: Sequence[int],
+              with_orthonormalize: bool = True) -> Tuple[NodeName, NodeName, NodeName]:
         """Perform the svd split and returns u, s, v"""
-        node_name = self.orthonormalize(node_name)
+        if with_orthonormalize:
+            node_name = self.orthonormalize(node_name)
+            
         x = self.network.nodes[node_name]["tensor"]
         # svd decompose the data into specified index partition
         [u, s, v] = x.split(left_indices, right_indices)
@@ -910,7 +926,7 @@ class TensorNetwork:
             """Hash the nodes by their postorder"""
             visited[name] = 1
             children_rs = []
-            nbrs = list(self.network.neighbors(name))
+            nbrs = sorted(list(self.network.neighbors(name)))
             for n in nbrs:
                 if n not in visited:
                     # Process children before the current node.

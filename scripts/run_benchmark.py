@@ -1,6 +1,6 @@
 """Script for benchmark running"""
 
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 import json
 import os
 import pickle
@@ -26,9 +26,10 @@ class Runner:
         self.params = params
         self.engine = SearchEngine(params)
 
-    def _to_ht(self, core: Tensor) -> TensorNetwork:
+    def _to_ht(self, core: Tensor) -> Tuple[TensorNetwork, float]:
         core_indices = core.indices
         ht_net = TensorNetwork()
+        tic = time.time()
         ht = HTucker()
         ht.initialize(core.value)
         dimension_tree = createDimensionTree(
@@ -37,6 +38,7 @@ class Runner:
         dimension_tree.get_items_from_level()
         ht.rtol = self.params["eps"]
         ht.compress_leaf2root(core.value, dimension_tree)
+        toc = time.time()
 
         # save the result as a new tensor network
         dims_to_idx = {
@@ -104,7 +106,7 @@ class Runner:
             ht_net.add_node(f"L{curr}", Tensor(l.core, l_indices))
             ht_net.add_edge(f"L{curr}", f"G{p}")
 
-        return ht_net
+        return ht_net, (toc - tic)
 
     def run(self, benchmark: Benchmark, repeat: int = 1):
         """Run a benchmark for the given repeated times."""
@@ -118,6 +120,8 @@ class Runner:
             search_engine = self.engine.beam
         elif self.params["engine"] == "svdinstn":
             search_engine = FCTN
+        elif self.params["engine"] == "partition":
+            search_engine = self.engine.partition_search
         else:
             raise RuntimeError("unrecognized search engine")
 
@@ -131,10 +135,7 @@ class Runner:
 
             # if start from hierarchical tucker, we call ht
             if "ht" in self.params["start_from"]:
-                tic = time.time()
-                net = self._to_ht(net.contract())
-                toc = time.time()
-                ht_construct_time = toc - tic
+                net, ht_construct_time = self._to_ht(net.contract())
             else:
                 ht_construct_time = 0
 
@@ -216,7 +217,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--engine",
         type=str,
-        choices=["bfs", "dfs", "mcts", "beam", "svdinstn"],
+        choices=["bfs", "dfs", "mcts", "beam", "partition", "svdinstn"],
         help="Type of the search engine",
     )
     parser.add_argument(
@@ -264,6 +265,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to use neural network to guide the beam search",
     )
+    parser.add_argument("--partition", action="store_true", help="Whether to use partition actions during dfs")
     parser.add_argument(
         "--start_from",
         choices=["ht", "tt", "core"],
@@ -289,7 +291,7 @@ if __name__ == "__main__":
     runner = Runner(args.__dict__)
 
     print(
-        f"{'Name':35}\t{'Time':>10}\t{'HT Time':>10}\t{'RE':>10}\t{'CR_core':>10}\t{'CR_start':>10}\t{'Best_time':>10}\t{'Max_ops':>10}"
+        f"{'Name':35}\t{'Time':>10}\t{'HT Time':>10}\t{'RE':>10}\t{'CR_core':>10}\t{'CR_start':>10}\t{'Best_time':>10}\t{'Max_ops':>10}\t{'Uniques':>10}"
     )
     for benchmark_file in glob.glob(args.pattern):
         with open(benchmark_file, "r", encoding="utf-8") as benchmark_fd:
@@ -304,7 +306,7 @@ if __name__ == "__main__":
                 ht_tag = ""
 
             log_name = f"{args.engine}_{eps_to_str(args.eps)}{ht_tag}_ops_{args.max_ops}_split_{args.split_errors}"
-            args["log_name"] = log_name
+            runner.params["log_name"] = log_name
 
             if not args.collect_only:
                 runner.run(b, repeat=args.repeat)
@@ -336,10 +338,15 @@ if __name__ == "__main__":
                         best_cost = 0
                         first_best_cost = 0
                         max_ops = 0
+
+                    if "unique" in all_log:
+                        uniques = len(all_log["unique"])
+                    else:
+                        uniques = 0
             else:
                 first_best_cost = None
                 max_ops = None
 
             print(
-                f"{float(t):>10.5f}\t{float(ht_time):>10.5f}\t{float(re):>10.5f}\t{float(cr_core):>10.5f}\t{float(cr_start):>10.5f}\t{float(first_best_cost):>10.5f}\t{max_ops:>10}"
+                f"{float(t):>10.5f}\t{float(ht_time):>10.5f}\t{float(re):>10.5f}\t{float(cr_core):>10.5f}\t{float(cr_start):>10.5f}\t{float(first_best_cost):>10.5f}\t{max_ops:>10}\t{uniques:>10}"
             )
