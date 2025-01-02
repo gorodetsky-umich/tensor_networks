@@ -28,6 +28,9 @@ class SplitIndex(Action):
         if not isinstance(other, SplitIndex):
             return False
         
+        if len(self.indices) != len(other.indices):
+            return False
+        
         for i, j in zip(self.indices, other.indices):
             if i.name != j.name:
                 return False
@@ -37,10 +40,16 @@ class SplitIndex(Action):
     def __hash__(self) -> int:
         return hash(self.__str__())
     
+    def __lt__(self, other: Self) -> bool:
+        if len(self.indices) != len(other.indices):
+            return len(self.indices) < len(other.indices)
+        
+        return sorted(self.indices) < sorted(other.indices)
+
     def is_valid(self, past_actions) -> bool:
         """Check whether this action is valid given its execution history."""
-        if len(self.indices) == 1:
-            return True
+        if self in past_actions:
+            return False
         
         for ac in past_actions:
             if not isinstance(ac, SplitIndex):
@@ -290,14 +299,10 @@ class SearchState:
                     # print("heuristic prune")
                     return
                 
-                # print("original truncpost", len(truncpost))
+                # print("original truncpost", len(truncpost), "target_size", action.target_size, "max size", max_sz)
                 if isinstance(action, SplitIndexAround):
-                    # try to first cut until the target - 3
-                    target_trunc = max(max_sz - action.target_size + split_errors // 2, 0)
-                    if target_trunc > 0 and target_trunc < len(truncpost):
-                        truncpost = truncpost[:target_trunc]
-                    else:
-                        target_trunc = len(truncpost)
+                    target_trunc = max(len(s_val) - action.target_size + split_errors // 2, 0)
+                    truncpost = truncpost[:target_trunc]
 
                 # print("remaining truncpost", len(truncpost))
 
@@ -305,7 +310,7 @@ class SearchState:
                 # print("split_num", split_num)
                 if split_num == 0:
                     tmp_net = copy.deepcopy(new_net)
-                    truncation_rank = max(max_sz - len(truncpost), 1)
+                    truncation_rank = max(len(s_val) - len(truncpost), 1)
                     used_delta = truncpost[-1] if len(truncpost) > 0 else 0
                     tmp_net.network.nodes[u]["tensor"].update_val_size(u_val[..., :truncation_rank])
                     tmp_net.network.nodes[s]["tensor"].update_val_size(np.diag(s_val[:truncation_rank]))

@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 from pytens.algs import Tensor, Index
 from pytens.search.state import SplitIndex, SearchState
 
+BAD_SCORE = 9999999999999
+
 class ILPSolver:
     """An ILP solver to find near-optimal rank assignments."""
     def __init__(self, params: Dict):
@@ -50,8 +52,9 @@ class ILPSolver:
 
         self.model.addConstr(self.vars.prod(coeff) <= delta ** 2)
 
-    def set_objective(self, free_indices: List[Index], nodes: List[Tensor]):
+    def set_objective(self, free_indices: List[Index], nodes: List[Tensor], upper: int):
         """Set the objective for the solver."""
+        # max_cost = np.prod([i.size for i in free_indices])
         cost = 0
         for node in nodes:
             var_inds = []
@@ -91,6 +94,7 @@ class ILPSolver:
             cost += node_cost
             # print(cost)
 
+        self.model.addConstr(cost <= upper)
         self.model.setObjective(cost, GRB.MINIMIZE)
 
 class ConstraintSearch:
@@ -108,7 +112,7 @@ class ConstraintSearch:
         cnt = 0
         s_sizes = [1]
         s_sums = [s[-1]**2]
-        
+
         chunk_size = 0.1 * self.delta ** 2
         truncation_values = [x for x in np.cumsum(np.flip(s) ** 2) if x <= self.delta ** 2]
         for sv in truncation_values[1:]:
@@ -149,15 +153,15 @@ class ConstraintSearch:
             for comb in combs:
                 right_indices = [i for i in free_indices if i not in comb]
                 positions = [target_tensor.indices.index(i) for i in list(comb) + right_indices]
-                x = target_tensor.value.transpose(positions)
+                tensor_val = target_tensor.value.transpose(positions)
                 left_size = np.prod([x.size for x in comb])
-                singular_values = np.linalg.svdvals(x.reshape(left_size, -1))
+                singular_values = np.linalg.svdvals(tensor_val.reshape(left_size, -1))
                 sums, sizes = self.abstract(singular_values)
                 self.split_actions[SplitIndex(comb)] = (sums, sizes)
 
     # we can integrate this with A*, beam search, or other things
     # let's try A* first
-    def get_cost(self, st: SearchState):
+    def get_cost(self, st: SearchState, upper: int):
         """Compute cost for a given set of splits."""
         solver = ILPSolver({})
         solver.model.params.OutputFlag = 0
@@ -187,7 +191,7 @@ class ConstraintSearch:
         for _, data in st.network.network.nodes(data=True):
             nodes.append(data["tensor"])
 
-        solver.set_objective(free_indices, nodes)
+        solver.set_objective(free_indices, nodes, upper)
         solver.model.optimize()
 
         try:
@@ -211,7 +215,7 @@ class ConstraintSearch:
                         break
             return result, st.network.cost()
         except AttributeError:
-            return {}, 9999999999999
+            return {}, BAD_SCORE
 
 def test_case_1():
     """Test case for tensor trains with 10-20-8 indices."""

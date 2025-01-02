@@ -7,9 +7,9 @@ import copy
 import numpy as np
 import matplotlib.pyplot as plt
 
-from pytens.algs import TensorNetwork
+from pytens.algs import TensorNetwork, Index
 from pytens.search.state import SearchState, SplitIndex, SplitIndexAround
-from pytens.search.constraint import ConstraintSearch
+from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 
 class PartitionSearch:
     """Search by partitions free indices"""
@@ -24,6 +24,58 @@ class PartitionSearch:
         self.constraint_engine = ConstraintSearch(params)
         self.costs = {}
         self.ranks = {}
+        self.conflicts = []
+
+    def enumerate(self, st: SearchState, actions: List[SplitIndex]):
+        """Enumerate all possible splits up to the maximum number of ops."""
+        sts = [st]
+        # best_costs = [st.network.cost()]
+        best_cost = st.network.cost()
+        for _ in range(1, self.params["max_ops"] + 1):
+            next_sts = []
+            for curr_st in sts:
+                for action in actions:
+                    if curr_st.past_actions and (action < curr_st.past_actions[-1] or not action.is_valid(curr_st.past_actions)):
+                        # print(action, [str(ac) for ac in curr_st.past_actions], action < curr_st.past_actions[-1], action in curr_st.past_actions)
+                        continue
+
+                    # bad_action = False
+                    # for conflict in self.conflicts:
+                    #     if set(conflict).issubset(set(curr_st.past_actions + [action])):
+                    #         bad_action = True
+                    #         break
+
+                    # if bad_action:
+                    #     continue
+                    
+                    split_ac = action.to_split(curr_st.network)
+                    new_net = copy.deepcopy(curr_st.network)
+                    node_indices = new_net.network.nodes[split_ac.node]["tensor"].indices
+                    right_indices = [i for i in range(len(node_indices)) if i not in split_ac.left_indices]
+                    [u, v], _ = new_net.delta_split(split_ac.node, split_ac.left_indices, right_indices, preview=True)
+                    new_st = SearchState(new_net, curr_st.curr_delta)
+                    new_link = new_net.get_contraction_index(u, v)[0]
+                    new_st.ac_to_link = copy.deepcopy(curr_st.ac_to_link)
+                    new_st.ac_to_link[action] = new_link.name
+                    new_st.past_actions = curr_st.past_actions + [action]
+                    # print("Getting cost for", [str(ac) for ac in new_st.past_actions])
+                    rank, cost = self.constraint_engine.get_cost(new_st, best_cost)
+                    # print(cost)
+                    best_cost = min(best_cost, cost)
+                    # if cost != BAD_SCORE:
+                    #     if len(best_costs) > 10:
+                    #         best_costs.pop()
+
+                    #     best_costs.append(cost)
+                    #     best_costs = sorted(best_costs)
+
+                    self.costs[tuple(new_st.past_actions)] = cost
+                    self.ranks[tuple(new_st.past_actions)] = rank
+
+                    next_sts.append(new_st)
+            
+            sts = next_sts
+
 
     def dfs(self, st: SearchState, actions: List[SplitIndex]):
         """DFS search to select whether one action is performed or not."""
@@ -68,7 +120,9 @@ class PartitionSearch:
             new_st.ac_to_link = copy.deepcopy(st.ac_to_link)
             new_st.ac_to_link[action] = new_link.name
             new_st.past_actions = st.past_actions + [action]
-            rank, cost = self.constraint_engine.get_cost(new_st)
+            # print("Getting cost for", [str(ac) for ac in new_st.past_actions])
+            rank, cost = self.constraint_engine.get_cost(new_st, BAD_SCORE)
+            # print(cost)
             self.costs[tuple(new_st.past_actions)] = cost
             self.ranks[tuple(new_st.past_actions)] = rank
             self.dfs(new_st, actions[1:])
@@ -78,6 +132,7 @@ class PartitionSearch:
     def replay(self, st: SearchState, actions: List[SplitIndex], ranks: Dict[SplitIndex, int]):
         """Apply the given actions around the given ranks."""
         if not actions:
+            print("replayed network cost", st.network.cost())
             for n in st.network.network.nodes:
                 net = copy.deepcopy(st.network)
                 net.round(n, st.curr_delta)
@@ -130,22 +185,43 @@ class PartitionSearch:
         self.constraint_engine.preprocess(net.contract())
         print("preprocessing time", time.time() - start)
 
+        # with open("constraint_engine.pkl", "rb") as f:
+        #     import pickle
+        #     # pickle.dump(self.constraint_engine, f)
+        #     self.constraint_engine = pickle.load(f)
+
+        # tmp_indices = [SplitIndex([Index("I3", 120), Index("I4", 12)]),
+        #                SplitIndex([Index("I2", 120)]),
+        #                SplitIndex([Index("I0", 3), Index("I1", 1122)])]
+        # replay_ranks = {
+        #     tmp_indices[0]: 120,
+        #     tmp_indices[1]: 40,
+        #     tmp_indices[2]: 792,
+        # }
+        # for ind in tmp_indices:
+        #     sums, sizes = self.constraint_engine.split_actions[ind]
+        #     print(sums)
+        #     print(sizes)
+
+        # self.replay(init_st, tmp_indices, replay_ranks)
+
         self.tic = time.time()
-        self.dfs(init_st, split_actions)
+        self.enumerate(init_st, split_actions)
         toc1 = time.time()
         
         # get the smallest and replay with error splits around the estimated ranks
         costs = sorted([(v, k) for k, v in self.costs.items()])
         # print(costs)
         # try the top 10?
-        for _, acs in costs[:1]:
+        for c, acs in costs[:1]:
+            print("expect cost", c)
             ranks = self.ranks[acs]
             self.replay(init_st, acs, ranks)
             # take the result and do the rounding
         
         toc2 = time.time()
 
-        self.stats["time"] = toc2 - self.tic
+        self.stats["time"] = toc2 - start
         self.stats["preprocess"] = toc1 - self.tic
         self.stats["best_network"] = self.best_network
         self.stats["cr_core"] = float(np.prod([i.size for i in free_indices])) / self.best_network.cost()
