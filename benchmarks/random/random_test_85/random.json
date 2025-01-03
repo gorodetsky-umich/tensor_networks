@@ -1,0 +1,103 @@
+{
+    "name": "random_test_85",
+    "source": "random",
+    "nodes": [
+        {
+            "name": "G3",
+            "indices": [
+                {
+                    "name": "s_2_3",
+                    "size": 3
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G2",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 16
+                },
+                {
+                    "name": "I1",
+                    "size": 18
+                },
+                {
+                    "name": "s_2_3",
+                    "size": 3
+                },
+                {
+                    "name": "s_2_5",
+                    "size": 3
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G5",
+            "indices": [
+                {
+                    "name": "I2",
+                    "size": 20
+                },
+                {
+                    "name": "s_2_5",
+                    "size": 3
+                },
+                {
+                    "name": "s_1_5",
+                    "size": 3
+                },
+                {
+                    "name": "s_5_6",
+                    "size": 3
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G4",
+            "indices": [
+                {
+                    "name": "s_1_4",
+                    "size": 3
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G1",
+            "indices": [
+                {
+                    "name": "I4",
+                    "size": 14
+                },
+                {
+                    "name": "s_1_4",
+                    "size": 3
+                },
+                {
+                    "name": "s_1_5",
+                    "size": 3
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G6",
+            "indices": [
+                {
+                    "name": "I3",
+                    "size": 22
+                },
+                {
+                    "name": "s_5_6",
+                    "size": 3
+                }
+            ],
+            "value": null
+        }
+    ],
+    "value_file": null
+}

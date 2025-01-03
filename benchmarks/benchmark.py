@@ -8,6 +8,7 @@ import random
 import numpy as np
 from pydantic import RootModel
 from pydantic.dataclasses import dataclass
+import networkx as nx
 
 from pytens import Index, NodeName, Tensor, TensorNetwork
 
@@ -308,7 +309,79 @@ def gen_tt(num_of_nodes: int, bond_size: int, free_bond: int):
         json_str = RootModel[Benchmark](benchmark).model_dump_json(indent=4)
         json_file.write(json_str)
 
+def random_tree(benchmark_name, num_of_nodes: int, free_indices: List[Index]):
+    length = num_of_nodes - 2
+    arr = [0] * length
+ 
+    # Generate random array
+    for i in range(length):
+        arr[i] = random.randint(1, length + 1)
 
+    vertex_set = [0] * num_of_nodes
+ 
+    # Initialize the array of vertices
+    for i in range(num_of_nodes):
+        vertex_set[i] = 0
+ 
+    # Number of occurrences of vertex in code
+    for i in range(length):
+        vertex_set[arr[i] - 1] += 1
+ 
+    # construct the edge set
+    edge_set = []
+    j = 0
+    # Find the smallest label not present in prufer[].
+    for i in range(length):
+        for j in range(num_of_nodes):
+            # If j+1 is not present in prufer set
+            if vertex_set[j] == 0:
+                # Remove from Prufer set and print pair.
+                vertex_set[j] = -1
+                edge_set.append((j+1, arr[i]))
+                vertex_set[arr[i] - 1] -= 1
+                break
+ 
+    j = 0
+ 
+    # For the last element
+    edge_pair = []
+    for i in range(num_of_nodes):
+        if vertex_set[i] == 0 and j == 0:
+            edge_pair.append(i+1)
+            j += 1
+        elif vertex_set[i] == 0 and j == 1:
+            edge_pair.append(i+1)
+            edge_set.append(edge_pair)
+            edge_pair = []
+
+    g = nx.Graph(edge_set)
+    free_assignment = random.choices(list(g.nodes), k=len(free_indices))
+    nodes = []
+    for n in g.nodes:
+        n_name = f"G{n}"
+        n_indices = []
+        if n in free_assignment:
+            for mi, m in enumerate(free_assignment):
+                if m == n:
+                    n_indices.append(free_indices[mi])
+
+        for gn in nx.neighbors(g, n):
+            l = min(gn, n)
+            r = max(gn, n)
+            n_indices.append(Index(f"s_{l}_{r}", 3))
+
+        nodes.append(Node(n_name, n_indices))
+
+    b = Benchmark(benchmark_name, "random", nodes)
+    benchmark_dir = f"benchmarks/random/{benchmark_name}"
+    if not os.path.exists(benchmark_dir):
+        os.makedirs(benchmark_dir)
+    with open(
+        f"{benchmark_dir}/random.json", "w+", encoding="utf-8"
+    ) as json_file:
+        json_str = RootModel[Benchmark](b).model_dump_json(indent=4)
+        json_file.write(json_str)
+        
 if __name__ == "__main__":
     # Uncomment for converting single cores into benchmarks
     # for f in glob.glob("data/SVDinsTN/*/*.npy"):
@@ -394,6 +467,16 @@ if __name__ == "__main__":
 
     #     start_from_ht("data", source, name, eps)
 
-    for num_nodes in range(4, 11):
-        for bidx in range(5):
-            gen_fctn(num_nodes, bidx, 20 if num_nodes < 6 else 5)
+    # for num_nodes in range(4, 11):
+    #     for bidx in range(5):
+    #         gen_fctn(num_nodes, bidx, 20 if num_nodes < 6 else 5)
+
+    for i in range(100):
+        if i < 25:
+            random_tree(f"random_test_{i}", 4, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22)])
+        elif i < 50:
+            random_tree(f"random_test_{i}", 5, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22)])
+        elif i < 75:
+            random_tree(f"random_test_{i}", 5, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22), Index("I4", 14)])
+        else:
+            random_tree(f"random_test_{i}", 6, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22), Index("I4", 14)])
