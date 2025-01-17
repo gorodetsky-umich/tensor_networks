@@ -103,6 +103,7 @@ class ConstraintSearch:
         self.params = params
 
         self.split_actions = {}
+        self.first_steps = {}
         self.delta = 0
 
     def abstract(self, s):
@@ -113,7 +114,7 @@ class ConstraintSearch:
         s_sizes = [1]
         s_sums = [s[-1]**2]
 
-        chunk_size = 0.1 * self.delta ** 2
+        chunk_size = self.params["bin_size"] * self.delta ** 2
         truncation_values = [x for x in np.cumsum(np.flip(s) ** 2) if x <= self.delta ** 2]
         for sv in truncation_values[1:]:
             if sv < prev + chunk_size:
@@ -155,9 +156,11 @@ class ConstraintSearch:
                 positions = [target_tensor.indices.index(i) for i in list(comb) + right_indices]
                 tensor_val = target_tensor.value.transpose(positions)
                 left_size = np.prod([x.size for x in comb])
-                singular_values = np.linalg.svdvals(tensor_val.reshape(left_size, -1))
-                sums, sizes = self.abstract(singular_values)
+                # u, s, v = np.linalg.svd(tensor_val.reshape(left_size, -1), False, True)
+                s = np.linalg.svd(tensor_val.reshape(left_size, -1), False, False)
+                sums, sizes = self.abstract(s)
                 self.split_actions[SplitIndex(comb)] = (sums, sizes)
+                # self.first_steps[SplitIndex(comb)] = (u, s, v)
 
     # we can integrate this with A*, beam search, or other things
     # let's try A* first
@@ -170,7 +173,12 @@ class ConstraintSearch:
         # extract nodes from the current network
         relabel_map = {}
         for ac in st.past_actions:
-            ac_sums, ac_sizes = self.split_actions[ac]
+            if not isinstance(ac, SplitIndex):
+                index_ac = ac.to_index(st)
+            else:
+                index_ac = ac
+                
+            ac_sums, ac_sizes = self.split_actions[index_ac]
             prefix_sums[st.ac_to_link[ac]] = ac_sums
             # we need to substitute the links to all 
             relabel_map[st.ac_to_link[ac]] = tuple(ac_sizes)

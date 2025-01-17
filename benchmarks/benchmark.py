@@ -9,6 +9,7 @@ import numpy as np
 from pydantic import RootModel
 from pydantic.dataclasses import dataclass
 import networkx as nx
+import h5py
 
 from pytens import Index, NodeName, Tensor, TensorNetwork
 
@@ -355,8 +356,17 @@ def random_tree(benchmark_name, num_of_nodes: int, free_indices: List[Index]):
             edge_pair = []
 
     g = nx.Graph(edge_set)
-    free_assignment = random.choices(list(g.nodes), k=len(free_indices))
+    # start from a root we collect all free nodes and find a mapping between nodes and free indices
+    # each node should have at least two edges
+    node_candidates = []
+    for n in g.nodes():
+        if len(list(nx.neighbors(g, n))) == 1:
+            node_candidates.append(n)
+
+    free_assignment = node_candidates + random.choices(list(g.nodes), k=len(free_indices)-len(node_candidates))
+    random.shuffle(free_assignment)
     nodes = []
+    edges = {}
     for n in g.nodes:
         n_name = f"G{n}"
         n_indices = []
@@ -368,7 +378,9 @@ def random_tree(benchmark_name, num_of_nodes: int, free_indices: List[Index]):
         for gn in nx.neighbors(g, n):
             l = min(gn, n)
             r = max(gn, n)
-            n_indices.append(Index(f"s_{l}_{r}", 3))
+            if (l, r) not in edges:
+                edges[(l, r)] = random.randint(2, 5)
+            n_indices.append(Index(f"s_{l}_{r}", edges[(l, r)]))
 
         nodes.append(Node(n_name, n_indices))
 
@@ -381,7 +393,79 @@ def random_tree(benchmark_name, num_of_nodes: int, free_indices: List[Index]):
     ) as json_file:
         json_str = RootModel[Benchmark](b).model_dump_json(indent=4)
         json_file.write(json_str)
-        
+
+    # b.to_network().draw()
+    # import matplotlib.pyplot as plt
+    # plt.show()
+    
+
+def pde_to_benchmark(benchmark_name, data_path, data_field, data_length):
+    f = h5py.File(data_path)
+    if data_field is None:
+        datas = []
+        for k in list(f.keys())[:data_length]:
+            datas.append(f[k]["data"])
+
+        data = np.stack(datas, axis=0)
+    elif data_field in f:
+        data = np.array(f[data_field])[:data_length]
+    else:
+        print(benchmark_name, list(f.keys()))
+        for k in f.keys():
+            print(f[k])
+
+    indices = [Index(f"I{i}", sz) for i, sz in enumerate(data.shape)]
+
+    benchmark_dir = f"benchmarks/PDEBench/{benchmark_name}"
+    if not os.path.exists(benchmark_dir):
+        os.makedirs(benchmark_dir)
+
+    data_file = f"data/PDEBench/{benchmark_name}"
+    if not os.path.exists(data_file):
+        os.makedirs(data_file)
+
+    np.save(f"{data_file}/data.npy", data)
+    b = Benchmark(benchmark_name, "PDEBench", [Node("G0", indices, f"{data_file}/data.npy")])
+    with open(
+        f"{benchmark_dir}/original.json", "w+", encoding="utf-8"
+    ) as json_file:
+        json_str = RootModel[Benchmark](b).model_dump_json(indent=4)
+        json_file.write(json_str)
+
+def cfd_pde_to_benchmark(benchmark_name, data_path, data_length):
+    f = h5py.File(data_path)
+    datas = []
+    print(len(f["density"]))
+    indices = random.sample(range(len(f["density"])), k=data_length)
+    print(indices)
+    for data_field in ["Vx", "Vy", "Vz", "density", "pressure"]:
+        if data_field not in f:
+            continue
+
+        d = np.array(f[data_field])[indices]
+        print(data_field, d.shape)
+        datas.append(d)
+
+    data = np.stack(datas, axis=1)
+
+    indices = [Index(f"I{i}", sz) for i, sz in enumerate(data.shape)]
+
+    benchmark_dir = f"benchmarks/PDEBench/{benchmark_name}"
+    if not os.path.exists(benchmark_dir):
+        os.makedirs(benchmark_dir)
+
+    data_file = f"data/PDEBench/{benchmark_name}"
+    if not os.path.exists(data_file):
+        os.makedirs(data_file)
+
+    np.save(f"{data_file}/data.npy", data)
+    b = Benchmark(benchmark_name, "PDEBench", [Node("G0", indices, f"{data_file}/data.npy")])
+    with open(
+        f"{benchmark_dir}/original.json", "w+", encoding="utf-8"
+    ) as json_file:
+        json_str = RootModel[Benchmark](b).model_dump_json(indent=4)
+        json_file.write(json_str)
+
 if __name__ == "__main__":
     # Uncomment for converting single cores into benchmarks
     # for f in glob.glob("data/SVDinsTN/*/*.npy"):
@@ -425,21 +509,47 @@ if __name__ == "__main__":
 
     # Script for creating benchmark files from SVDinsTN dataset
     # import cv2
-    # imgs = []
-    # name = "truck"
-    # for i, f in enumerate(glob.glob(f"/Users/zhgguo/Downloads/{name}_rectified/*.png")):
-    #     if i % 17 >= 9:
-    #         continue
+    # # name, start_num = "truck", 5785
+    # # name, start_num = "bunny", 3352
+    # name, start_num = "knight", 9566
+    # for k in range(10):
+    #     # random start point
+    #     start_x = random.randint(0, 8)
+    #     start_y = random.randint(0, 8)
+    #     stacks = []
+    #     for i in range(start_x, start_x + 9):
+    #         imgs = []
+    #         for j in range(start_y, start_y + 9):
+    #             # f = glob.glob(f"/Users/zhgguo/Downloads/{name}_rectified/out_{i:02}_{j:02}_*.png")[0]
+    #             f = glob.glob(f"/Users/zhgguo/Downloads/{name}/IMG_{start_num + i * 17 + j}.JPG")[0]
+    #             # print(i, j, f)
+    #             img = cv2.imread(f)
+    #             img = cv2.resize(img, (60, 40), interpolation=cv2.INTER_AREA)
+    #             # img = cv2.resize(img, (60, 40))
+    #             # print(img.shape)
+    #             imgs.append(img)
 
-    #     if i // 17 >= 9:
-    #         break
+    #         stacked_x = np.stack(imgs, axis=0)
+    #         stacks.append(stacked_x)
+            
+    #     stacked_y = np.stack(stacks, axis=0).transpose(2,3,4,0,1)
+    #     convert_single_value_to_benchmark(f"{name}_{k}", "SVDinsTN", data=stacked_y)
 
-    #     img = cv2.imread(f)
-    #     img = cv2.resize(img, (40, 60))
-    #     imgs.append(img)
+    # Script for creating benchmark files for BigEarthNet dataset
+    # from torchgeo.datasets import BigEarthNet
 
-    # stacked_x = np.stack(imgs, axis=0).reshape(9, 9, 40, 60, 3).transpose(2,3,4,0,1)
-    # convert_single_value_to_benchmark(name, "SVDinsTN", data=stacked_x)
+    # # Initialize the dataset
+    # dataset = BigEarthNet(root="/Users/zhgguo/Downloads/BigEarthNet", bands="s2", download=True)
+
+    # # sizes = [(30,), (10, 30), (5, 20, 30)]
+    # sizes = [(15,)]
+    # for s in sizes:
+    #     for i in range(1):
+    #         indices = random.sample(range(len(dataset)), k=int(np.prod(s)))
+    #         imgs = [dataset[x]["image"].numpy() for x in indices]
+    #         data = np.stack(imgs, axis=0).reshape(*s, 12, 120, 120)
+    #         name = f"bigearthnet_stack_{'_'.join([str(x) for x in s])}_{i}"
+    #         convert_single_value_to_benchmark(name, "BigEarthNet", data=data)
 
     # Script for creating benchmark files from tnGPS dataset
     # import cv2
@@ -471,12 +581,48 @@ if __name__ == "__main__":
     #     for bidx in range(5):
     #         gen_fctn(num_nodes, bidx, 20 if num_nodes < 6 else 5)
 
-    for i in range(100):
-        if i < 25:
-            random_tree(f"random_test_{i}", 4, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22)])
-        elif i < 50:
-            random_tree(f"random_test_{i}", 5, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22)])
-        elif i < 75:
-            random_tree(f"random_test_{i}", 5, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22), Index("I4", 14)])
-        else:
-            random_tree(f"random_test_{i}", 6, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22), Index("I4", 14)])
+    # for i in range(100):
+    #     if i < 25:
+    #         random_tree(f"random_test_{i}", 4, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22)])
+    #     elif i < 50:
+    #         random_tree(f"random_test_{i}", 5, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22)])
+    #     elif i < 75:
+    #         random_tree(f"random_test_{i}", 5, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22), Index("I4", 14)])
+    #     else:
+    #         random_tree(f"random_test_{i}", 6, [Index("I0", 16), Index("I1", 18), Index("I2", 20), Index("I3", 22), Index("I4", 14)])
+
+    # source= "PDEBench"
+    # pde = {
+    #     "1D_Advection": ("/Users/zhgguo/Downloads/1D_Advection_Sols_beta0.1.hdf5", "tensor", 5000),
+    #     "1D_Burgers": ("/Users/zhgguo/Downloads/1D_Burgers_Sols_Nu0.001.hdf5", "tensor", 5000),
+    #     "1D_Diff_Sorp": ("/Users/zhgguo/Downloads/1D_diff-sorp_NA_NA.h5", None, 5000),
+    #     "1D_CFD_Vx": ("/Users/zhgguo/Downloads/1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5", "Vx", 5000),
+    #     "1D_CFD_density": ("/Users/zhgguo/Downloads/1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5", "density", 5000),
+    #     "1D_CFD_pressure": ("/Users/zhgguo/Downloads/1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5", "pressure", 5000),
+    #     "1D_Diffusion_Reaction": ("/Users/zhgguo/Downloads/ReacDiff_Nu0.5_Rho1.0.hdf5", "tensor", 5000),
+    #     "2D_CFD_Vx": ("/Users/zhgguo/Downloads/2D_CFD_Rand_M0.1_Eta0.01_Zeta0.01_periodic_128_Train.hdf5", "Vx", 5000),
+    #     "2D_CFD_Vy": ("/Users/zhgguo/Downloads/2D_CFD_Rand_M0.1_Eta0.01_Zeta0.01_periodic_128_Train.hdf5", "Vy", 5000),
+    #     "2D_CFD_density": ("/Users/zhgguo/Downloads/2D_CFD_Rand_M0.1_Eta0.01_Zeta0.01_periodic_128_Train.hdf5", "density", 5000),
+    #     "2D_CFD_pressure": ("/Users/zhgguo/Downloads/2D_CFD_Rand_M0.1_Eta0.01_Zeta0.01_periodic_128_Train.hdf5", "pressure", 5000),
+    #     "2D_Diffusion_Reaction": ("/Users/zhgguo/Downloads/2D_diff-react_NA_NA.h5", None, 100),
+    #     "2D_NS_Incom_Inhom": ("/Users/zhgguo/Downloads/ns_incom_inhom_2d_512-100.h5", "velocity", 5000),
+    #     "2D_DarcyFlow": ("/Users/zhgguo/Downloads/2D_DarcyFlow_beta0.01_Train.hdf5", "tensor", 5000),
+    #     "2D_ShallowWater": ("/Users/zhgguo/Downloads/2D_rdb_NA_NA.h5", None, 100),
+    #     "3D_CFD_Vx": ("/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", "Vx", 100),
+    #     "3D_CFD_Vy": ("/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", "Vy", 100),
+    #     "3D_CFD_Vz": ("/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", "Vz", 100),
+    #     "3D_CFD_density": ("/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", "density", 100),
+    #     "3D_CFD_pressure": ("/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", "pressure", 100),
+    # }
+    # for name, data in pde.items():
+    #     pde_to_benchmark(name, *data)
+
+    source= "PDEBench"
+    pde = {
+        # "1D_CFD": ("/Users/zhgguo/Downloads/1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5", 100),
+        "2D_CFD": ("/Users/zhgguo/Downloads/164686", 10),
+        # "3D_CFD": ("/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", 10),
+    }
+    for name, data in pde.items():
+        for i in range(10):
+            cfd_pde_to_benchmark(f"{name}_{i}", *data)

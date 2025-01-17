@@ -3,22 +3,18 @@
     "source": "random",
     "nodes": [
         {
-            "name": "G1",
+            "name": "G2",
             "indices": [
                 {
                     "name": "I0",
                     "size": 16
                 },
                 {
-                    "name": "I1",
-                    "size": 18
+                    "name": "I3",
+                    "size": 22
                 },
                 {
-                    "name": "I2",
-                    "size": 20
-                },
-                {
-                    "name": "s_1_4",
+                    "name": "s_2_4",
                     "size": 3
                 }
             ],
@@ -28,30 +24,16 @@
             "name": "G4",
             "indices": [
                 {
+                    "name": "s_2_4",
+                    "size": 3
+                },
+                {
                     "name": "s_1_4",
                     "size": 3
                 },
                 {
-                    "name": "s_2_4",
-                    "size": 3
-                }
-            ],
-            "value": null
-        },
-        {
-            "name": "G2",
-            "indices": [
-                {
-                    "name": "I4",
-                    "size": 14
-                },
-                {
-                    "name": "s_2_4",
-                    "size": 3
-                },
-                {
-                    "name": "s_2_3",
-                    "size": 3
+                    "name": "s_4_5",
+                    "size": 4
                 }
             ],
             "value": null
@@ -60,11 +42,25 @@
             "name": "G3",
             "indices": [
                 {
-                    "name": "s_2_3",
-                    "size": 3
+                    "name": "I4",
+                    "size": 14
                 },
                 {
-                    "name": "s_3_5",
+                    "name": "s_1_3",
+                    "size": 2
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G1",
+            "indices": [
+                {
+                    "name": "s_1_3",
+                    "size": 2
+                },
+                {
+                    "name": "s_1_4",
                     "size": 3
                 }
             ],
@@ -74,12 +70,16 @@
             "name": "G5",
             "indices": [
                 {
-                    "name": "I3",
-                    "size": 22
+                    "name": "I1",
+                    "size": 18
                 },
                 {
-                    "name": "s_3_5",
-                    "size": 3
+                    "name": "I2",
+                    "size": 20
+                },
+                {
+                    "name": "s_4_5",
+                    "size": 4
                 }
             ],
             "value": null

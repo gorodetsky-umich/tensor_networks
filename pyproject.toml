@@ -31,6 +31,7 @@ dependencies = [
   "pygraphviz",
   "pydot",
   "tensorboard",
+  "torchgeo"
 ]
 
 [tool.setuptools]

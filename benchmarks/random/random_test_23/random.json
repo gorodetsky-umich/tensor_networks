@@ -6,30 +6,16 @@
             "name": "G1",
             "indices": [
                 {
-                    "name": "s_1_2",
-                    "size": 3
-                }
-            ],
-            "value": null
-        },
-        {
-            "name": "G2",
-            "indices": [
+                    "name": "I1",
+                    "size": 18
+                },
                 {
                     "name": "I2",
                     "size": 20
                 },
                 {
-                    "name": "I3",
-                    "size": 22
-                },
-                {
-                    "name": "s_1_2",
-                    "size": 3
-                },
-                {
-                    "name": "s_2_3",
-                    "size": 3
+                    "name": "s_1_3",
+                    "size": 4
                 }
             ],
             "value": null
@@ -38,11 +24,29 @@
             "name": "G3",
             "indices": [
                 {
+                    "name": "s_1_3",
+                    "size": 4
+                },
+                {
                     "name": "s_2_3",
                     "size": 3
                 },
                 {
                     "name": "s_3_4",
+                    "size": 2
+                }
+            ],
+            "value": null
+        },
+        {
+            "name": "G2",
+            "indices": [
+                {
+                    "name": "I3",
+                    "size": 22
+                },
+                {
+                    "name": "s_2_3",
                     "size": 3
                 }
             ],
@@ -56,12 +60,8 @@
                     "size": 16
                 },
                 {
-                    "name": "I1",
-                    "size": 18
-                },
-                {
                     "name": "s_3_4",
-                    "size": 3
+                    "size": 2
                 }
             ],
             "value": null

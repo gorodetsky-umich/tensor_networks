@@ -595,14 +595,22 @@ class TensorNetwork:
     def split(self, node_name: NodeName,
               left_indices: Sequence[int],
               right_indices: Sequence[int],
-              with_orthonormalize: bool = True) -> Tuple[NodeName, NodeName, NodeName]:
+              with_orthonormalize: bool = True,
+              preview: bool = False,) -> Tuple[NodeName, NodeName, NodeName]:
         """Perform the svd split and returns u, s, v"""
-        if with_orthonormalize:
-            node_name = self.orthonormalize(node_name)
-            
         x = self.network.nodes[node_name]["tensor"]
-        # svd decompose the data into specified index partition
-        [u, s, v] = x.split(left_indices, right_indices)
+
+        if preview:
+            u = Tensor(None, [x.indices[i] for i in left_indices] + [Index("r_split_l", -1)])
+            v = Tensor(None, [Index("r_split_r", -1)] + [x.indices[i] for i in right_indices])
+            s = Tensor(None, [Index("r_split_l", -1), Index("r_split_r", -1)])
+        else:
+            if with_orthonormalize:
+                node_name = self.orthonormalize(node_name)
+    
+            x = self.network.nodes[node_name]["tensor"]
+            # svd decompose the data into specified index partition
+            [u, s, v] = x.split(left_indices, right_indices)
 
         v_name = self.fresh_node()
         new_index_r = self.fresh_index()

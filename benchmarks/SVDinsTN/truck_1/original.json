@@ -1,0 +1,33 @@
+{
+    "name": "truck_1",
+    "source": "SVDinsTN",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 40
+                },
+                {
+                    "name": "I1",
+                    "size": 60
+                },
+                {
+                    "name": "I2",
+                    "size": 3
+                },
+                {
+                    "name": "I3",
+                    "size": 9
+                },
+                {
+                    "name": "I4",
+                    "size": 9
+                }
+            ],
+            "value": "data/SVDinsTN/truck_1/data.npy"
+        }
+    ],
+    "value_file": "data/SVDinsTN/truck_1/data.npy"
+}

@@ -76,7 +76,7 @@ class FCTN:
                 axises = [i for i in range(self.N) if i != t and i != l]
                 x_tl = np.mean(self.target, axis=tuple(axises))
                 # print(f"x_{t}_{l} shape:", x_tl.shape)
-                _, s_tl, _ = np.linalg.svd(x_tl)
+                s_tl = np.linalg.svdvals(x_tl)
                 # print(f"s_{t}_{l} shape:", s_tl.shape)
                 # print(f"s_{t}_{l}:", s_tl)
                 s_tl = shrink(s_tl, self.gamma * np.max(s_tl) / (abs(s_tl) + 1e-16))
@@ -298,7 +298,7 @@ class FCTN:
 
         return out
 
-    def decompose(self, max_iters=5000):
+    def decompose(self, max_iters=100):
         start = time.time()
         X = self.target
 
@@ -322,10 +322,11 @@ class FCTN:
                 # print("Old_G_k:", self.G[k].shape)
                 self.G[k] = fold(G_k, self.G[k].shape, k)
 
-            s = copy.deepcopy(self.S)
+            # s = copy.deepcopy(self.S)
             for t in range(self.N):
                 for l in range(t+1, self.N):
-                    Q[(t, l)] = s[(t, l)]
+                    Q[(t, l)] = self.S[(t, l)]
+                    P[(t, l)] = np.zeros_like(self.S[(t, l)])
                     # lam = gamma * np.max(self.S[(t, l)]) * (rho + 1)
                     # H = self._contract_rest([('S', [t, l])])
                     H_tl = self._contract_rest_s(t, l)
@@ -340,25 +341,19 @@ class FCTN:
                     else:
                         ss = 5
                     for _ in range(ss):
-                        s_left = (rho * s[(t, l)] + beta * Q[(t, l)] - P[(t, l)]) / (rho + beta)
-                        s_right = self.gamma * np.max(s[(t, l)]) / (abs(s[(t, l)]) + 1e-16) # lam / (rho + 1)
-                        s[(t, l)] = shrink(s_left, s_right)
-                        Q[(t, l)] = np.linalg.pinv(H_tl.T @ H_tl + beta * np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + beta * s[(t, l)] + P[(t, l)])
-                        P[(t, l)] = P[(t, l)] + beta * (s[(t, l)] - Q[(t, l)])
+                        s_left = (rho * self.S[(t, l)] + beta * Q[(t, l)] - P[(t, l)]) / (rho + beta)
+                        s_right = self.gamma * np.max(self.S[(t, l)]) / (abs(s_left) + 1e-16) # lam / (rho + 1)
+                        s_tl = shrink(s_left, s_right)
+                        Q[(t, l)] = np.linalg.pinv(H_tl.T @ H_tl + beta * np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + beta * s_tl + P[(t, l)])
+                        P[(t, l)] = P[(t, l)] + beta * (s_tl - Q[(t, l)])
 
-                    # self.S[(t, l)] = s[(t, l)]
-
-            # delete zero elements in S
-            for t in range(self.N):
-                for l in range(t+1, self.N):
-                    s_tl = s[(t, l)]
-                    indices = np.flatnonzero(s_tl >= 1e-16)
+                    indices = np.flatnonzero(s_tl > 1e-16)
                     self.S[(t, l)] = s_tl[indices]
                     # print("indices:", indices)
                     # print("G[t]:", self.G[t].shape, "l:", l)
                     # print("G[l]:", self.G[l].shape, "t:", t)
-                    P[(t, l)] = P[(t, l)][indices]
-                    Q[(t, l)] = Q[(t, l)][indices]
+                    # P[(t, l)] = P[(t, l)][indices]
+                    # Q[(t, l)] = Q[(t, l)][indices]
                     self.G[t] = np.take(self.G[t], indices, axis=l)
                     self.G[l] = np.take(self.G[l], indices, axis=t)
 
@@ -373,7 +368,7 @@ class FCTN:
             re = np.linalg.norm(X - self.target) / np.linalg.norm(self.target)
             print("Iteration:", it, "Time:", time.time() - start, "Error:", err, "RE:", re)
             
-            if err < 1e-3:
+            if err <= 1e-3:
                 print("Converged!")
                 break
 

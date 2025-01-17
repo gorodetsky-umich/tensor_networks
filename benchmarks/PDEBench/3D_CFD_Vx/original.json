@@ -1,0 +1,33 @@
+{
+    "name": "3D_CFD_Vx",
+    "source": "PDEBench",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 100
+                },
+                {
+                    "name": "I1",
+                    "size": 21
+                },
+                {
+                    "name": "I2",
+                    "size": 64
+                },
+                {
+                    "name": "I3",
+                    "size": 64
+                },
+                {
+                    "name": "I4",
+                    "size": 64
+                }
+            ],
+            "value": "data/PDEBench/3D_CFD_Vx/data.npy"
+        }
+    ],
+    "value_file": null
+}

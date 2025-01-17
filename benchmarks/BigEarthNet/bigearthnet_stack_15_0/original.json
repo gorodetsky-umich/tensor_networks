@@ -1,0 +1,29 @@
+{
+    "name": "bigearthnet_stack_15_0",
+    "source": "BigEarthNet",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 15
+                },
+                {
+                    "name": "I1",
+                    "size": 12
+                },
+                {
+                    "name": "I2",
+                    "size": 120
+                },
+                {
+                    "name": "I3",
+                    "size": 120
+                }
+            ],
+            "value": "data/BigEarthNet/bigearthnet_stack_15_0/data.npy"
+        }
+    ],
+    "value_file": "data/BigEarthNet/bigearthnet_stack_15_0/data.npy"
+}

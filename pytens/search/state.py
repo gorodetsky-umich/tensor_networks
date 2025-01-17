@@ -1,9 +1,10 @@
 """Classes for search states."""
-from typing import Sequence, Tuple, Self, Generator, Dict
+from typing import Sequence, Tuple, Self, Generator, Optional
 import itertools
 import copy
 
 import numpy as np
+import networkx as nx
 import matplotlib.pyplot as plt
 
 from pytens.algs import NodeName, TensorNetwork, Index
@@ -18,39 +19,40 @@ class Action:
 
 
 class SplitIndex(Action):
-    def __init__(self, indices: Sequence[Index]):
+    def __init__(self, indices: Sequence[Index], target_size: Optional[int] = None):
         self.indices = indices
+        self.target_size = target_size
 
     def __str__(self) -> str:
         return f"Split({[i.name for i in self.indices]})"
-    
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SplitIndex):
             return False
-        
+
         if len(self.indices) != len(other.indices):
             return False
-        
+
         for i, j in zip(self.indices, other.indices):
             if i.name != j.name:
                 return False
-            
+
         return True
-    
+
     def __hash__(self) -> int:
         return hash(self.__str__())
-    
+
     def __lt__(self, other: Self) -> bool:
         if len(self.indices) != len(other.indices):
             return len(self.indices) < len(other.indices)
-        
+
         return sorted(self.indices) < sorted(other.indices)
 
     def is_valid(self, past_actions) -> bool:
         """Check whether this action is valid given its execution history."""
         if self in past_actions:
             return False
-        
+
         for ac in past_actions:
             if not isinstance(ac, SplitIndex):
                 continue
@@ -58,7 +60,7 @@ class SplitIndex(Action):
             if len(ac.indices) > 1 and any([i in ac.indices for i in self.indices]):
                 # print(f"{self} is invalid with past actions {[str(ac) for ac in past_actions]}")
                 return False
-            
+
         return True
 
     def to_split(self, net: TensorNetwork):
@@ -74,7 +76,7 @@ class SplitIndex(Action):
                     ok, finds = postorder(visited, m)
                     if not ok:
                         return False, []
-                    
+
                     # print("get", finds, "for", m, "with parent", node)
                     inds = []
                     for x in finds:
@@ -87,7 +89,7 @@ class SplitIndex(Action):
                         return False, []
 
                     results.append((net.get_contraction_index(m, node)[0], inds))
-            
+
             free_indices = net.free_indices()
             node_indices = net.network.nodes[node]["tensor"].indices
             for i in node_indices:
@@ -95,10 +97,10 @@ class SplitIndex(Action):
                     results.append((i, [i]))
 
             return True, results
-        
+
         for n in net.network.nodes:
-            # postorder traversal from each node and 
-            # if we find each index 
+            # postorder traversal from each node and
+            # if we find each index
             visited = set()
             # print("postordering", n)
             ok, results = postorder(visited, n)
@@ -123,10 +125,10 @@ class SplitIndex(Action):
         # net.draw()
         # plt.show()
         left_indices = [node_indices.index(i) for i in lca_indices]
-        
+
         return Split(lca_node, left_indices)
 
-    def execute(self, net: TensorNetwork):
+    def execute(self, net: TensorNetwork, svd: Tuple[np.ndarray] = None):
         """Execute the split index action on the given tensor network"""
         # find the nodes that include @indices@,
         # if there are multiple such nodes, go to the common ancestor
@@ -136,21 +138,20 @@ class SplitIndex(Action):
         left_indices = ac.left_indices
         right_indices = [i for i in range(len(node_indices)) if i not in left_indices]
 
-        left_sz = np.prod([node_indices[i].size for i in left_indices])
-        right_sz = np.prod([node_indices[i].size for i in right_indices])
+        left_szs = [node_indices[i].size for i in left_indices]
+        left_sz = np.prod(left_szs)
+        right_szs = [node_indices[i].size for i in right_indices]
+        right_sz = np.prod(right_szs)
         max_sz = min(left_sz, right_sz)
-        u, s, v = net.split(lca_node, left_indices, right_indices, with_orthonormalize=True)
+        if svd is None:
+            u, s, v = net.split(lca_node, left_indices, right_indices, with_orthonormalize=True)
+        else:
+            u, s, v = net.split(lca_node, left_indices, right_indices, preview=True)
+            net.network.nodes[u]["tensor"].update_val_size(svd[0].reshape(*left_szs, -1))
+            net.network.nodes[s]["tensor"].update_val_size(np.diag(svd[1]))
+            net.network.nodes[v]["tensor"].update_val_size(svd[2].reshape(-1, *right_szs))
+
         return (u, s, v), max_sz
-
-class SplitIndexAround(SplitIndex):
-    """Split a given index set and truncate it to the desired rank size."""
-
-    def __init__(self, indices, target_size):
-        super().__init__(indices)
-        self.target_size = target_size
-
-    def __str__(self) -> str:
-        return f"SplitIndexAround({self.indices, self.target_size})"
 
 class Split(Action):
     """Split action."""
@@ -159,9 +160,11 @@ class Split(Action):
         self,
         node: NodeName,
         left_indices: Sequence[int],
+        target_size: Optional[int] = None
     ):
         self.node = node
         self.left_indices = left_indices
+        self.target_size = target_size
 
     def __str__(self) -> str:
         return f"Split({self.node}, {self.left_indices})"
@@ -176,7 +179,26 @@ class Split(Action):
         return network.split(
             self.node, self.left_indices, right_indices
         )
+    
+    def to_index(self, st):
+        """Convert a split action to splitIndex."""
+        connect_nodes = []
+        for n, d in st.network.network.nodes(data=True):
+            for ind in d["tensor"].indices:
+                if ind.name == st.ac_to_link[self]:
+                    connect_nodes.append(n)
+                    break
 
+        if len(connect_nodes) != 2:
+            print("Unusual edge label found in nodes:", connect_nodes)
+
+        tmp_net = copy.deepcopy(st.network.network)
+        tmp_net.remove_edge(connect_nodes[0], connect_nodes[1])
+        for subgraph in nx.connected_components(tmp_net):
+            tn = TensorNetwork()
+            tn.network = subgraph
+            indices = tn.free_indices()
+            return SplitIndex(indices)
 
 class Merge(Action):
     """Merge action."""
@@ -213,7 +235,7 @@ class SearchState:
         """Return a list of all legal actions in this state."""
         if index_actions:
             return self.get_legal_index_actions()
-        
+
         actions = []
         for n in self.network.network.nodes:
             indices = self.network.network.nodes[n]["tensor"].indices
@@ -239,7 +261,7 @@ class SearchState:
         #                 actions.append(ac)
 
         return actions
-    
+
     def get_legal_index_actions(self):
         """Produce a list of legal index splitting actions over the current network."""
         actions = []
@@ -251,14 +273,15 @@ class SearchState:
 
             for comb in combs:
                 ac = SplitIndex(comb)
-                if ac not in self.past_actions and ac.is_valid(self.past_actions):
-                    actions.append(SplitIndex(comb))
+                if not self.past_actions or (self.past_actions[-1] < ac and ac.is_valid(self.past_actions)):
+                    actions.append(ac)
 
         return actions
 
-    def take_action(self, action: Action, split_errors: int = 0, no_heuristic: bool = False) -> Generator["SearchState", None, None]:
+    def take_action(self, action: Action, svd: Tuple[np.ndarray] = None, split_errors: int = 0, no_heuristic: bool = False) -> Generator["SearchState", None, None]:
         """Return a new GameState after taking the specified action."""
-        if (isinstance(action, Split) and split_errors != 0) or isinstance(action, SplitIndex):
+        if ((isinstance(action, Split) and split_errors != 0) or
+            (isinstance(action, SplitIndex))):
             # try the error splitting from large to small
             new_net = copy.deepcopy(self.network)
             try:
@@ -272,8 +295,9 @@ class SearchState:
                 elif isinstance(action, SplitIndex):
                     if not action.is_valid(self.past_actions):
                         return
-                    
-                    (u, s, v), max_sz = action.execute(new_net)
+
+                    # we allow specify the node values
+                    (u, s, v), max_sz = action.execute(new_net, svd)
                 # print(u, new_net.network.nodes[u]["tensor"].indices)
                 # print(s, new_net.network.nodes[s]["tensor"].indices)
                 # print(v, new_net.network.nodes[v]["tensor"].indices)
@@ -283,7 +307,7 @@ class SearchState:
                 v_val = new_net.network.nodes[v]["tensor"].value
                 # This should produce a lot of new states
                 s_val = np.diag(new_net.network.nodes[s]["tensor"].value)
-                
+
                 slist = list(s_val * s_val)
                 slist.reverse()
                 truncpost = []
@@ -298,9 +322,9 @@ class SearchState:
                 if not no_heuristic and (len(truncpost) == 0 and max_sz == len(s_val)):
                     # print("heuristic prune")
                     return
-                
+
                 # print("original truncpost", len(truncpost), "target_size", action.target_size, "max size", max_sz)
-                if isinstance(action, SplitIndexAround):
+                if action.target_size is not None:
                     target_trunc = max(len(s_val) - action.target_size + split_errors // 2, 0)
                     truncpost = truncpost[:target_trunc]
 
@@ -342,7 +366,7 @@ class SearchState:
                     # it is possible to do the truncation at this point
                     tmp_net = copy.deepcopy(new_net)
                     # truncate u, s, v according to idx
-                    
+
                     tmp_net.network.nodes[u]["tensor"].update_val_size(u_val[..., :truncation_rank])
                     tmp_net.network.nodes[s]["tensor"].update_val_size(np.diag(s_val[:truncation_rank]))
                     tmp_net.network.nodes[v]["tensor"].update_val_size(v_val[:truncation_rank, ...])

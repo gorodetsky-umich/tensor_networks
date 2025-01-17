@@ -4,6 +4,7 @@ from typing import Any, Dict, Tuple
 import json
 import os
 import pickle
+import sys
 
 import matplotlib.pyplot as plt
 from svdinstn_decomposition import FCTN
@@ -189,6 +190,12 @@ class Runner:
                     f"{i},{stats['time']},{stats['reconstruction_error']},{stats['cr_core']},{stats['cr_start']},{ht_construct_time}\n"
                 )
                 bn = stats.pop("best_network")
+
+                if self.params["engine"] == "partition":
+                    with open(f"{output_dir}/{self.params['log_name']}_actions.pkl", "wb") as acs_file:
+                        pickle.dump(stats["best_acs"], acs_file)
+                    stats.pop("best_acs", None)
+
                 with open(f"{output_dir}/{self.params['log_name']}.pkl", "wb") as f:
                     pickle.dump(bn, f)
 
@@ -275,7 +282,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--timeout", type=float, help="Timeout limit")
     parser.add_argument(
-        "--gamma", type=float, default=1e-3, help="Gamma value used in SVDinsTN"
+        "--gamma", type=float, default=0.0015, help="Gamma value used in SVDinsTN"
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Whether to perform verbose logging"
@@ -285,6 +292,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Collect log data into one single file",
     )
+    parser.add_argument("--bin_size", type=float, default=0.1, help="Bin size for constraint solving")
 
     args = parser.parse_args()
 
