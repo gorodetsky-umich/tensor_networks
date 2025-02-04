@@ -63,7 +63,9 @@ class OpPicker(nn.Module):
         self.output = nn.Linear(hidden_dim, ac_num)
 
     def forward(self, graphs):
-        """Return the probability for picking one action based on node and current state"""
+        """Return the probability for picking one action
+        based on node and current state.
+        """
         # print(nodes.shape, edges.shape, node.shape)
         if len(graphs.shape) == 1:
             graphs = graphs.unsqueeze(0)
@@ -179,15 +181,18 @@ class RLTrainer:
         self, states, random_sample=True, sample_size=1
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Returns a tuple of the chosen actions and the log-probs of those actions.
+        Returns a tuple of chosen actions and log-probs of those actions.
 
         Args:
             x: A batched vector of states.
 
         Returns:
-            actions: A tensor with the actions, with shape [n_steps_per_update, n_envs].
-            action_log_probs: A tensor with the log-probs of the actions, with shape [n_steps_per_update, n_envs].
-            state_values: A tensor with the state values, with shape [n_steps_per_update, n_envs].
+            actions: A tensor with the actions,
+                    with shape [n_steps_per_update, n_envs].
+            action_log_probs: A tensor with the log-probs of the actions,
+                    with shape [n_steps_per_update, n_envs].
+            state_values: A tensor with the state values,
+                    with shape [n_steps_per_update, n_envs].
         """
         n_envs = len(states)
         state_dim = 64
@@ -246,11 +251,7 @@ class RLTrainer:
 
                     split_cnt -= 1
 
-                # print("!!! find split for", action, split_ac, predefined_splits[split_ac], action % 3)
                 rewards[i] = 1 - curr_st.network.cost() / core_cost
-                # print(curr_st.network.cost(), curr_st.network.cost() / core_cost, rewards[i])
-                # curr_st.network.draw()
-                # plt.show()
                 done[i] = 0
             else:
                 ac = copy.deepcopy(
@@ -360,7 +361,9 @@ class RLTrainer:
                 "Episode return", ep_rewards[-1].mean().detach().item(), it
             )
             print(
-                f"Iteration: {it}, critic_loss: {critic_loss}, actor_loss: {actor_loss}"
+                f"Iteration: {it}, "
+                f"critic_loss: {critic_loss}, "
+                f"actor_loss: {actor_loss}"
             )
 
             if (it + 1) % 100 == 0:

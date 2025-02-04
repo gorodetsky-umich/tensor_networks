@@ -6,9 +6,8 @@ import queue
 import pickle
 
 import numpy as np
-import matplotlib.pyplot as plt
 
-from pytens.algs import TensorNetwork
+from pytens.algs import TensorNetwork, SVDConfig
 from pytens.search.state import SearchState, Action, SplitIndex
 from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 
@@ -38,16 +37,7 @@ class PartitionSearch:
         result_queue: multiprocessing.Queue,
     ):
         if self.params["fit_mode"] == "topk":
-            # print("Getting cost for", [str(ac) for ac in new_st.past_actions])
-            # new_st.network.draw()
-            # plt.show()
             rank, cost = self.constraint_engine.get_cost(new_st, best_cost[-1])
-            if "Split(['I3', 'I5'])" in [
-                str(ac) for ac in new_st.past_actions
-            ] and "Split(['I4'])" in [str(ac) for ac in new_st.past_actions]:
-                new_st.network.draw()
-                plt.show()
-
             if cost != BAD_SCORE:
                 best_cost.append(cost)
                 best_cost = sorted(best_cost)
@@ -75,14 +65,11 @@ class PartitionSearch:
             split_ac = action
 
         new_net = copy.deepcopy(curr_st.network)
-        node_indices = new_net.network.nodes[split_ac.node]["tensor"].indices
-        right_indices = [
-            i
-            for i in range(len(node_indices))
-            if i not in split_ac.left_indices
-        ]
+
         (u, s, v), _ = new_net.svd(
-            split_ac.node, split_ac.left_indices, right_indices, compute_data=False
+            split_ac.node,
+            split_ac.left_indices,
+            SVDConfig(compute_data=False),
         )
         new_net.merge(v, s, compute_data=False)
         new_st = SearchState(new_net, curr_st.curr_delta)
@@ -113,7 +100,8 @@ class PartitionSearch:
             sts = next_sts
 
         if self.params["fit_mode"] == "topk":
-            # get the smallest and replay with error splits around the estimated ranks
+            # get the smallest and
+            # replay with error splits around the estimated ranks
             costs = sorted([(v, k) for k, v in self.costs.items()])
             # print(costs[:5])
             # try the top 10?
@@ -141,7 +129,6 @@ class PartitionSearch:
         if not actions:
             # st.network.draw()
             # plt.show()
-            # print("replayed network cost", st.network.cost(), "remaining delta", st.curr_delta)
             for n in st.network.network.nodes:
                 net = copy.deepcopy(st.network)
                 net.round(n, st.curr_delta)
@@ -163,7 +150,6 @@ class PartitionSearch:
             svd = (svd_data["u"], svd_data["s"], svd_data["v"])
         else:
             svd = None
-        # print(ac, [str(x) for x in self.constraint_engine.first_steps.keys()])
         # print("new action", new_ac)
         for new_st in st.take_action(
             ac, svd=svd, split_errors=self.params["split_errors"]
@@ -199,7 +185,7 @@ class PartitionSearch:
         _ = self.get_cost(init_st, new_st, net.cost(), None)
 
         self.best_network = net
-        # get the smallest and replay with error splits around the estimated ranks
+        # get the smallest
         costs = sorted([(v, k) for k, v in self.costs.items()])
         # print(costs[:5])
         # try the top 10?
@@ -229,7 +215,9 @@ class PartitionSearch:
         return self.stats
 
     def search(self, net: TensorNetwork) -> Dict:
-        """Start the search from a given network. We can only support single core now."""
+        """Start the search from a given network.
+        Only support single core now.
+        """
         if self.params["replay_from"] is not None:
             start = time.time()
             self.tic = start
@@ -280,10 +268,6 @@ class PartitionSearch:
 
         self.tic = time.time()
         q = multiprocessing.Queue()
-        # import threading
-        # thread = threading.Thread(target=self.fill_holes, args=(init_st, queue))
-        # thread.start()
-        # thread.join(timeout=self.params["timeout"])
         p = multiprocessing.Process(target=self.fill_holes, args=(init_st, q))
         p.start()
         try:

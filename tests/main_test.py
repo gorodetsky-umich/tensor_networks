@@ -185,13 +185,13 @@ class TestTT(unittest.TestCase):
         ttop = ttop_rank1(indices_in, indices_out, [A, e1, e2], "A")
 
         ttop_res = ttop.contract()
-        print(ttop_res.indices)
+        # print(ttop_res.indices)
         ttop_arr = ttop_res.value
         # print(ttop_arr.shape)
 
         tt = rand_tt([x, y, z], [3, 2])
         tt_res = tt.contract()
-        print(tt_res.indices)
+        # print(tt_res.indices)
         tt_arr = tt_res.value
         # print(tt_arr.shape)
 
@@ -315,7 +315,7 @@ class TestTree(unittest.TestCase):
         original = self.tree.contract().value
         original_free = self.tree.free_indices()
 
-        self.tree.split(4, [0, 2], [1])
+        self.tree.svd(4, [0, 2])
         after_split = self.tree.contract().value
         after_split_free = self.tree.free_indices()
         permutation = [after_split_free.index(i) for i in original_free]
@@ -327,7 +327,7 @@ class TestTree(unittest.TestCase):
         original = self.tree.contract().value
         original_free = self.tree.free_indices()
 
-        self.tree.split(3, [0, 1], [2])
+        self.tree.svd(3, [0, 1])
         after_split = self.tree.contract().value
         after_split_free = self.tree.free_indices()
         permutation = [after_split_free.index(i) for i in original_free]
@@ -365,7 +365,7 @@ class TestTree(unittest.TestCase):
         for n in nbrs:
             self.tree.network.remove_edge(root, n)
             reachable_nodes = nx.descendants(self.tree.network, n)
-            reachable_graph = self.tree.network.subgraph(reachable_nodes)
+            reachable_graph = self.tree.network.subgraph([n] + list(reachable_nodes))
             subnet = TensorNetwork()
             subnet.network = reachable_graph
             self.assertTrue(subnet.norm(), 1)

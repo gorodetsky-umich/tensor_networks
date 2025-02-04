@@ -45,28 +45,12 @@ class Index:
 
 
 @dataclass
-class IsoShape:
-    """Isomorphic shape representation. Used for deduplicate networks."""
+class SVDConfig:
+    """Configuration fields for SVD in tensor networks."""
 
-    ordered: List[Union[Index, int]]
-    unordered: Dict[int, int]
-
-    def __hash__(self) -> int:
-        return hash(self.__str__())
-
-    def __str__(self) -> str:
-        sorted_ordered = sorted([str(x) for x in self.ordered])
-        sorted_unordered = sorted(list(self.unordered))
-        return f"({sorted_ordered}, {sorted_unordered})"
-
-    def __lt__(self, other: Self) -> bool:
-        return self.__str__() < other.__str__()
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, IsoShape):
-            return NotImplemented
-
-        return self.__str__() == other.__str__()
+    delta: float = 1e-5
+    with_orthonormal: bool = True
+    compute_data: bool = True
 
 
 @dataclass  # (frozen=True, eq=True)
@@ -245,19 +229,17 @@ class Tensor:
         return tens
 
     def svd(
-        self,
-        left_indices: Sequence[int],
-        right_indices: Sequence[int],
-        delta: float = 1e-5,
-    ) -> List["Tensor"]:
+        self, lefts: Sequence[int], delta: float = 1e-5
+    ) -> Tuple[List["Tensor"], float]:
         """Split a tensor into three by SVD.
 
         If delta > 0, the truncated SVD is performed.
         """
-        permute_indices = itertools.chain(left_indices, right_indices)
+        rights = [i for i in range(len(self.indices)) if i not in lefts]
+        permute_indices = itertools.chain(lefts, rights)
         value = np.permute_dims(self.value, tuple(permute_indices))
-        left_sz = int(np.prod([self.indices[i].size for i in left_indices]))
-        right_sz = int(np.prod([self.indices[j].size for j in right_indices]))
+        left_sz = int(np.prod([self.indices[i].size for i in lefts]))
+        right_sz = int(np.prod([self.indices[j].size for j in rights]))
         value = value.reshape(left_sz, right_sz)
 
         result = delta_svd(value, delta)
@@ -266,8 +248,8 @@ class Tensor:
         v = result.v
         d = result.remaining_delta
 
-        u = u.reshape([self.indices[i].size for i in left_indices] + [-1])
-        u_indices = [self.indices[i] for i in left_indices]
+        u = u.reshape([self.indices[i].size for i in lefts] + [-1])
+        u_indices = [self.indices[i] for i in lefts]
         u_indices.append(Index("r_split_l", u.shape[-1]))
         u_tensor = Tensor(u, u_indices)
 
@@ -277,40 +259,37 @@ class Tensor:
         ]
         s_tensor = Tensor(np.diag(s), s_indices)
 
-        v = v.reshape([-1] + [self.indices[j].size for j in right_indices])
-        v_indices = [self.indices[j] for j in right_indices]
+        v = v.reshape([-1] + [self.indices[j].size for j in rights])
+        v_indices = [self.indices[j] for j in rights]
         v_indices = [Index("r_split_r", v.shape[0])] + v_indices
         v_tensor = Tensor(v, v_indices)
 
         return [u_tensor, s_tensor, v_tensor], d
 
-    def qr(
-        self,
-        left_indices: Sequence[int],
-        right_indices: Sequence[int],
-    ) -> List["Tensor"]:
+    def qr(self, lefts: Sequence[int]) -> Tuple["Tensor", "Tensor"]:
         """Split a tensor into two by QR."""
-        permute_indices = itertools.chain(left_indices, right_indices)
+        rights = [i for i in range(len(self.indices)) if i not in lefts]
+        permute_indices = itertools.chain(lefts, rights)
         value = np.permute_dims(self.value, tuple(permute_indices))
-        left_sz = int(np.prod([self.indices[i].size for i in left_indices]))
-        right_sz = int(np.prod([self.indices[j].size for j in right_indices]))
+        left_sz = int(np.prod([self.indices[i].size for i in lefts]))
+        right_sz = int(np.prod([self.indices[j].size for j in rights]))
         value = value.reshape(left_sz, right_sz)
 
         q, r = np.linalg.qr(value)
 
-        q = q.reshape([self.indices[i].size for i in left_indices] + [-1])
-        q_indices = [self.indices[i] for i in left_indices]
+        q = q.reshape([self.indices[i].size for i in lefts] + [-1])
+        q_indices = [self.indices[i] for i in lefts]
         q_indices.append(Index("r_split", q.shape[-1]))
         q_tensor = Tensor(q, q_indices)
 
-        r = r.reshape([-1] + [self.indices[j].size for j in right_indices])
-        r_indices = [self.indices[j] for j in right_indices]
+        r = r.reshape([-1] + [self.indices[j].size for j in rights])
+        r_indices = [self.indices[j] for j in rights]
         r_indices = [Index("r_split", r.shape[0])] + r_indices
         r_tensor = Tensor(r, r_indices)
 
         return q_tensor, r_tensor
 
-    def permute(self, target_indices):
+    def permute(self, target_indices: Optional[Sequence[int]]) -> "Tensor":
         """Return a new tensor with indices permuted by the specified order."""
         if not target_indices:
             return self
@@ -594,40 +573,36 @@ class TensorNetwork:
     def svd(
         self,
         node_name: NodeName,
-        left_indices: Sequence[int],
-        right_indices: Sequence[int],
-        *,
-        delta: float = 1e-5,
-        with_orthonormal: bool = True,
-        compute_data: bool = True,
+        lefts: Sequence[int],
+        config: SVDConfig = SVDConfig(),
     ) -> Tuple[Tuple[NodeName, NodeName, NodeName], float]:
         """Perform the SVD split and returns u, s, v.
 
-        with_orthonormal: create a center of orthogonality with QR before splitting
+        with_orthonormal: create orthogonality centers with QR before splitting
         compute_data: update the tensor values for the nodes created by split
         """
         x = self.network.nodes[node_name]["tensor"]
-
-        if not compute_data:
+        rights = [i for i in range(len(x.indices)) if i not in lefts]
+        if not config.compute_data:
             u = Tensor(
-                None,
-                [x.indices[i] for i in left_indices]
-                + [Index("r_split_l", -1)],
+                np.array([]),
+                [x.indices[i] for i in lefts] + [Index("r_split_l", -1)],
             )
             v = Tensor(
-                None,
-                [Index("r_split_r", -1)]
-                + [x.indices[i] for i in right_indices],
+                np.array([]),
+                [Index("r_split_r", -1)] + [x.indices[i] for i in rights],
             )
-            s = Tensor(None, [Index("r_split_l", -1), Index("r_split_r", -1)])
-            d = delta
+            s = Tensor(
+                np.array([]), [Index("r_split_l", -1), Index("r_split_r", -1)]
+            )
+            d = config.delta
         else:
-            if with_orthonormal:
+            if config.with_orthonormal:
                 node_name = self.orthonormalize(node_name)
 
             x = self.network.nodes[node_name]["tensor"]
             # svd decompose the data into specified index partition
-            [u, s, v], d = x.svd(left_indices, right_indices, delta=delta)
+            [u, s, v], d = x.svd(lefts, delta=config.delta)
 
         v_name = self.fresh_node()
         new_index_r = self.fresh_index()
@@ -667,16 +642,15 @@ class TensorNetwork:
         return (u_name, s_name, v_name), d
 
     def qr(
-        self,
-        node_name: NodeName,
-        left_indices: Sequence[int],
-        right_indices: Sequence[int],
+        self, node_name: NodeName, lefts: Sequence[int]
     ) -> Tuple[NodeName, NodeName]:
-        """Factorize a node by the specified index partition with QR decomposition."""
+        """Split a node by the specified index partition with QR decomposition
+        and return the new node names.
+        """
         # To ensure the error bound in SVD, we first orthornormalize its env.
         x = self.network.nodes[node_name]["tensor"]
         # svd decompose the data into specified index partition
-        q, r = x.qr(left_indices, right_indices)
+        q, r = x.qr(lefts)
 
         new_index = self.fresh_index()
         x_nbrs = list(self.network.neighbors(node_name))
@@ -699,7 +673,7 @@ class TensorNetwork:
         return q_name, r_name
 
     def merge(
-        self, name1: NodeName, name2: NodeName, compute_data=True
+        self, name1: NodeName, name2: NodeName, compute_data: bool = True
     ) -> NodeName:
         """Merge two specified nodes into one."""
         if not self.network.has_edge(name1, name2):
@@ -714,7 +688,7 @@ class TensorNetwork:
         else:
             l_inds = [ind for ind in t1.indices if ind not in t2.indices]
             r_inds = [ind for ind in t2.indices if ind not in t1.indices]
-            result = Tensor(None, l_inds + r_inds)
+            result = Tensor(np.array([]), l_inds + r_inds)
 
         n2_nbrs = list(self.network.neighbors(name2))
         self.network.remove_node(name2)
@@ -726,7 +700,7 @@ class TensorNetwork:
         return name1
 
     def round(
-        self, node_name: NodeName, delta: float, visited: set = None
+        self, node_name: NodeName, delta: float, visited: Optional[set] = None
     ) -> Tuple[NodeName, float]:
         """Optimize the tree rooted at the given node."""
         # print("optimize", node_name)
@@ -767,15 +741,14 @@ class TensorNetwork:
             [node_name, s, v], delta = self.svd(
                 node_name,
                 left_indices,
-                right_indices,
-                delta=delta,
-                with_orthonormal=False,
+                SVDConfig(delta=delta, with_orthonormal=False),
             )
             self.merge(v, s)
             self.merge(nbr, v)
             visited_index = self.get_contraction_index(node_name, nbr)
             for idx in visited_index:
                 visited.add(idx)
+
             r, delta = self.round(nbr, delta, visited)
             self.merge(node_name, r)
 
@@ -787,11 +760,11 @@ class TensorNetwork:
                     left_indices.append(i)
                 else:
                     right_indices.append(i)
-            _, r = self.qr(node_name, left_indices, right_indices)
+            _, r = self.qr(node_name, left_indices)
 
         return r, delta
 
-    def compress(self):
+    def compress(self) -> None:
         """Compress the network by removing nodes
         where one index equals to the product of other indices.
         """
@@ -833,7 +806,8 @@ class TensorNetwork:
                     # Process children before the current node.
                     c = _postorder(name, n)
 
-                    # since split relying on ordered indices, we should restore the index order here.
+                    # Since split relying on ordered indices,
+                    # we should restore the index order here.
                     indices = self.network.nodes[merged]["tensor"].indices
                     permute_index = indices.index(
                         self.get_contraction_index(merged, c)[0]
@@ -844,11 +818,9 @@ class TensorNetwork:
                         list(range(permute_index, len(indices) - 1))
                     )
 
-                    # print("before merge", self.network.nodes[merged]["tensor"].indices)
                     merged = self.merge(merged, c)
 
                     # restore the last index into the permute_index position
-                    # print("[merge] permuting", self.network.nodes[merged]["tensor"].indices, "into", permute_indices)
                     self.network.nodes[merged]["tensor"] = self.network.nodes[
                         merged
                     ]["tensor"].permute(permute_indices)
@@ -892,17 +864,18 @@ class TensorNetwork:
             visited[name] = 2
             visited[merged] = 2
 
-            # print("before split", self.network.nodes[merged]["tensor"].indices, left_indices, right_indices)
             right_sz = np.prod([merged_indices[i].size for i in right_indices])
-            # optimization: this step creates redundant nodes, so to avoid them we directly eliminate the node with a merge
+            # optimization: this step creates redundant nodes,
+            # so to avoid them we directly eliminate the node with a merge.
             if (
                 len(left_indices) == 1
                 and merged_indices[left_indices[0]].size <= right_sz
             ):
                 return merged
 
-            q, r = self.qr(merged, left_indices, right_indices)
-            # this split changes the index orders, which affects the outer split result.
+            q, r = self.qr(merged, left_indices)
+            # this split changes the index orders,
+            # which affects the outer split result.
             # q has the indices r_split x right_indices
             # but we want r_split to replace the original left_indices
             # so we need to permute this tensor
@@ -911,12 +884,10 @@ class TensorNetwork:
             permute_indices.extend(
                 list(range(right_indices[0], len(left_indices)))
             )
-            # print("[qr] permuting", self.network.nodes[q]["tensor"].indices, "into", permute_indices)
             self.network.nodes[q]["tensor"] = self.network.nodes[q][
                 "tensor"
             ].permute(permute_indices)
 
-            # print("returning r for", name, "with indices", self.network.nodes[r]["tensor"].indices)
             return r
 
         return _postorder(None, name)
@@ -934,7 +905,7 @@ class TensorNetwork:
 
         return int(cost)
 
-    def canonical_structure(self, consider_ranks: bool = False):
+    def canonical_structure(self, consider_ranks: bool = False) -> int:
         """Compute the canonical structure of the tensor network.
 
         This method ignores all values, keeps all free indices and edge labels.
@@ -942,7 +913,7 @@ class TensorNetwork:
         """
         # find the node with first free index and use it as the tree root
         free_indices = sorted(self.free_indices())
-        root = None
+        root = ""
         for n, d in self.network.nodes(data=True):
             if free_indices[0] in d["tensor"].indices:
                 root = n
@@ -950,7 +921,7 @@ class TensorNetwork:
 
         visited = {}
 
-        def _postorder(name: NodeName):
+        def _postorder(name: NodeName) -> int:
             """Hash the nodes by their postorder"""
             visited[name] = 1
             children_rs = []
@@ -970,11 +941,9 @@ class TensorNetwork:
 
             visited[name] = 2
             if consider_ranks:
-                features = (self_free_indices, ranks, sorted_children_rs)
+                return hash((self_free_indices, ranks, sorted_children_rs))
             else:
-                features = (self_free_indices, sorted_children_rs)
-
-            return hash(features)
+                return hash((self_free_indices, sorted_children_rs))
 
         return _postorder(root)
 
@@ -1041,52 +1010,6 @@ class TensorNetwork:
             out += f"\t{node1} -> {node2}\n"
 
         return out
-
-    def to_canonical_tt(self):
-        # find the first node with two modes
-        node_idx = 0
-        node = None
-        for n in self.network.nodes:
-            if len(self.network.nodes[n]["tensor"].indices) == 2:
-                node = n
-                break
-
-        if node is None:
-            print("No tensor train start node found. Please double check")
-
-        while node_idx != len(self.network.nodes):
-            tensor = self.network.nodes[node]["tensor"]
-
-            for n in self.network.neighbors(node):
-                if n != node_idx - 1:
-                    next_node = n
-                    break
-
-            self.add_node(node_idx, tensor)
-            self.network.remove_node(node)
-            node = next_node
-
-            if node_idx != 0:
-                self.network.add_edge(node_idx, node_idx - 1)
-                # swap the tensor dimensions if needed
-                prev = self.network.nodes[node_idx - 1]["tensor"]
-                prev_indices = prev.indices
-                curr_indices = tensor.indices
-                print(node_idx - 1, prev_indices)
-                print(curr_indices)
-                if curr_indices[0] not in prev_indices:
-                    the_other_dim = 2 if len(curr_indices) > 2 else 1
-                    self.network.nodes[node_idx][
-                        "tensor"
-                    ].value = tensor.value.swapaxes(the_other_dim, 0)
-                    curr_indices[0], curr_indices[the_other_dim] = (
-                        curr_indices[the_other_dim],
-                        curr_indices[0],
-                    )
-                    # self.network.nodes[node_idx]["tensor"].indices[0] = curr_indices[the_other_dim]
-                    # self.network.nodes[node_idx]["tensor"].indices[the_other_dim] = curr_indices[0]
-
-            node_idx += 1
 
     @typing.no_type_check
     def draw(self, ax=None):
@@ -1662,11 +1585,10 @@ def ttop_apply(ttop: TensorNetwork, tt_in: TensorNetwork) -> TensorNetwork:
 
 
 @typing.no_type_check
-def gmres(
+def gmres(  # pylint: disable=R0913,R0917
     op,  # function from in to out
     rhs: TensorNetwork,
     x0: TensorNetwork,
-    *,
     eps: float = 1e-5,
     round_eps: float = 1e-10,
     maxiter: int = 100,

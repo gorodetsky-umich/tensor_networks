@@ -40,7 +40,6 @@ class Node:
             choices_weights.append(weight)
 
         max_weight = max(choices_weights)
-        # candidates = [self.children[i] for i, w in enumerate(choices_weights) if w == max_weight]
         return self.children[choices_weights.index(max_weight)]
 
     def expand(self):

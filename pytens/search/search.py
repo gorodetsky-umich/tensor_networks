@@ -144,19 +144,6 @@ class SearchEngine:
     def beam(self, net: TensorNetwork, target_tensor: np.ndarray):
         """Run the beam search as a search engine."""
         engine = BeamSearch(self.params)
-        # indices = [i for i in net.free_indices() if i.size != 1]
-        # print(indices)
-        # if len(net.network.nodes) == 1 and len(target_tensor.shape) == 5:
-        #     correct_permutes = [0,1,2,3,4]
-        # elif len(net.network.nodes) > 1 and len(target_tensor.shape) == 5:
-        #     correct_permutes = [4,0,1,2,3]
-        # elif len(net.network.nodes) == 1 and len(target_tensor.shape) == 4:
-        #     correct_permutes = [0,1,2,3]
-        # elif len(net.network.nodes) > 1 and len(target_tensor.shape) == 4:
-        #     correct_permutes = [2,3,1,0]
-        # ordered_indices = [indices[i] for i in correct_permutes]
-        # ordered_indices = range(len(target_tensor.shape))
-        # target_tensor = target_tensor.transpose([1,2,3,4,0])
         if target_tensor is None:
             target_tensor = net.contract().value
 
@@ -166,8 +153,6 @@ class SearchEngine:
             ** 2
         )
         # print(delta)
-        # print(delta, self.params["eps"] * np.linalg.norm(target_tensor), np.linalg.norm(net.contract().value.squeeze().transpose([2,3,1,0]) - target_tensor) / np.linalg.norm(target_tensor))
-        # print(delta, np.linalg.norm(target_tensor), np.linalg.norm(target_tensor.reshape(-1)))
         initial_state = SearchState(net, delta)
 
         start = time.time()
@@ -180,15 +165,11 @@ class SearchEngine:
         stats["time"] = end - start
         stats["cr_core"] = np.prod(target_tensor.shape) / best.cost()
         stats["cr_start"] = net.cost() / best.cost()
-        # best_indices = [i for i in best.free_indices() if i.size != 1]
-        # permutes = [best_indices.index(i) for i in ordered_indices]
         stats["reconstruction_error"] = np.linalg.norm(
             best.contract().value.squeeze() - target_tensor
         ) / np.linalg.norm(target_tensor)
         stats["best_network"] = best
 
-        # best.draw()
-        # plt.show()
         return stats
 
     def partition_search(self, net: TensorNetwork):
@@ -220,13 +201,6 @@ class SearchEngine:
         worked = set()
         count = 0
 
-        # with open("output/BigEarthNet-v1_0_stack/stack_18_test_0_ht_eps_010/010/beam_010.pkl", "rb") as f:
-        #     desired_net = pickle.load(f)
-
-        # net_g2 = desired_net.network.nodes["G2"]["tensor"]
-        # desired_net.network.nodes["G2"]["tensor"] = Tensor(net_g2.value.squeeze(), [net_g2.indices[0], net_g2.indices[2]])
-        # interested_hash = desired_net.canonical_structure()
-
         def helper(curr_st: SearchState):
             # plt.figure(curr_net.canonical_structure())
             nonlocal best_network
@@ -236,21 +210,6 @@ class SearchEngine:
             nonlocal count
 
             count += 1
-
-            # print(curr_st.used_ops, curr_st.network.cost(), curr_st.curr_delta)
-            # print([str(ac) for ac in curr_st.past_actions])
-            # curr_st.network.draw()
-            # plt.show()
-
-            # if self.params["prune"]:
-            #     h = curr_st.network.canonical_structure(
-            #         consider_ranks=self.params["consider_ranks"]
-            #     )
-            #     # print(h)
-            #     if h in worked:
-            #         return
-            #     else:
-            #         worked.add(h)
 
             if curr_st.used_ops >= self.params["max_ops"]:
                 # print("max op")
@@ -278,18 +237,6 @@ class SearchEngine:
                 )
                 greedy = False
                 for new_st in gen:
-                    # new_st.network.draw()
-                    # plt.show()
-                    # if new_st.network.canonical_structure() == interested_hash:
-                    #     plt.figure(figsize=(12, 5))
-                    #     plt.subplot(121)
-                    #     curr_st.network.draw()
-                    #     plt.subplot(122)
-                    #     new_st.network.draw()
-                    #     # plt.show()
-                    #     plt.savefig(f"same_hash_{time.time()}_{ac}.png")
-                    #     plt.close()
-
                     if not self.params["no_heuristic"] and new_st.is_noop:
                         # print("noop")
                         continue
@@ -328,9 +275,6 @@ class SearchEngine:
                     helper(new_st)
                     best_after = best_network.cost()
                     if best_before == best_after:
-                        # if this error splitting does not bring any cost updates
-                        # further considerations are a waste of time.
-                        # jump to greedy choice
                         greedy = True
                         break
 

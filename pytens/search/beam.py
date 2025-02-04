@@ -109,7 +109,7 @@ class BeamSearch:
                         heapq.heappush(next_level, (new_score, new_state))
                     elif (
                         self.get_score(next_level[0][1], trainer) < new_score
-                    ):  # we decide whether to add a network by its value network
+                    ):  # we decide whether to add a network by its value
                         heapq.heappushpop(next_level, (new_score, new_state))
 
                     if new_state.network.cost() < self.best_network.cost():
@@ -129,7 +129,8 @@ class BeamSearch:
                     # if len(self.stats["compression"]) > 10:
                     #     self.prev_best = self.best_network
 
-                    # if self.prev_best is not None and self.prev_best.cost() == self.best_network.cost():
+                    # if self.prev_best is not None and
+                    # self.prev_best.cost() == self.best_network.cost():
                     #     new_state.network.draw()
                     #     plt.show()
 

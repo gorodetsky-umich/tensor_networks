@@ -41,7 +41,7 @@ class HierarchicalSearch:
         pooled_indices = [
             Index(i.name, i.size // step_size) for i in target_tensor.indices
         ]
-        # do the dfs over this abstracted tensor and record their action sequence
+        # do DFS over the abstracted tensor and record their action sequence
         replay_actions = []
 
         init_net = TensorNetwork()

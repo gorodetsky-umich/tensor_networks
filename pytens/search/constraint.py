@@ -30,7 +30,7 @@ class ILPSolver:
         # print(ind, len(indices), ind.size[1] - ind.size[0])
         self.vars.update(self.model.addVars(indices, vtype=GRB.BINARY))
 
-    def add_constraint(self, inds: List[Index], prefix_sums, delta: float):
+    def add_constraint(self, inds: List[Index], pfsums, delta: float):
         """Given n ranks to be solved, generate all constraints
 
         Constr1: sum_j xij = 1
@@ -38,7 +38,7 @@ class ILPSolver:
 
         Arguments:
             n - Number of ranks to be resolved
-            prefix_sums - Prefix sums of the singular values for corresponding edge
+            pfsums - Prefix sums of singular values for corresponding edges
             delta - The maximum error can be accumulated
         """
         coeff = {}
@@ -46,9 +46,9 @@ class ILPSolver:
             self.model.addConstr(self.vars.sum(ind.name, "*") == 1)
 
             # print(ind)
-            # print(ind, len(prefix_sums[ind.name]))
-            assert len(prefix_sums[ind.name]) == len(ind.size)
-            for sz, p in zip(ind.size, prefix_sums[ind.name]):
+            # print(ind, len(pfsums[ind.name]))
+            assert len(pfsums[ind.name]) == len(ind.size)
+            for sz, p in zip(ind.size, pfsums[ind.name]):
                 coeff[(ind.name, sz)] = p
 
         self.model.addConstr(self.vars.prod(coeff) <= delta**2)
@@ -73,7 +73,8 @@ class ILPSolver:
             if len(var_inds) > 1:
                 var_sizes = [ind.size for ind in var_inds]
                 for v_sizes in itertools.product(*var_sizes):
-                    # we need to add a temporary variable to turn this term into a linear term
+                    # we need to add a temporary variable to
+                    # turn this term into a linear term
                     y = self.model.addVar(vtype=GRB.BINARY)
                     var_sum = 0
                     var_cost = y
@@ -102,7 +103,7 @@ class ILPSolver:
 
 
 class ConstraintSearch:
-    """Search structures ordered by costs that are computed from constraint solving."""
+    """Search rank assignments by constraint solving."""
 
     def __init__(self, params):
         self.params = params
@@ -148,7 +149,7 @@ class ConstraintSearch:
     def preprocess_comb(
         self, target_tensor: Tensor, comb: List[int], compute_uv=False
     ):
-        """Precompute the singluar values for a given combination of indices."""
+        """Precompute the singluar values for a given index combination."""
         free_indices = target_tensor.indices
         right_indices = [i for i in free_indices if i not in comb]
         positions = [
@@ -156,7 +157,6 @@ class ConstraintSearch:
         ]
         tensor_val = target_tensor.value.transpose(positions)
         left_size = np.prod([x.size for x in comb])
-        # u, s, v = np.linalg.svd(tensor_val.reshape(left_size, -1), False, True)
         if compute_uv:
             u, s, v = np.linalg.svd(
                 tensor_val.reshape(left_size, -1), False, True
@@ -171,7 +171,9 @@ class ConstraintSearch:
             file_name = (
                 f"{self.params['output_dir']}/{len(self.first_steps)}.npz"
             )
-            if not self.params["force_preprocess"] and os.path.exists(file_name):
+            if not self.params["force_preprocess"] and os.path.exists(
+                file_name
+            ):
                 data = np.load(file_name)
                 s = data["s"]
                 self.first_steps[SplitIndex(comb)] = file_name
@@ -214,7 +216,7 @@ class ConstraintSearch:
         solver.model.params.OutputFlag = 0
         solver.model.params.TimeLimit = 60
 
-        prefix_sums = {}
+        pfsums = {}
         # extract nodes from the current network
         relabel_map = {}
         for idx, ac in enumerate(st.past_actions):
@@ -226,7 +228,7 @@ class ConstraintSearch:
 
             # print(index_ac)
             ac_sums, ac_sizes = self.split_actions[index_ac]
-            prefix_sums[st.links[idx]] = ac_sums
+            pfsums[st.links[idx]] = ac_sums
             # we need to substitute the links to all
             relabel_map[st.links[idx]] = tuple(ac_sizes)
 
@@ -240,7 +242,7 @@ class ConstraintSearch:
             if ind not in free_indices:
                 var_indices.append(ind)
                 solver.add_var(ind)
-        solver.add_constraint(var_indices, prefix_sums, self.delta)
+        solver.add_constraint(var_indices, pfsums, self.delta)
 
         nodes = []
         for _, data in st.network.network.nodes(data=True):
@@ -258,10 +260,6 @@ class ConstraintSearch:
 
             st.network.relabel_indices(relabel_map)
             # st.network.compress()
-            # if st.network.cost() < 380000:
-            #     st.network.draw()
-            #     plt.savefig(f"{'_'.join([''.join([ind.name for ind in ac.indices]) for ac in st.past_actions])}.png")
-            #     plt.close()
             result = {}
             for ind, ind_size in relabel_map.items():
                 for k, v in enumerate(st.links):
@@ -296,10 +294,10 @@ def test_case_1():
     x3 = Tensor(None, [r2, Index("k", k)])
 
     solver = ILPSolver({})
-    prefix_sums = {"r1": r1_ps, "r2": r2_ps}
+    pfsums = {"r1": r1_ps, "r2": r2_ps}
     solver.add_var(r1)
     solver.add_var(r2)
-    solver.add_constraint([r1, r2], prefix_sums, delta)
+    solver.add_constraint([r1, r2], pfsums, delta)
     solver.set_objective(x_indices, [x1, x2, x3])
     solver.model.optimize()
 
@@ -340,11 +338,11 @@ def test_case_2():
     ]
 
     solver = ILPSolver({})
-    prefix_sums = {"r0": r0_ps, "r1": r1_ps, "r2": r2_ps}
+    pfsums = {"r0": r0_ps, "r1": r1_ps, "r2": r2_ps}
     solver.add_var(r0)
     solver.add_var(r1)
     solver.add_var(r2)
-    solver.add_constraint([r0, r1, r2], prefix_sums, delta)
+    solver.add_constraint([r0, r1, r2], pfsums, delta)
     solver.set_objective(x_indices, nodes)
     solver.model.params.OutputFlag = 0
     solver.model.optimize()
@@ -437,13 +435,11 @@ def test_case_3():
     ]
 
     solver = ILPSolver({})
-    # prefix_sums = {"r0": r0_ps, "r1": r1_ps, "r2": r2_ps, "r3": r3_ps, "r4": r4_ps}
-    # ranks = [r0, r1, r2, r3, r4]
-    prefix_sums = {"r1": r1_ps, "r2": r2_ps, "r4": r4_ps}
+    pfsums = {"r1": r1_ps, "r2": r2_ps, "r4": r4_ps}
     ranks = [r1, r2, r4]
     for r in ranks:
         solver.add_var(r)
-    solver.add_constraint(ranks, prefix_sums, delta)
+    solver.add_constraint(ranks, pfsums, delta)
     solver.set_objective(x_indices, nodes)
     # solver.model.params.OutputFlag = 0
     solver.model.optimize()
@@ -456,6 +452,4 @@ def test_case_3():
 
 if __name__ == "__main__":
     # construct a tensor network and try tensor train solving
-    import numpy as np
-
     test_case_3()

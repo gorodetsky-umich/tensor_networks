@@ -7,7 +7,7 @@ import copy
 import numpy as np
 import networkx as nx
 
-from pytens.algs import NodeName, TensorNetwork, Index
+from pytens.algs import NodeName, TensorNetwork, Index, SVDConfig
 
 
 class Action:
@@ -68,7 +68,6 @@ class SplitIndex(Action):
             if len(ac.indices) > 1 and any(
                 [i in ac.indices for i in self.indices]
             ):
-                # print(f"{self} is invalid with past actions {[str(ac) for ac in past_actions]}")
                 return False
 
         return True
@@ -78,7 +77,8 @@ class SplitIndex(Action):
         lca_node = None
         lca_indices = []
 
-        # we should find a node where the expected indices and the unexpected indices are on different indices
+        # we should find a node where the expected indices and
+        # the unexpected indices are on different indices
         def postorder(visited, node):
             visited.add(node)
             results = []
@@ -162,12 +162,16 @@ class SplitIndex(Action):
 
         if svd is None:
             (u, s, v), _ = net.svd(
-                lca_node, left_indices, right_indices, with_orthonormal=True
+                lca_node,
+                left_indices,
+                SVDConfig(with_orthonormal=True),
             )
         else:
             # print("read preprocessing result")
             (u, s, v), _ = net.svd(
-                lca_node, left_indices, right_indices, compute_data=False
+                lca_node,
+                left_indices,
+                SVDConfig(compute_data=False),
             )
             net.network.nodes[u]["tensor"].update_val_size(
                 svd[0].reshape(*left_szs, -1)
@@ -200,14 +204,11 @@ class Split(Action):
         self, network: TensorNetwork
     ) -> Tuple[NodeName, NodeName, NodeName]:
         """Execute a split action."""
-        node_indices = network.network.nodes[self.node]["tensor"].indices
+        # node_indices = network.network.nodes[self.node]["tensor"].indices
         # print("node indices", node_indices)
         # left_dims = [node_indices[i].size for i in self.left_indices]
         # right_dims = [node_indices[i].size for i in self.right_indices]
-        right_indices = [
-            i for i in range(len(node_indices)) if i not in self.left_indices
-        ]
-        return network.svd(self.node, self.left_indices, right_indices)
+        return network.svd(self.node, self.left_indices)
 
     def to_index(self, st, idx):
         """Convert a split action to splitIndex."""
@@ -299,19 +300,13 @@ class SearchState:
                     ac = Split(n, left_indices)
                     actions.append(ac)
 
-        # for n in self.network.network.nodes:
-        #     for m in self.network.network.neighbors(n):
-        #         if str(n) < str(m):
-        #             n_indices = self.network.network.nodes[n]["tensor"].indices
-        #             m_indices = self.network.network.nodes[m]["tensor"].indices
-        #             if len(set(n_indices).union(set(m_indices))) <= 5:
-        #                 ac = Merge(n, m)
-        #                 actions.append(ac)
-
         return actions
 
     def get_legal_index_actions(self):
-        """Produce a list of legal index splitting actions over the current network."""
+        """
+        Produce a list of legal index splitting actions
+        over the current network.
+        """
         actions = []
         free_indices = self.network.free_indices()
         for k in range(1, len(free_indices) // 2 + 1):
@@ -364,18 +359,10 @@ class SearchState:
 
                     if action.delta is not None:
                         self.curr_delta = action.delta
-                    #     (u, v), remaining_delta = action.execute(new_net, svd=svd)
-                    #     new_state = SearchState(
-                    #         new_net, remaining_delta, max_ops=self.max_ops, threshold=self.threshold
-                    #     )
-                    #     new_state.past_actions = self.past_actions + [action]
-                    #     new_state.used_ops = self.used_ops + 1
-                    #     new_state.links.append(new_net.get_contraction_index(u, v)[0].name)
-                    #     yield new_state
-                    #     return
 
                     # we allow specify the node values
                     (u, s, v), max_sz = action.execute(new_net, svd)
+
                 # print(u, new_net.network.nodes[u]["tensor"].indices)
                 # print(s, new_net.network.nodes[s]["tensor"].indices)
                 # print(v, new_net.network.nodes[v]["tensor"].indices)
@@ -403,7 +390,6 @@ class SearchState:
                     # print("heuristic prune")
                     return
 
-                # print("original truncpost", len(truncpost), "target_size", action.target_size, "max size", max_sz)
                 if action.target_size is not None:
                     target_trunc = max(
                         len(s_val) - action.target_size + split_errors // 2, 0
