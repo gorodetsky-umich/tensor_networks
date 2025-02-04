@@ -21,7 +21,8 @@ predefined_splits = [
     Split(i, list(comb))
     for i in range(10)
     for comb in itertools.chain(
-        itertools.combinations(range(5), 1), itertools.combinations(range(5), 2)
+        itertools.combinations(range(5), 1),
+        itertools.combinations(range(5), 2),
     )
 ]
 predefined_merges = [Merge(i, j) for i in range(10) for j in range(5)]
@@ -75,7 +76,9 @@ class OpPicker(nn.Module):
 class StateEncoder(nn.Module):
     """Embedding a tensor network."""
 
-    def __init__(self, node_num=10, node_dim=2**16, state_dim=64, hidden_dim=64):
+    def __init__(
+        self, node_num=10, node_dim=2**16, state_dim=64, hidden_dim=64
+    ):
         super().__init__()
 
         self.node_num = node_num
@@ -136,7 +139,8 @@ class StateEncoder(nn.Module):
             for j in range(15):
                 # print("dealing with", n, predefined_splits[i * 15 + j])
                 if all(
-                    ind < ndims for ind in predefined_splits[i * 15 + j].left_indices
+                    ind < ndims
+                    for ind in predefined_splits[i * 15 + j].left_indices
                 ):
                     masks[i * 45 + j * 3 : i * 45 + j * 3 + 3] = 0
                 # else:
@@ -146,8 +150,7 @@ class StateEncoder(nn.Module):
             # merge n
             n_nbrs = len(list(st.network.network.neighbors(n)))
             masks[
-                len(predefined_splits) * 3
-                + i * 5 : len(predefined_splits) * 3
+                len(predefined_splits) * 3 + i * 5 : len(predefined_splits) * 3
                 + i * 5
                 + n_nbrs
             ] = 0
@@ -223,7 +226,9 @@ class RLTrainer:
         done = torch.zeros_like(actions)
         new_states = []
         for i, (prev_st, action) in enumerate(zip(states, actions)):
-            core_cost = np.prod([i.size for i in prev_st.network.free_indices()])
+            core_cost = np.prod(
+                [i.size for i in prev_st.network.free_indices()]
+            )
             if action < len(predefined_splits) * 3:
                 split_ac = action // 3
                 split_cnt = action % 3
@@ -277,7 +282,9 @@ class RLTrainer:
         gae = 0.0
         for t in reversed(range(T - 1)):
             td_error = (
-                rewards[t] + self.gamma * masks[t] * value_preds[t + 1] - value_preds[t]
+                rewards[t]
+                + self.gamma * masks[t] * value_preds[t + 1]
+                - value_preds[t]
             )
             gae = td_error + self.gamma * self.lam * masks[t] * gae
             advantages[t] = gae
@@ -297,8 +304,12 @@ class RLTrainer:
     def train(self, nets: List[TensorNetwork]):
         """Run the training of the network"""
         writer = SummaryWriter()
-        critic_opt = torch.optim.AdamW(self.value_net.parameters(), lr=self.critic_lr)
-        actor_opt = torch.optim.RMSprop(self.op_picker.parameters(), lr=self.actor_lr)
+        critic_opt = torch.optim.AdamW(
+            self.value_net.parameters(), lr=self.critic_lr
+        )
+        actor_opt = torch.optim.RMSprop(
+            self.op_picker.parameters(), lr=self.actor_lr
+        )
 
         n_steps_per_update = self.params["max_ops"]
         n_envs = len(nets)
@@ -419,7 +430,10 @@ class RLTrainer:
                 val_indices = torch.multinomial(probs, 10, True)
                 states = [vals[i] for i in val_indices]
                 for s in states:
-                    if best_network is None or best_network.cost() > s.network.cost():
+                    if (
+                        best_network is None
+                        or best_network.cost() > s.network.cost()
+                    ):
                         best_network = s.network
 
         print(best_network.cost(), time.time() - start)
@@ -439,7 +453,9 @@ class RLTrainer:
                 )
                 candidates = []
                 for s, acs in zip(states, actions):
-                    s_nexts, _, _ = self.step([copy.deepcopy(s) for _ in range(5)], acs)
+                    s_nexts, _, _ = self.step(
+                        [copy.deepcopy(s) for _ in range(5)], acs
+                    )
                     for s_next in s_nexts:
                         if (
                             best_network is None
@@ -451,7 +467,10 @@ class RLTrainer:
                             candidates.append(s_next)
                         else:
                             for i, candidate in enumerate(candidates):
-                                if candidate.network.cost() > s_next.network.cost():
+                                if (
+                                    candidate.network.cost()
+                                    > s_next.network.cost()
+                                ):
                                     candidates.pop(i)
                                     candidates.append(s_next)
                                     break

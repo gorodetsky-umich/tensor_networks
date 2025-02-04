@@ -393,6 +393,7 @@ if __name__ == "__main__":
         default=None,
         help="Replay the actions serialized in a pickle file",
     )
+    parser.add_argument("--force_preprocess", action="store_true", help="Whether to use cached preprocessing data to speed up the experiments")
     parser.add_argument(
         "--batches",
         action="store_true",

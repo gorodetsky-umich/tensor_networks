@@ -5,7 +5,6 @@ import heapq
 
 from typing import List, Optional
 import torch
-import matplotlib.pyplot as plt
 
 from pytens.search.state import SearchState, Split
 from pytens.search.nn import RLTrainer
@@ -68,7 +67,7 @@ class BeamSearch:
     def get_score(self, st: SearchState, trainer: Optional[RLTrainer] = None):
         """Get the prediction score for a given state."""
         if trainer is None:
-            return (st.curr_delta ** 2) / st.network.cost()
+            return (st.curr_delta**2) / st.network.cost()
         else:
             st_encoding = trainer.state_to_torch(st)
             return trainer.value_net(st_encoding)
@@ -80,7 +79,11 @@ class BeamSearch:
         while len(self.heap) > 0:
             _, state = heapq.heappop(self.heap)
             if self.params["prune"]:
-                self.seen.add(state.network.canonical_structure(consider_ranks=self.params["consider_ranks"]))
+                self.seen.add(
+                    state.network.canonical_structure(
+                        consider_ranks=self.params["consider_ranks"]
+                    )
+                )
             # state.network.draw()
             # plt.show()
             for ac in state.get_legal_actions():
@@ -95,11 +98,13 @@ class BeamSearch:
 
                     self.stats["count"] += 1
                     ukey = new_state.network.canonical_structure()
-                    self.stats["unique"][ukey] = self.stats["unique"].get(ukey,0) + 1
+                    self.stats["unique"][ukey] = (
+                        self.stats["unique"].get(ukey, 0) + 1
+                    )
                     new_score = self.get_score(new_state, trainer)
                     if self.params["prune"] and ukey in self.seen:
                         continue
-                    
+
                     if len(next_level) < self.params["beam_size"]:
                         heapq.heappush(next_level, (new_score, new_state))
                     elif (
@@ -123,7 +128,7 @@ class BeamSearch:
 
                     # if len(self.stats["compression"]) > 10:
                     #     self.prev_best = self.best_network
-                    
+
                     # if self.prev_best is not None and self.prev_best.cost() == self.best_network.cost():
                     #     new_state.network.draw()
                     #     plt.show()

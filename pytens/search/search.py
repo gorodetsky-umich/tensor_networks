@@ -7,7 +7,6 @@ from typing import Dict, List
 from pydantic.dataclasses import dataclass
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 from pytens.algs import TensorNetwork, Index, Tensor
 from pytens.search.state import SearchState
@@ -76,6 +75,7 @@ class EnumState:
             return self.ops < other.ops
         else:
             return self.delta < other.delta
+
 
 class SearchEngine:
     """Tensor network topology search engine."""
@@ -160,10 +160,14 @@ class SearchEngine:
         if target_tensor is None:
             target_tensor = net.contract().value
 
-        delta = np.sqrt((self.params["eps"] * np.linalg.norm(target_tensor)) ** 2 - np.linalg.norm(net.contract().value.squeeze() - target_tensor) ** 2)
+        delta = np.sqrt(
+            (self.params["eps"] * np.linalg.norm(target_tensor)) ** 2
+            - np.linalg.norm(net.contract().value.squeeze() - target_tensor)
+            ** 2
+        )
         # print(delta)
         # print(delta, self.params["eps"] * np.linalg.norm(target_tensor), np.linalg.norm(net.contract().value.squeeze().transpose([2,3,1,0]) - target_tensor) / np.linalg.norm(target_tensor))
-        # print(delta, np.linalg.norm(target_tensor), np.linalg.norm(target_tensor.reshape(-1)))        
+        # print(delta, np.linalg.norm(target_tensor), np.linalg.norm(target_tensor.reshape(-1)))
         initial_state = SearchState(net, delta)
 
         start = time.time()
@@ -252,19 +256,26 @@ class SearchEngine:
                 # print("max op")
                 return
 
-            if self.params["timeout"] is not None and time.time() - start > self.params["timeout"]:
+            if (
+                self.params["timeout"] is not None
+                and time.time() - start > self.params["timeout"]
+            ):
                 return
 
-            for ac in curr_st.get_legal_actions(index_actions=self.params["partition"]):
+            for ac in curr_st.get_legal_actions(
+                index_actions=self.params["partition"]
+            ):
                 # print(ac)
                 if curr_st.used_ops + 1 >= self.params["max_ops"]:
                     split_errors = 0
                 else:
                     split_errors = self.params["split_errors"]
 
-                gen = curr_st.take_action(ac,
-                                                  split_errors = split_errors,
-                                                  no_heuristic = self.params["no_heuristic"])
+                gen = curr_st.take_action(
+                    ac,
+                    split_errors=split_errors,
+                    no_heuristic=self.params["no_heuristic"],
+                )
                 greedy = False
                 for new_st in gen:
                     # new_st.network.draw()
@@ -282,14 +293,20 @@ class SearchEngine:
                     if not self.params["no_heuristic"] and new_st.is_noop:
                         # print("noop")
                         continue
-                
+
                     if new_st.network.cost() < best_network.cost():
                         best_network = new_st.network
 
                     ts = time.time() - start - logging_time
                     verbose_start = time.time()
                     if self.params["verbose"]:
-                        log_stats(search_stats, target_tensor, ts, new_st, best_network)
+                        log_stats(
+                            search_stats,
+                            target_tensor,
+                            ts,
+                            new_st,
+                            best_network,
+                        )
                     verbose_end = time.time()
                     logging_time += verbose_end - verbose_start
 
@@ -318,19 +335,27 @@ class SearchEngine:
                         break
 
                 if greedy and self.params["split_errors"] != 0:
-                    gen = curr_st.take_action(ac, no_heuristic = self.params["no_heuristic"])
+                    gen = curr_st.take_action(
+                        ac, no_heuristic=self.params["no_heuristic"]
+                    )
                     for new_st in gen:
                         if not self.params["no_heuristic"] and new_st.is_noop:
                             # print("noop")
                             continue
-                    
+
                         if new_st.network.cost() < best_network.cost():
                             best_network = new_st.network
 
                         ts = time.time() - start - logging_time
                         verbose_start = time.time()
                         if self.params["verbose"]:
-                            log_stats(search_stats, target_tensor, ts, new_st, best_network)
+                            log_stats(
+                                search_stats,
+                                target_tensor,
+                                ts,
+                                new_st,
+                                best_network,
+                            )
                         verbose_end = time.time()
                         logging_time += verbose_end - verbose_start
 
@@ -421,7 +446,13 @@ class SearchEngine:
 
                     verbose_start = time.time()
                     if self.params["verbose"]:
-                        log_stats(search_stats, target_tensor, ts, new_st, best_network)
+                        log_stats(
+                            search_stats,
+                            target_tensor,
+                            ts,
+                            new_st,
+                            best_network,
+                        )
                     verbose_end = time.time()
                     logging_time += verbose_end - verbose_start
 

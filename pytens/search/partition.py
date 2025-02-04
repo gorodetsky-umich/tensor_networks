@@ -1,12 +1,9 @@
-
 from typing import Dict, List
-import itertools
 import time
 import copy
 import multiprocessing
 import queue
 import pickle
-import heapq
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,8 +12,10 @@ from pytens.algs import TensorNetwork
 from pytens.search.state import SearchState, Action, SplitIndex
 from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 
+
 class PartitionSearch:
     """Search by partitions free indices"""
+
     def __init__(self, params):
         self.params = params
         self.best_network = None
@@ -31,13 +30,21 @@ class PartitionSearch:
         self.ranks = {}
         self.delta = 0
 
-    def get_cost(self, init_st: SearchState, new_st: SearchState, best_cost: List[int], result_queue: multiprocessing.Queue):
+    def get_cost(
+        self,
+        init_st: SearchState,
+        new_st: SearchState,
+        best_cost: List[int],
+        result_queue: multiprocessing.Queue,
+    ):
         if self.params["fit_mode"] == "topk":
             # print("Getting cost for", [str(ac) for ac in new_st.past_actions])
             # new_st.network.draw()
             # plt.show()
             rank, cost = self.constraint_engine.get_cost(new_st, best_cost[-1])
-            if "Split(['I3', 'I5'])" in [str(ac) for ac in new_st.past_actions] and "Split(['I4'])" in [str(ac) for ac in new_st.past_actions]:
+            if "Split(['I3', 'I5'])" in [
+                str(ac) for ac in new_st.past_actions
+            ] and "Split(['I4'])" in [str(ac) for ac in new_st.past_actions]:
                 new_st.network.draw()
                 plt.show()
 
@@ -45,7 +52,7 @@ class PartitionSearch:
                 best_cost.append(cost)
                 best_cost = sorted(best_cost)
                 if len(best_cost) > self.params["k"]:
-                    best_cost = best_cost[:self.params["k"]]
+                    best_cost = best_cost[: self.params["k"]]
             self.costs[tuple(new_st.past_actions)] = cost
             self.ranks[tuple(new_st.past_actions)] = rank
 
@@ -53,7 +60,7 @@ class PartitionSearch:
         else:
             # equally distribute the errors between steps
             delta = self.delta / np.sqrt(len(new_st.past_actions))
-            for idx, ac in enumerate(new_st.past_actions):
+            for ac in new_st.past_actions:
                 # index_ac = ac.to_index(st, idx)
                 index_ac = ac
                 index_ac.delta = delta
@@ -69,13 +76,15 @@ class PartitionSearch:
 
         new_net = copy.deepcopy(curr_st.network)
         node_indices = new_net.network.nodes[split_ac.node]["tensor"].indices
-        right_indices = [i for i in range(len(node_indices)) if i not in split_ac.left_indices]
-        u, s, v = new_net.split(
-            split_ac.node,
-            split_ac.left_indices,
-            right_indices,
-            preview=True)
-        new_net.merge(v, s, preview=True)
+        right_indices = [
+            i
+            for i in range(len(node_indices))
+            if i not in split_ac.left_indices
+        ]
+        (u, s, v), _ = new_net.svd(
+            split_ac.node, split_ac.left_indices, right_indices, compute_data=False
+        )
+        new_net.merge(v, s, compute_data=False)
         new_st = SearchState(new_net, curr_st.curr_delta)
         new_link = new_net.get_contraction_index(u, v)[0]
         new_st.past_actions = curr_st.past_actions + [action]
@@ -91,10 +100,14 @@ class PartitionSearch:
         for _ in range(1, self.params["max_ops"] + 1):
             next_sts = []
             for curr_st in sts:
-                for action in curr_st.get_legal_actions(index_actions=self.params["action_type"] == "output"):
+                for action in curr_st.get_legal_actions(
+                    index_actions=self.params["action_type"] == "output"
+                ):
                     new_st = self.pseudo_action_execution(curr_st, action)
                     self.stats["count"] += 1
-                    best_cost = self.get_cost(st, new_st, best_cost, result_queue)
+                    best_cost = self.get_cost(
+                        st, new_st, best_cost, result_queue
+                    )
                     next_sts.append(new_st)
 
             sts = next_sts
@@ -104,7 +117,7 @@ class PartitionSearch:
             costs = sorted([(v, k) for k, v in self.costs.items()])
             # print(costs[:5])
             # try the top 10?
-            for c, acs in costs[:self.params["k"]]:
+            for c, acs in costs[: self.params["k"]]:
                 print("expect cost", c)
                 print([str(ac) for ac in acs], self.ranks[acs])
                 for k, ac in enumerate(acs):
@@ -113,10 +126,17 @@ class PartitionSearch:
                 self.stats["best_acs"] = acs
                 self.replay(st, acs, result_queue, True)
 
-        
-        result_queue.put({"best_network": self.best_network, "stats": self.stats})
+        result_queue.put(
+            {"best_network": self.best_network, "stats": self.stats}
+        )
 
-    def replay(self, st: SearchState, actions: List[Action], result_queue: multiprocessing.Queue, first_iter = False):
+    def replay(
+        self,
+        st: SearchState,
+        actions: List[Action],
+        result_queue: multiprocessing.Queue,
+        first_iter=False,
+    ):
         """Apply the given actions around the given ranks."""
         if not actions:
             # st.network.draw()
@@ -140,18 +160,20 @@ class PartitionSearch:
         if first_iter and self.params["fit_mode"] == "all":
             svd_file = self.constraint_engine.first_steps.get(ac, None)
             svd_data = np.load(svd_file)
-            svd = (svd_data['u'], svd_data['s'], svd_data['v'])
+            svd = (svd_data["u"], svd_data["s"], svd_data["v"])
         else:
             svd = None
         # print(ac, [str(x) for x in self.constraint_engine.first_steps.keys()])
         # print("new action", new_ac)
-        for new_st in st.take_action(ac, svd=svd, split_errors = self.params["split_errors"]):
+        for new_st in st.take_action(
+            ac, svd=svd, split_errors=self.params["split_errors"]
+        ):
             # print(ac)
             # if self.best_network.cost() > new_st.network.cost():
             #     self.best_network = new_st.network
             # new_st.network.draw()
             # plt.show()
-            
+
             self.stats["compression"].append(
                 (
                     time.time() - self.tic,
@@ -159,7 +181,7 @@ class PartitionSearch:
                 )
             )
             ukey = new_st.network.canonical_structure()
-            self.stats["unique"][ukey] = self.stats["unique"].get(ukey,0) + 1
+            self.stats["unique"][ukey] = self.stats["unique"].get(ukey, 0) + 1
             self.replay(new_st, actions[1:], result_queue)
 
     def rank_search_and_replay(self, net: TensorNetwork, acs: List[Action]):
@@ -193,11 +215,17 @@ class PartitionSearch:
         self.stats["time"] = time.time() - self.tic
         self.stats["preprocess"] = preprocess_end - self.tic
         self.stats["best_network"] = self.best_network
-        self.stats["cr_core"] = float(np.prod([i.size for i in free_indices])) / self.best_network.cost()
+        self.stats["cr_core"] = (
+            float(np.prod([i.size for i in free_indices]))
+            / self.best_network.cost()
+        )
         self.stats["cr_start"] = net.cost() / self.best_network.cost()
-        self.stats["reconstruction_error"] = float(np.linalg.norm(
-            self.best_network.contract().value - net.contract().value
-        ) / np.linalg.norm(net.contract().value))
+        self.stats["reconstruction_error"] = float(
+            np.linalg.norm(
+                self.best_network.contract().value - net.contract().value
+            )
+            / np.linalg.norm(net.contract().value)
+        )
         return self.stats
 
     def search(self, net: TensorNetwork) -> Dict:
@@ -221,10 +249,12 @@ class PartitionSearch:
         self.delta = delta
         init_st = SearchState(net, delta)
         free_indices = net.free_indices()
-        
+
         start = time.time()
         # print(start)
-        self.constraint_engine.preprocess(net.contract(), compute_uv=self.params["fit_mode"]=="all")
+        self.constraint_engine.preprocess(
+            net.contract(), compute_uv=self.params["fit_mode"] == "all"
+        )
         print("preprocessing time", time.time() - start)
         toc1 = time.time()
 
@@ -274,9 +304,15 @@ class PartitionSearch:
         self.stats["time"] = toc2 - start
         self.stats["preprocess"] = toc1 - start
         self.stats["best_network"] = self.best_network
-        self.stats["cr_core"] = float(np.prod([i.size for i in free_indices])) / self.best_network.cost()
+        self.stats["cr_core"] = (
+            float(np.prod([i.size for i in free_indices]))
+            / self.best_network.cost()
+        )
         self.stats["cr_start"] = net.cost() / self.best_network.cost()
-        self.stats["reconstruction_error"] = float(np.linalg.norm(
-            self.best_network.contract().value - net.contract().value
-        ) / np.linalg.norm(net.contract().value))
+        self.stats["reconstruction_error"] = float(
+            np.linalg.norm(
+                self.best_network.contract().value - net.contract().value
+            )
+            / np.linalg.norm(net.contract().value)
+        )
         return self.stats

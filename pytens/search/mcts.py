@@ -7,6 +7,7 @@ from typing import Self
 
 from pytens.search.state import SearchState, Split
 
+
 class Node:
     """Representation of one node in MCTS."""
 
@@ -30,7 +31,9 @@ class Node:
             elif child.state.is_terminal() and child.wins == 0:
                 weight = 0
             else:
-                weight = (child.wins / child.visits) + exploration_weight * math.sqrt(
+                weight = (
+                    child.wins / child.visits
+                ) + exploration_weight * math.sqrt(
                     math.log(self.visits) / child.visits
                 )
 
@@ -43,7 +46,9 @@ class Node:
     def expand(self):
         """Expand by creating a new child node for a random untried action."""
         legal_actions = self.state.get_legal_actions()
-        tried_actions = [child.state.past_actions[-1] for child in self.children]
+        tried_actions = [
+            child.state.past_actions[-1] for child in self.children
+        ]
         untried_actions = [
             action for action in legal_actions if action not in tried_actions
         ]
@@ -55,12 +60,16 @@ class Node:
             print(
                 "completing the action",
                 action,
-                self.state.network.network.nodes[action.node]["tensor"].indices,
+                self.state.network.network.nodes[action.node][
+                    "tensor"
+                ].indices,
                 "takes",
                 time.time() - start,
             )
         else:
-            print("completing the action", action, "takes", time.time() - start)
+            print(
+                "completing the action", action, "takes", time.time() - start
+            )
         child_node = Node(state=next_state, parent=self)
         self.children.append(child_node)
         return child_node

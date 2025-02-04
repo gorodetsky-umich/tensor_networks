@@ -75,7 +75,7 @@ def delta_svd(
     slist.reverse()
     truncpost = []
     for idx, element in enumerate(np.cumsum(slist)):
-        if element <= delta ** 2:
+        if element <= delta**2:
             truncpost.append(idx)
 
         else:
@@ -92,5 +92,9 @@ def delta_svd(
             float(np.sqrt(delta**2 - used_delta)),
         )
     return TruncSVD(
-        u[:, :truncation_rank], s[:truncation_rank], v[:truncation_rank, :], None, float(np.sqrt(delta**2 - used_delta))
+        u[:, :truncation_rank],
+        s[:truncation_rank],
+        v[:truncation_rank, :],
+        None,
+        float(np.sqrt(delta**2 - used_delta)),
     )
