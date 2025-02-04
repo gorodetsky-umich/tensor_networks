@@ -2,13 +2,14 @@ from typing import *
 import copy
 
 import numpy as np
+import scipy as sp
 import opt_einsum as oe
 import timeit
 import time
 
 from pytens import TensorNetwork, Tensor, Index
 rho = 0.001
-mu = 0.1
+mu = 0.001
 beta = 1
 
 def shrink(a, b):
@@ -64,6 +65,7 @@ class FCTN:
         self.target = target
         self.indices = self.target.shape
         self.N = len(self.indices)
+        self.zero = 1e-6
 
     def initialize(self):
         print("======= Start =======")
@@ -79,9 +81,9 @@ class FCTN:
                 s_tl = np.linalg.svdvals(x_tl)
                 # print(f"s_{t}_{l} shape:", s_tl.shape)
                 # print(f"s_{t}_{l}:", s_tl)
-                s_tl = shrink(s_tl, self.gamma * np.max(s_tl) / (abs(s_tl) + 1e-16))
+                s_tl = shrink(s_tl, self.gamma * np.max(s_tl) / (abs(s_tl) + self.zero))
                 # print(f"after shrink s_{t}_{l}:", s_tl)
-                s_tl = s_tl[s_tl >= 1e-16]
+                s_tl = s_tl[s_tl >= self.zero]
                 self.S[(t, l)] = s_tl
                 # s_tl = self.S[(t, l)]
                 # print(f"after shrink s_{t}_{l}:", s_tl.shape)
@@ -302,11 +304,11 @@ class FCTN:
         start = time.time()
         X = self.target
 
-        Q = {(t, l): np.zeros_like(self.S[(t, l)]) for t in range(self.N) for l in range(t+1, self.N)}
-        P = {(t, l): np.zeros_like(self.S[(t, l)]) for t in range(self.N) for l in range(t+1, self.N)}
+        # Q = {(t, l): np.zeros_like(self.S[(t, l)]) for t in range(self.N) for l in range(t+1, self.N)}
+        # P = {(t, l): np.zeros_like(self.S[(t, l)]) for t in range(self.N) for l in range(t+1, self.N)}
         for it in range(max_iters):
             old_X = copy.deepcopy(X)
-
+            s = copy.deepcopy(self.S)
             for k in range(self.N):
                 # M = self._contract_rest([('G', [k])])
                 M_k = self._contract_rest_g(k)
@@ -322,11 +324,11 @@ class FCTN:
                 # print("Old_G_k:", self.G[k].shape)
                 self.G[k] = fold(G_k, self.G[k].shape, k)
 
-            # s = copy.deepcopy(self.S)
-            for t in range(self.N):
+            # for t in range(self.N):
+                t = k
                 for l in range(t+1, self.N):
-                    Q[(t, l)] = self.S[(t, l)]
-                    P[(t, l)] = np.zeros_like(self.S[(t, l)])
+                    Q_tl = self.S[(t, l)]
+                    P_tl = np.zeros_like(self.S[(t, l)])
                     # lam = gamma * np.max(self.S[(t, l)]) * (rho + 1)
                     # H = self._contract_rest([('S', [t, l])])
                     H_tl = self._contract_rest_s(t, l)
@@ -340,14 +342,23 @@ class FCTN:
                         ss = 1
                     else:
                         ss = 5
-                    for _ in range(ss):
-                        s_left = (rho * self.S[(t, l)] + beta * Q[(t, l)] - P[(t, l)]) / (rho + beta)
-                        s_right = self.gamma * np.max(self.S[(t, l)]) / (abs(s_left) + 1e-16) # lam / (rho + 1)
-                        s_tl = shrink(s_left, s_right)
-                        Q[(t, l)] = np.linalg.pinv(H_tl.T @ H_tl + beta * np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + beta * s_tl + P[(t, l)])
-                        P[(t, l)] = P[(t, l)] + beta * (s_tl - Q[(t, l)])
 
-                    indices = np.flatnonzero(s_tl > 1e-16)
+                    s[(t,l)] = self.S[(t, l)]
+                    for _ in range(ss):
+                        s_left = (rho * self.S[(t, l)] + beta * Q_tl - P_tl) / (rho + beta)
+                        s_right = self.gamma * np.max(self.S[(t, l)]) / (abs(s_left) + self.zero) # lam / (rho + 1)
+                        s[(t,l)] = shrink(s_left, s_right)
+                        Q_tl = np.linalg.pinv(H_tl.T @ H_tl + beta * np.eye(H_tl.shape[1])) @ (H_tl.T @ self.target.reshape(-1) + beta * s[(t,l)] + P_tl)
+                        P_tl = P_tl + beta * (s[(t,l)] - Q_tl)
+
+                    # self.S[(t, l)] = s[(t, l)]
+                    
+
+            # delete zero elements in S
+            # for t in range(self.N):
+            #     for l in range(t+1, self.N):
+                    s_tl = s[(t,l)]
+                    indices = np.flatnonzero(s_tl >= self.zero)
                     self.S[(t, l)] = s_tl[indices]
                     # print("indices:", indices)
                     # print("G[t]:", self.G[t].shape, "l:", l)
@@ -368,7 +379,7 @@ class FCTN:
             re = np.linalg.norm(X - self.target) / np.linalg.norm(self.target)
             print("Iteration:", it, "Time:", time.time() - start, "Error:", err, "RE:", re)
             
-            if err <= 1e-3:
+            if err <= 1e-3 and re < self.eps:
                 print("Converged!")
                 break
 

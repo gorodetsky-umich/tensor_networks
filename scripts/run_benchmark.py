@@ -4,10 +4,11 @@ from typing import Any, Dict, Tuple
 import json
 import os
 import pickle
-import sys
+import time
 
 import matplotlib.pyplot as plt
 from svdinstn_decomposition import FCTN
+import numpy as np
 
 from benchmarks.benchmark import Benchmark
 from pytens.search.search import SearchEngine
@@ -146,6 +147,7 @@ class Runner:
             eps_str = eps_to_str(self.params["eps"])
             # log_name = f"{self.params['engine']}_{eps_str}{ht_tag}_ops_{self.params['max_ops']}_split_{self.params['split_errors']}"
             output_dir = f"output/{benchmark.source}/{benchmark.name}/{eps_str}"
+            self.params["output_dir"] = output_dir
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
 
@@ -158,41 +160,45 @@ class Runner:
             plt.close()
 
             all_stats = []
+
+            if self.params["engine"] == "svdinstn":
+                fctn = search_engine(
+                    net,
+                    timeout=self.params["timeout"],
+                    gamma=self.params["gamma"],
+                    eps=self.params["eps"],
+                )
+                fctn.initialize()
+                fctn.decompose()
+                fctn.to_tensor_network()
+                stats = fctn.stats
+            elif self.params["engine"] == "beam":
+                data_name = benchmark.name.split("_ht_")[0]
+                data_file = f"data/{benchmark.source}/{data_name}/data.npy"
+                if os.path.exists(data_file):
+                    target_tensor = np.load(
+                        f"data/{benchmark.source}/{data_name}/data.npy"
+                    )
+                else:
+                    target_tensor = None
+
+                stats = search_engine(net, target_tensor)
+            else:
+                stats = search_engine(net)
+
             with open(
                 f"{output_dir}/{self.params['log_name']}_{i}.log", "w", encoding="utf-8"
             ) as f:
-                if self.params["engine"] == "svdinstn":
-                    fctn = search_engine(
-                        net,
-                        timeout=self.params["timeout"],
-                        gamma=self.params["gamma"],
-                        eps=self.params["eps"],
-                    )
-                    fctn.initialize()
-                    fctn.decompose()
-                    fctn.to_tensor_network()
-                    stats = fctn.stats
-                elif self.params["engine"] == "beam":
-                    data_name = benchmark.name.split("_ht_")[0]
-                    data_file = f"data/{benchmark.source}/{data_name}/data.npy"
-                    if os.path.exists(data_file):
-                        target_tensor = np.load(
-                            f"data/{benchmark.source}/{data_name}/data.npy"
-                        )
-                    else:
-                        target_tensor = None
-
-                    stats = search_engine(net, target_tensor)
-                else:
-                    stats = search_engine(net)
-
                 f.write(
-                    f"{i},{stats['time']},{stats['reconstruction_error']},{stats['cr_core']},{stats['cr_start']},{ht_construct_time}\n"
+                    f"{i},{stats['time']},{stats['reconstruction_error']},"
+                    f"{stats['cr_core']},{stats['cr_start']},{ht_construct_time}\n"
                 )
                 bn = stats.pop("best_network")
 
-                if self.params["engine"] == "partition":
-                    with open(f"{output_dir}/{self.params['log_name']}_actions.pkl", "wb") as acs_file:
+                if self.params["engine"] == "partition" and "best_acs" in stats:
+                    with open(
+                        f"{output_dir}/{self.params['log_name']}_actions.pkl", "wb"
+                    ) as acs_file:
                         pickle.dump(stats["best_acs"], acs_file)
                     stats.pop("best_acs", None)
 
@@ -204,15 +210,85 @@ class Runner:
                 plt.close()
                 all_stats.append(stats)
 
-        with open(f"{output_dir}/{log_name}_{i}_all.log", "w", encoding="utf-8") as f:
+        with open(
+            f"{output_dir}/{self.params['log_name']}_{i}_all.log", "w", encoding="utf-8"
+        ) as f:
             json.dump(all_stats, f)
+
+
+def run_benchmark(runner, args, benchmark: Benchmark):
+    """Run a benchmark with specified arguments and the benchmark configurations."""
+    np.random.seed(int(time.time()))
+
+    if "ht" in args.start_from:
+        ht_tag = "_ht"
+    else:
+        ht_tag = ""
+
+    log_name = (
+        f"{args.engine}_{eps_to_str(args.eps)}{ht_tag}_"
+        f"ops_{args.max_ops}_split_{args.split_errors}"
+    )
+    if args.fit_mode != "topk":
+        log_name += "_all"
+
+    if args.action_type != "output":
+        log_name += "_input"
+
+    if args.replay_from is not None:
+        log_name += "_replay"
+
+    runner.params["log_name"] = log_name
+
+    if not args.collect_only:
+        runner.run(benchmark, repeat=args.repeat)
+
+    out_dir = f"output/{benchmark.source}/{benchmark.name}/{eps_to_str(args.eps)}"
+    if not os.path.exists(out_dir):
+        print("Directory", out_dir, "does not exist")
+
+    slog_name = f"{out_dir}/{log_name}_0.log"
+
+    with open(slog_name, "r", encoding="utf-8") as slog_file:
+        line = slog_file.read().strip()
+        _, t, re, cr_core, cr_start, ht_time = line.split(",")
+
+    alog_name = f"{out_dir}/{log_name}_0_all.log"
+    if os.path.exists(alog_name):
+        with open(alog_name, "r", encoding="utf-8") as alog_file:
+            all_log = json.load(alog_file)[0]
+            # get the time that reaches the best network
+            if "best_cost" in all_log and all_log["best_cost"]:
+                best_cost = all_log["best_cost"][-1][1]
+                for ts, c in all_log["best_cost"]:
+                    if c == best_cost:
+                        first_best_cost = ts
+                        break
+
+                max_ops = all_log["ops"][-1][1]
+            else:
+                best_cost = 0
+                first_best_cost = 0
+                max_ops = 0
+
+            if "unique" in all_log:
+                uniques = len(all_log["unique"])
+            else:
+                uniques = 0
+    else:
+        first_best_cost = None
+        max_ops = None
+
+    print(
+        f"{float(t):>10.5f}\t{float(ht_time):>10.5f}\t{float(re):>10.5f}\t"
+        f"{float(cr_core):>10.5f}\t{float(cr_start):>10.5f}\t"
+        f"{float(first_best_cost):>10.5f}\t{max_ops:>10}\t{uniques:>10}"
+    )
 
 
 if __name__ == "__main__":
     import glob
     import argparse
-    import time
-    import numpy as np
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -272,7 +348,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to use neural network to guide the beam search",
     )
-    parser.add_argument("--partition", action="store_true", help="Whether to use partition actions during dfs")
+    parser.add_argument(
+        "--partition",
+        action="store_true",
+        help="Whether to use partition actions during dfs",
+    )
     parser.add_argument(
         "--start_from",
         choices=["ht", "tt", "core"],
@@ -280,7 +360,7 @@ if __name__ == "__main__":
         nargs="+",
         help="Choose which algorithm result to start from",
     )
-    parser.add_argument("--timeout", type=float, help="Timeout limit")
+    parser.add_argument("--timeout", type=float, default=None, help="Timeout limit")
     parser.add_argument(
         "--gamma", type=float, default=0.0015, help="Gamma value used in SVDinsTN"
     )
@@ -292,69 +372,64 @@ if __name__ == "__main__":
         action="store_true",
         help="Collect log data into one single file",
     )
-    parser.add_argument("--bin_size", type=float, default=0.1, help="Bin size for constraint solving")
+    parser.add_argument(
+        "--bin_size", type=float, default=0.1, help="Bin size for constraint solving"
+    )
+    parser.add_argument(
+        "--fit_mode",
+        choices=["topk", "all"],
+        default="topk",
+        help="Strategy of when to fit the sketch",
+    )
+    parser.add_argument(
+        "--action_type",
+        choices=["output", "input"],
+        default="output",
+        help="Whether to use input- or output-directed splits",
+    )
+    parser.add_argument(
+        "--replay_from",
+        nargs="?",
+        default=None,
+        help="Replay the actions serialized in a pickle file",
+    )
+    parser.add_argument(
+        "--batches",
+        action="store_true",
+        help="Whether the feeding data is splitted into a series of batches",
+    )
+    parser.add_argument("-k", type=int, help="Top K")
 
-    args = parser.parse_args()
-
-    runner = Runner(args.__dict__)
+    opts = parser.parse_args()
+    runner = Runner(opts.__dict__)
 
     print(
-        f"{'Name':35}\t{'Time':>10}\t{'HT Time':>10}\t{'RE':>10}\t{'CR_core':>10}\t{'CR_start':>10}\t{'Best_time':>10}\t{'Max_ops':>10}\t{'Uniques':>10}"
+        f"{'Name':35}\t{'Time':>10}\t{'HT Time':>10}\t{'RE':>10}\t"
+        f"{'CR_core':>10}\t{'CR_start':>10}\t{'Best_time':>10}\t"
+        f"{'Max_ops':>10}\t{'Uniques':>10}"
     )
-    for benchmark_file in glob.glob(args.pattern):
-        with open(benchmark_file, "r", encoding="utf-8") as benchmark_fd:
-            benchmark_dict = json.load(benchmark_fd)
-            b = Benchmark(**benchmark_dict)
-            print(f"{b.name:35}\t", end="")
-            np.random.seed(int(time.time()))
+    if opts.batches:
+        # pattern specifies the batch root directory
+        batch_num = len(glob.glob(f"{opts.pattern}/*"))
+        for i in range(batch_num):
+            with open(
+                f"{opts.pattern}/{i}/original.json", "r", encoding="utf-8"
+            ) as benchmark_fd:
+                benchmark_dict = json.load(benchmark_fd)
+                b = Benchmark(**benchmark_dict)
+                print(f"{b.name:35}\t", end="")
 
-            if "ht" in args.start_from:
-                ht_tag = "_ht"
-            else:
-                ht_tag = ""
+            run_benchmark(runner, opts, b)
+            if i == 0:
+                opts.replay_from = (
+                    f"output/{b.source}/{b.name}/{eps_to_str(opts.eps)}"
+                    f"/{runner.params['log_name']}_actions.pkl"
+                )
+    else:
+        for bf in glob.glob(opts.pattern):
+            with open(bf, "r", encoding="utf-8") as benchmark_fd:
+                benchmark_dict = json.load(benchmark_fd)
+                b = Benchmark(**benchmark_dict)
+                print(f"{b.name:35}\t", end="")
 
-            log_name = f"{args.engine}_{eps_to_str(args.eps)}{ht_tag}_ops_{args.max_ops}_split_{args.split_errors}"
-            runner.params["log_name"] = log_name
-
-            if not args.collect_only:
-                runner.run(b, repeat=args.repeat)
-
-            out_dir = f"output/{b.source}/{b.name}/{eps_to_str(args.eps)}"
-            if not os.path.exists(out_dir):
-                print("Directory", out_dir, "does not exist")
-
-            slog_name = f"{out_dir}/{log_name}_0.log"
-
-            with open(slog_name, "r", encoding="utf-8") as slog_file:
-                line = slog_file.read().strip()
-                _, t, re, cr_core, cr_start, ht_time = line.split(",")
-
-            alog_name = f"{out_dir}/{log_name}_0_all.log"
-            if os.path.exists(alog_name):
-                with open(alog_name, "r", encoding="utf-8") as alog_file:
-                    all_log = json.load(alog_file)[0]
-                    # get the time that reaches the best network
-                    if "best_cost" in all_log and all_log["best_cost"]:
-                        best_cost = all_log["best_cost"][-1][1]
-                        for ts, c in all_log["best_cost"]:
-                            if c == best_cost:
-                                first_best_cost = ts
-                                break
-
-                        max_ops = all_log["ops"][-1][1]
-                    else:
-                        best_cost = 0
-                        first_best_cost = 0
-                        max_ops = 0
-
-                    if "unique" in all_log:
-                        uniques = len(all_log["unique"])
-                    else:
-                        uniques = 0
-            else:
-                first_best_cost = None
-                max_ops = None
-
-            print(
-                f"{float(t):>10.5f}\t{float(ht_time):>10.5f}\t{float(re):>10.5f}\t{float(cr_core):>10.5f}\t{float(cr_start):>10.5f}\t{float(first_best_cost):>10.5f}\t{max_ops:>10}\t{uniques:>10}"
-            )
+            run_benchmark(runner, opts, b)
