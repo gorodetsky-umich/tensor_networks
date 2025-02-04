@@ -466,6 +466,75 @@ def cfd_pde_to_benchmark(benchmark_name, data_path, data_length):
         json_str = RootModel[Benchmark](b).model_dump_json(indent=4)
         json_file.write(json_str)
 
+def cfd_pde_to_batches(benchmark_name, data_path, data_length):
+    f = h5py.File(data_path)
+    total_length = len(f["density"])
+    remaining_indices = list(range(total_length))
+
+    for batch_idx in range(total_length // data_length):
+        datas = []
+        indices = random.sample(remaining_indices, k=min(len(remaining_indices), data_length))
+        remaining_indices = list(set(remaining_indices).difference(set(indices)))
+        print(indices)
+        for data_field in ["Vx", "Vy", "Vz", "density", "pressure"]:
+            if data_field not in f:
+                continue
+
+            d = np.array(f[data_field])[indices]
+            print(data_field, d.shape)
+            datas.append(d)
+
+        tensor = np.stack(datas, axis=1)
+        tensor_indices = [Index(f"I{i}", sz) for i, sz in enumerate(tensor.shape)]
+
+        benchmark_dir = f"benchmarks/PDEBench/{benchmark_name}_batches/{batch_idx}"
+        if not os.path.exists(benchmark_dir):
+            os.makedirs(benchmark_dir)
+
+        data_file = f"data/PDEBench/{benchmark_name}_batches/{batch_idx}"
+        if not os.path.exists(data_file):
+            os.makedirs(data_file)
+
+        np.save(f"{data_file}/data.npy", tensor)
+        b = Benchmark(f"{benchmark_name}_batch_{batch_idx}", "PDEBench", [Node("G0", tensor_indices, f"{data_file}/data.npy")])
+        with open(
+            f"{benchmark_dir}/original.json", "w+", encoding="utf-8"
+        ) as json_file:
+            json_str = RootModel[Benchmark](b).model_dump_json(indent=4)
+            json_file.write(json_str)
+
+def bigearthnet_to_batches():
+    from torchgeo.datasets import BigEarthNet
+
+    # Initialize the dataset
+    dataset = BigEarthNet(root="/Users/zhgguo/Downloads/BigEarthNet", bands="s2", download=False)
+    total_length = len(dataset)
+    print(total_length)
+    remaining_indices = list(range(total_length))
+
+    for batch_idx in range(total_length // 3000):
+        indices = random.sample(remaining_indices, k=min(len(remaining_indices), 3000))
+        remaining_indices = list(set(remaining_indices).difference(set(indices)))
+        imgs = [dataset[x]["image"].numpy() for x in indices]
+        tensor = np.stack(imgs, axis=0).reshape(5, 20, 30, 12, 120, 120)
+        tensor_indices = [Index(f"I{i}", sz) for i, sz in enumerate(tensor.shape)]
+
+        benchmark_dir = f"benchmarks/BigEarthNet/bigearthnet_batches/{batch_idx}"
+        if not os.path.exists(benchmark_dir):
+            os.makedirs(benchmark_dir)
+
+        data_file = f"data/BigEarthNet/bigearthnet_batches/{batch_idx}"
+        if not os.path.exists(data_file):
+            os.makedirs(data_file)
+
+        np.save(f"{data_file}/data.npy", tensor)
+        b = Benchmark(f"bigearthnet_batch_{batch_idx}", "PDEBench", [Node("G0", tensor_indices, f"{data_file}/data.npy")])
+        with open(
+            f"{benchmark_dir}/original.json", "w+", encoding="utf-8"
+        ) as json_file:
+            json_str = RootModel[Benchmark](b).model_dump_json(indent=4)
+            json_file.write(json_str)
+
 if __name__ == "__main__":
     # Uncomment for converting single cores into benchmarks
     # for f in glob.glob("data/SVDinsTN/*/*.npy"):
@@ -542,13 +611,13 @@ if __name__ == "__main__":
     # dataset = BigEarthNet(root="/Users/zhgguo/Downloads/BigEarthNet", bands="s2", download=True)
 
     # # sizes = [(30,), (10, 30), (5, 20, 30)]
-    # sizes = [(15,)]
-    # for s in sizes:
+    # sizes = [(i,) for i in range(5, 51, 5)]
+    # for si, s in enumerate(sizes):
     #     for i in range(1):
     #         indices = random.sample(range(len(dataset)), k=int(np.prod(s)))
     #         imgs = [dataset[x]["image"].numpy() for x in indices]
     #         data = np.stack(imgs, axis=0).reshape(*s, 12, 120, 120)
-    #         name = f"bigearthnet_stack_{'_'.join([str(x) for x in s])}_{i}"
+    #         name = f"bigearthnet_sample_{si}"
     #         convert_single_value_to_benchmark(name, "BigEarthNet", data=data)
 
     # Script for creating benchmark files from tnGPS dataset
@@ -617,12 +686,14 @@ if __name__ == "__main__":
     # for name, data in pde.items():
     #     pde_to_benchmark(name, *data)
 
-    source= "PDEBench"
-    pde = {
-        # "1D_CFD": ("/Users/zhgguo/Downloads/1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5", 100),
-        "2D_CFD": ("/Users/zhgguo/Downloads/164686", 10),
-        # "3D_CFD": ("/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", 10),
-    }
-    for name, data in pde.items():
-        for i in range(10):
-            cfd_pde_to_benchmark(f"{name}_{i}", *data)
+    # source= "PDEBench"
+    # pde = {
+    #     # "1D_CFD": ("/Users/zhgguo/Downloads/1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5", 100),
+    #     # "2D_CFD": ("/Users/zhgguo/Downloads/164686", 10),
+    #     "3D_CFD": ("/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", 10),
+    # }
+    # for name, data in pde.items():
+    #     for i in range(1, 11):
+    #         cfd_pde_to_benchmark(f"{name}_sample_{i}", data[0], i)
+    # cfd_pde_to_batches("3D_CFD", "/Users/zhgguo/Downloads/3D_CFD_Turb_M1.0_Eta1e-08_Zeta1e-08_periodic_Train.hdf5", 10)
+    bigearthnet_to_batches()

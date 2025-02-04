@@ -1,0 +1,37 @@
+{
+    "name": "3D_CFD_batch_9",
+    "source": "PDEBench",
+    "nodes": [
+        {
+            "name": "G0",
+            "indices": [
+                {
+                    "name": "I0",
+                    "size": 10
+                },
+                {
+                    "name": "I1",
+                    "size": 5
+                },
+                {
+                    "name": "I2",
+                    "size": 21
+                },
+                {
+                    "name": "I3",
+                    "size": 64
+                },
+                {
+                    "name": "I4",
+                    "size": 64
+                },
+                {
+                    "name": "I5",
+                    "size": 64
+                }
+            ],
+            "value": "data/PDEBench/3D_CFD_batches/9/data.npy"
+        }
+    ],
+    "value_file": null
+}
