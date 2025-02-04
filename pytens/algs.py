@@ -713,7 +713,7 @@ class TensorNetwork:
         if not preview:
             result = t1.contract(t2)
         else:
-            result = Tensor(None, t1.indices + t2.indices)
+            result = Tensor(None, [ind for ind in t1.indices if ind not in t2.indices] + [ind for ind in t2.indices if ind not in t1.indices])
 
         n2_nbrs = list(self.network.neighbors(name2))
         self.network.remove_node(name2)
@@ -734,15 +734,18 @@ class TensorNetwork:
             initial_optimize = True
             visited = set()
             self.orthonormalize(node_name)
+            # print("start round")
         else:
             initial_optimize = False
 
         node_indices = self.network.nodes[node_name]["tensor"].indices
         kept_indices = []
         free_indices = []
+        r = node_name
         for idx in node_indices:
             if idx in visited:
                 kept_indices.append(idx)
+                # print("visited idx", idx)
                 continue
 
             shared_index = None
@@ -756,6 +759,7 @@ class TensorNetwork:
 
             if shared_index is None:
                 free_indices.append(idx)
+                # print("free index", idx)
                 continue
 
             curr_indices = self.network.nodes[node_name]["tensor"].indices

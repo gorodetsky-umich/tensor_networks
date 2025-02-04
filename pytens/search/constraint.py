@@ -3,6 +3,7 @@
 from typing import List, Dict
 import itertools
 import time
+import os
 
 import gurobipy as gp
 from gurobipy import GRB
@@ -138,7 +139,32 @@ class ConstraintSearch:
         # print(list(zip(final_sizes, s_sums)))
         return s_sums, final_sizes
 
-    def preprocess(self, target_tensor: Tensor):
+    def preprocess_comb(self, target_tensor: Tensor, comb: List[int], compute_uv = False):
+        """Precompute the singluar values for a given combination of indices."""
+        free_indices = target_tensor.indices
+        right_indices = [i for i in free_indices if i not in comb]
+        positions = [target_tensor.indices.index(i) for i in list(comb) + right_indices]
+        tensor_val = target_tensor.value.transpose(positions)
+        left_size = np.prod([x.size for x in comb])
+        # u, s, v = np.linalg.svd(tensor_val.reshape(left_size, -1), False, True)
+        if compute_uv:
+            u, s, v = np.linalg.svd(tensor_val.reshape(left_size, -1), False, True)
+            # save to file to avoid memory explosion
+            file_name = f"{self.params['output_dir']}/{len(self.first_steps)}.npz"
+            np.savez(file_name, u=u,s=s,v=v)
+            self.first_steps[SplitIndex(comb)] = file_name
+        else:
+            file_name = f"{self.params['output_dir']}/{len(self.first_steps)}.npz"
+            if os.path.exists(file_name):
+                data = np.load(file_name)
+                s = data['s']
+                self.first_steps[SplitIndex(comb)] = file_name
+            else:
+                s = np.linalg.svd(tensor_val.reshape(left_size, -1), False, False)
+            sums, sizes = self.abstract(s)
+            self.split_actions[SplitIndex(comb)] = (sums, sizes)
+
+    def preprocess(self, target_tensor: Tensor, acs = None, compute_uv = False):
         """Compute the mapping between splits and singular values.
         
         Build the abstractions.
@@ -146,21 +172,19 @@ class ConstraintSearch:
         free_indices = target_tensor.indices
         x_norm = np.linalg.norm(target_tensor.value)
         self.delta = self.params["eps"] * x_norm
-        for k in range(1, len(free_indices) // 2 + 1):
-            combs = list(itertools.combinations(free_indices, k))
-            if len(free_indices) % 2 == 0 and k == len(free_indices) // 2:
-                combs = combs[:len(combs) // 2]
+        if acs is not None:
+            for ac in acs:
+                comb = ac.indices
+                self.preprocess_comb(target_tensor, comb)
+        else:
+            for k in range(1, len(free_indices) // 2 + 1):
+                combs = list(itertools.combinations(free_indices, k))
+                if len(free_indices) % 2 == 0 and k == len(free_indices) // 2:
+                    combs = combs[:len(combs) // 2]
 
-            for comb in combs:
-                right_indices = [i for i in free_indices if i not in comb]
-                positions = [target_tensor.indices.index(i) for i in list(comb) + right_indices]
-                tensor_val = target_tensor.value.transpose(positions)
-                left_size = np.prod([x.size for x in comb])
-                # u, s, v = np.linalg.svd(tensor_val.reshape(left_size, -1), False, True)
-                s = np.linalg.svd(tensor_val.reshape(left_size, -1), False, False)
-                sums, sizes = self.abstract(s)
-                self.split_actions[SplitIndex(comb)] = (sums, sizes)
-                # self.first_steps[SplitIndex(comb)] = (u, s, v)
+                for comb in combs:
+                    self.preprocess_comb(target_tensor, comb, compute_uv=compute_uv)
+                    # self.first_steps[SplitIndex(comb)] = (u, s, v)
 
     # we can integrate this with A*, beam search, or other things
     # let's try A* first
@@ -168,20 +192,23 @@ class ConstraintSearch:
         """Compute cost for a given set of splits."""
         solver = ILPSolver({})
         solver.model.params.OutputFlag = 0
+        solver.model.params.TimeLimit = 60
         
         prefix_sums = {}
         # extract nodes from the current network
         relabel_map = {}
-        for ac in st.past_actions:
+        for idx, ac in enumerate(st.past_actions):
+            # print(ac)
             if not isinstance(ac, SplitIndex):
-                index_ac = ac.to_index(st)
+                index_ac = ac.to_index(st, idx)
             else:
                 index_ac = ac
                 
+            # print(index_ac)
             ac_sums, ac_sizes = self.split_actions[index_ac]
-            prefix_sums[st.ac_to_link[ac]] = ac_sums
+            prefix_sums[st.links[idx]] = ac_sums
             # we need to substitute the links to all 
-            relabel_map[st.ac_to_link[ac]] = tuple(ac_sizes)
+            relabel_map[st.links[idx]] = tuple(ac_sizes)
         
         st.network.relabel_indices(relabel_map)
         indices = st.network.all_indices()
@@ -217,7 +244,7 @@ class ConstraintSearch:
             #     plt.close()
             result = {}
             for ind, ind_size in relabel_map.items():
-                for k, v in st.ac_to_link.items():
+                for k, v in enumerate(st.links):
                     if v == ind:
                         result[k] = ind_size
                         break

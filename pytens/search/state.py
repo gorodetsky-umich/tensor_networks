@@ -19,9 +19,10 @@ class Action:
 
 
 class SplitIndex(Action):
-    def __init__(self, indices: Sequence[Index], target_size: Optional[int] = None):
+    def __init__(self, indices: Sequence[Index], target_size: Optional[int] = None, delta: Optional[float] = None):
         self.indices = indices
         self.target_size = target_size
+        self.delta = delta
 
     def __str__(self) -> str:
         return f"Split({[i.name for i in self.indices]})"
@@ -85,6 +86,7 @@ class SplitIndex(Action):
                     # if finds include both desired and undesired, skip
                     desired = set(self.indices).intersection(set(inds))
                     undesired = set(inds).difference(set(self.indices))
+                    # print(desired, undesired)
                     if len(desired) > 0 and len(undesired) > 0:
                         return False, []
 
@@ -143,9 +145,11 @@ class SplitIndex(Action):
         right_szs = [node_indices[i].size for i in right_indices]
         right_sz = np.prod(right_szs)
         max_sz = min(left_sz, right_sz)
+
         if svd is None:
             u, s, v = net.split(lca_node, left_indices, right_indices, with_orthonormalize=True)
         else:
+            # print("read preprocessing result")
             u, s, v = net.split(lca_node, left_indices, right_indices, preview=True)
             net.network.nodes[u]["tensor"].update_val_size(svd[0].reshape(*left_szs, -1))
             net.network.nodes[s]["tensor"].update_val_size(np.diag(svd[1]))
@@ -180,25 +184,30 @@ class Split(Action):
             self.node, self.left_indices, right_indices
         )
     
-    def to_index(self, st):
+    def to_index(self, st, idx):
         """Convert a split action to splitIndex."""
         connect_nodes = []
         for n, d in st.network.network.nodes(data=True):
             for ind in d["tensor"].indices:
-                if ind.name == st.ac_to_link[self]:
+                if ind.name == st.links[idx]:
                     connect_nodes.append(n)
                     break
 
         if len(connect_nodes) != 2:
             print("Unusual edge label found in nodes:", connect_nodes)
 
+        all_free_indices = st.network.free_indices()
         tmp_net = copy.deepcopy(st.network.network)
         tmp_net.remove_edge(connect_nodes[0], connect_nodes[1])
+        curr_indices = None
         for subgraph in nx.connected_components(tmp_net):
             tn = TensorNetwork()
-            tn.network = subgraph
-            indices = tn.free_indices()
-            return SplitIndex(indices)
+            tn.network = st.network.network.subgraph(subgraph)
+            indices = [ind for ind in tn.free_indices() if ind in all_free_indices]
+            if curr_indices is None or len(indices) < len(curr_indices) or (len(indices) == len(curr_indices) and indices < curr_indices):
+                curr_indices = indices
+
+        return SplitIndex(curr_indices)
 
 class Merge(Action):
     """Merge action."""
@@ -229,7 +238,7 @@ class SearchState:
         self.threshold = threshold
         self.is_noop = False
         self.used_ops = 0
-        self.ac_to_link = {}
+        self.links = []
 
     def get_legal_actions(self, index_actions=False):
         """Return a list of all legal actions in this state."""
@@ -280,7 +289,7 @@ class SearchState:
 
     def take_action(self, action: Action, svd: Tuple[np.ndarray] = None, split_errors: int = 0, no_heuristic: bool = False) -> Generator["SearchState", None, None]:
         """Return a new GameState after taking the specified action."""
-        if ((isinstance(action, Split) and split_errors != 0) or
+        if (isinstance(action, Split) or
             (isinstance(action, SplitIndex))):
             # try the error splitting from large to small
             new_net = copy.deepcopy(self.network)
@@ -296,6 +305,18 @@ class SearchState:
                     if not action.is_valid(self.past_actions):
                         return
 
+                    if action.delta is not None:
+                        self.curr_delta = action.delta
+                    #     (u, v), remaining_delta = action.execute(new_net, svd=svd)
+                    #     new_state = SearchState(
+                    #         new_net, remaining_delta, max_ops=self.max_ops, threshold=self.threshold
+                    #     )
+                    #     new_state.past_actions = self.past_actions + [action]
+                    #     new_state.used_ops = self.used_ops + 1
+                    #     new_state.links.append(new_net.get_contraction_index(u, v)[0].name)
+                    #     yield new_state
+                    #     return
+                    
                     # we allow specify the node values
                     (u, s, v), max_sz = action.execute(new_net, svd)
                 # print(u, new_net.network.nodes[u]["tensor"].indices)
@@ -355,7 +376,7 @@ class SearchState:
                     )
                     new_state.past_actions = self.past_actions + [action]
                     new_state.used_ops = self.used_ops + 1
-                    new_state.ac_to_link[action] = tmp_net.get_contraction_index(u, v)[0].name
+                    new_state.links.append(tmp_net.get_contraction_index(u, v)[0].name)
                     yield new_state
                     return
 
@@ -388,7 +409,7 @@ class SearchState:
                     )
                     new_state.past_actions = self.past_actions + [action]
                     new_state.used_ops = self.used_ops + 1
-                    new_state.ac_to_link[action] = tmp_net.get_contraction_index(u, v)[0].name
+                    new_state.links.append(tmp_net.get_contraction_index(u, v)[0].name)
                     # if new_state.network.cost() > self.network.cost():
                     #     continue
 
@@ -410,7 +431,7 @@ class SearchState:
             new_state.past_actions = self.past_actions + [action]
             new_state.used_ops = self.used_ops + 1
             new_index = new_net.get_contraction_index(u, v)[0]
-            new_state.ac_to_link[action] = new_index.name
+            new_state.links.append(new_index.name)
             index_sz = new_index.size
             if not no_heuristic and max_sz == index_sz: # or new_state.network.cost() > self.network.cost():
                 return
