@@ -4,6 +4,7 @@
 *#*
 *.prof*
 *DS_Store*
+flycheck*
 
 local_scratch/*
 apps/transport_solver/results/*
@@ -175,7 +176,7 @@ cython_debug/
 
 output/
 data/
-testing.py/
+testing.py
 runs/
 models/
 *.xlsx
