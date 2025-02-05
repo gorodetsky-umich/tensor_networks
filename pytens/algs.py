@@ -384,7 +384,7 @@ class TensorNetwork:  # pylint: disable=R0904
     def inner_indices(self) -> List[Index]:
         """Get hte interior indices."""
         icount = self.all_indices()
-        free_indices = [i for i, v in icount.items() if v > 1]
+        free_indices = sorted([i for i, v in icount.items() if v > 1])
         return free_indices
 
     def ranks(self) -> List[int]:
@@ -1057,12 +1057,14 @@ class TensorNetwork:  # pylint: disable=R0904
                 if index in data["tensor"].indices:
                     new_graph.add_edge(node, name1)
 
-        pos = nx.drawing.nx_agraph.graphviz_layout(
-            new_graph,
-            prog="neato",
-            args="-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy",
-        )
-        # pos = nx.planar_layout(new_graph)
+        # To use graphviz layout,
+        # you need to install both graphviz and pygraphviz.
+        # pos = nx.drawing.nx_agraph.graphviz_layout(
+        #     new_graph,
+        #     prog="neato",
+        #     args="-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy",
+        # )
+        pos = nx.planar_layout(new_graph)
 
         for node, data in self.network.nodes(data=True):
             node_groups["A"].append(node)

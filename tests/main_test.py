@@ -25,7 +25,7 @@ class TestIndex(unittest.TestCase):
 class TestTT(unittest.TestCase):
 
     def setUp(self):
-        self.x = Index('x', 5)
+        self.x = Index('t', 5)
         self.u = Index('u', 10)
         self.v = Index('v', 20)
         self.tt_ranks = [2, 2]
@@ -64,12 +64,12 @@ class TestTT(unittest.TestCase):
         ttcon = self.TT.contract()
         ttarr = ttcon.value
         self.assertEqual(ttarr.ndim, 3)
-        self.assertEqual(ttarr.shape[2], self.x.size)
-        self.assertEqual(ttarr.shape[0], self.u.size)
-        self.assertEqual(ttarr.shape[1], self.v.size)
-        self.assertEqual(ttcon.indices[2], self.x)
-        self.assertEqual(ttcon.indices[0], self.u)
-        self.assertEqual(ttcon.indices[1], self.v)
+        self.assertEqual(ttarr.shape[0], self.x.size)
+        self.assertEqual(ttarr.shape[1], self.u.size)
+        self.assertEqual(ttarr.shape[2], self.v.size)
+        self.assertEqual(ttcon.indices[0], self.x)
+        self.assertEqual(ttcon.indices[1], self.u)
+        self.assertEqual(ttcon.indices[2], self.v)
 
         val = self.TT[2:4, 5:7, 3].value
         val_should_be = ttarr[2:4, 5:7, 3]
@@ -96,11 +96,11 @@ class TestTT(unittest.TestCase):
 
         int_partial = self.TT.integrate([self.v], np.ones(1)).contract().value
         self.assertEqual(int_partial.ndim, 2)
-        self.assertEqual(int_partial.shape[1], self.x.size)
-        self.assertEqual(int_partial.shape[0], self.u.size)
+        self.assertEqual(int_partial.shape[0], self.x.size)
+        self.assertEqual(int_partial.shape[1], self.u.size)
         self.assertTrue(
             np.allclose(int_partial,
-                        np.sum(ttarr, axis=1),
+                        np.sum(ttarr, axis=2),
                         atol=1e-14, rtol=1e-14))
 
     def test_addition(self):
@@ -255,7 +255,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        
+
         TTadd =  tt_randomized_round(y=TTadd,
                                      target_ranks=target)
         
