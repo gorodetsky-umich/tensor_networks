@@ -13,45 +13,13 @@ from pytens.search.state import SearchState
 from pytens.search.beam import BeamSearch
 from pytens.search.mcts import MCTS
 from pytens.search.partition import PartitionSearch
+from pytens.search.utils import log_stats, approx_error, EMPTY_SEARCH_STATS
+from pytens.search.dfs import DFSSearch
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--tag", type=str)
 parser.add_argument("--log", type=str)
-
-
-def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
-    """Compute the reconstruction error.
-
-    Given a tensor network TN and the target tensor X,
-    it returns ||X - TN|| / ||X||.
-    """
-    target_free_indices = tensor.indices
-    net_free_indices = net.free_indices()
-    net_value = net.contract().value
-    perm = [net_free_indices.index(i) for i in target_free_indices]
-    net_value = net_value.transpose(perm)
-    error = float(
-        np.linalg.norm(net_value - tensor.value) / np.linalg.norm(tensor.value)
-    )
-    return error
-
-
-def log_stats(
-    search_stats: dict,
-    target_tensor: np.ndarray,
-    ts: float,
-    st: SearchState,
-    bn: TensorNetwork,
-):
-    """Log statistics of a given state."""
-    search_stats["ops"].append((ts, st.used_ops))
-    search_stats["costs"].append((ts, st.network.cost()))
-    err = approx_error(target_tensor, st.network)
-    search_stats["errors"].append((ts, err))
-    search_stats["best_cost"].append((ts, bn.cost()))
-    ukey = st.network.canonical_structure()
-    search_stats["unique"][ukey] = search_stats["unique"].get(ukey, 0) + 1
 
 
 class MyConfig:
@@ -71,10 +39,11 @@ class EnumState:
     def __lt__(self, other):
         if self.network != other.network:
             return self.network < other.network
-        elif self.ops != other.ops:
+
+        if self.ops != other.ops:
             return self.ops < other.ops
-        else:
-            return self.delta < other.delta
+
+        return self.delta < other.delta
 
 
 class SearchEngine:
@@ -104,16 +73,13 @@ class SearchEngine:
         if self.params["prune"]:
             if h in worked:
                 return best_network
-            else:
-                worked.add(h)
 
-        if new_st.used_ops < self.params["max_ops"]:
+            worked.add(h)
+
+        if len(new_st.past_actions) < self.params["max_ops"]:
             worklist.append(new_st)
 
         return best_network
-
-    def a_star(self, max_ops: int = 5, timeout: float = 3600):
-        """Perform the A-star search with a priority queue"""
 
     def mcts(self, net: TensorNetwork, budget: int = 10000):
         """Run the MCTS as a search engine."""
@@ -173,6 +139,7 @@ class SearchEngine:
         return stats
 
     def partition_search(self, net: TensorNetwork):
+        """Perform an search with output-directed splits + constraint solve."""
         engine = PartitionSearch(self.params)
         return engine.search(net)
 
@@ -181,173 +148,26 @@ class SearchEngine:
         net: TensorNetwork,
     ):
         """Perform an exhaustive enumeration with the DFS algorithm."""
-        target_tensor = net.contract()
-
-        search_stats = {
-            "networks": [],
-            "best_networks": [],
-            "best_cost": [],
-            "costs": [],
-            "errors": [],
-            "ops": [],
-            "unique": {},
-        }
-        logging_time = 0
-        start = time.time()
-
-        delta = self.params["eps"] * net.norm()
-        best_network = net
-        # network = copy.deepcopy(net)
-        worked = set()
-        count = 0
-
-        def helper(curr_st: SearchState):
-            # plt.figure(curr_net.canonical_structure())
-            nonlocal best_network
-            nonlocal logging_time
-            nonlocal search_stats
-            nonlocal start
-            nonlocal count
-
-            count += 1
-
-            if curr_st.used_ops >= self.params["max_ops"]:
-                # print("max op")
-                return
-
-            if (
-                self.params["timeout"] is not None
-                and time.time() - start > self.params["timeout"]
-            ):
-                return
-
-            for ac in curr_st.get_legal_actions(
-                index_actions=self.params["partition"]
-            ):
-                # print(ac)
-                if curr_st.used_ops + 1 >= self.params["max_ops"]:
-                    split_errors = 0
-                else:
-                    split_errors = self.params["split_errors"]
-
-                gen = curr_st.take_action(
-                    ac,
-                    split_errors=split_errors,
-                    no_heuristic=self.params["no_heuristic"],
-                )
-                greedy = False
-                for new_st in gen:
-                    if not self.params["no_heuristic"] and new_st.is_noop:
-                        # print("noop")
-                        continue
-
-                    if new_st.network.cost() < best_network.cost():
-                        best_network = new_st.network
-
-                    ts = time.time() - start - logging_time
-                    verbose_start = time.time()
-                    if self.params["verbose"]:
-                        log_stats(
-                            search_stats,
-                            target_tensor,
-                            ts,
-                            new_st,
-                            best_network,
-                        )
-                    verbose_end = time.time()
-                    logging_time += verbose_end - verbose_start
-
-                    if self.params["prune"]:
-                        h = new_st.network.canonical_structure(
-                            consider_ranks=self.params["consider_ranks"]
-                        )
-                        # print(h)
-                        if h in worked:
-                            return
-                        else:
-                            worked.add(h)
-
-                    if new_st.used_ops >= self.params["max_ops"]:
-                        # print("max op")
-                        return
-
-                    best_before = best_network.cost()
-                    helper(new_st)
-                    best_after = best_network.cost()
-                    if best_before == best_after:
-                        greedy = True
-                        break
-
-                if greedy and self.params["split_errors"] != 0:
-                    gen = curr_st.take_action(
-                        ac, no_heuristic=self.params["no_heuristic"]
-                    )
-                    for new_st in gen:
-                        if not self.params["no_heuristic"] and new_st.is_noop:
-                            # print("noop")
-                            continue
-
-                        if new_st.network.cost() < best_network.cost():
-                            best_network = new_st.network
-
-                        ts = time.time() - start - logging_time
-                        verbose_start = time.time()
-                        if self.params["verbose"]:
-                            log_stats(
-                                search_stats,
-                                target_tensor,
-                                ts,
-                                new_st,
-                                best_network,
-                            )
-                        verbose_end = time.time()
-                        logging_time += verbose_end - verbose_start
-
-                        if self.params["prune"]:
-                            h = new_st.network.canonical_structure(
-                                consider_ranks=self.params["consider_ranks"]
-                            )
-                            # print(h)
-                            if h in worked:
-                                return
-                            else:
-                                worked.add(h)
-
-                        if new_st.used_ops >= self.params["max_ops"]:
-                            # print("max op")
-                            return
-
-                        helper(new_st)
-
-                # plt.close(curr_net.canonical_structure())
-
-        helper(SearchState(net, delta))
+        dfs_runner = DFSSearch(self.params)
+        search_stats = dfs_runner.run(net)
         end = time.time()
 
-        search_stats["time"] = end - start - logging_time
-        search_stats["best_network"] = best_network
+        search_stats["time"] = end - dfs_runner.start - dfs_runner.logging_time
+        search_stats["best_network"] = dfs_runner.best_network
         search_stats["cr_core"] = (
-            np.prod([i.size for i in net.free_indices()]) / best_network.cost()
+            np.prod([i.size for i in net.free_indices()])
+            / dfs_runner.best_network.cost()
         )
-        search_stats["cr_start"] = net.cost() / best_network.cost()
-        err = approx_error(target_tensor, best_network)
+        search_stats["cr_start"] = net.cost() / dfs_runner.best_network.cost()
+        err = approx_error(dfs_runner.target_tensor, dfs_runner.best_network)
         search_stats["reconstruction_error"] = err
-        search_stats["count"] = count
 
         return search_stats
 
     def bfs(self, net: TensorNetwork):
         """Perform an exhaustive enumeration with the BFS algorithm."""
         target_tensor = net.contract()
-
-        search_stats = {
-            "networks": [],
-            "best_networks": [],
-            "best_cost": [],
-            "costs": [],
-            "errors": [],
-            "ops": [],
-        }
+        search_stats = EMPTY_SEARCH_STATS
         logging_time = 0
         start = time.time()
 
@@ -369,7 +189,7 @@ class SearchEngine:
             for ac in st.get_legal_actions():
                 # plt.subplot(2,1,1)
                 # st.network.draw()
-                for new_st in st.take_action(ac):
+                for new_st in st.take_action(ac, params=self.params):
                     # plt.subplot(2,1,2)
                     # new_st.network.draw()
                     # plt.show()

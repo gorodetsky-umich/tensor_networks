@@ -1,3 +1,5 @@
+"""Structure search with output-directed splits."""
+
 from typing import Dict, List
 import time
 import copy
@@ -8,7 +10,7 @@ import pickle
 import numpy as np
 
 from pytens.algs import TensorNetwork, SVDConfig
-from pytens.search.state import SearchState, Action, SplitIndex
+from pytens.search.state import SearchState, Action, OSplit
 from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 
 
@@ -17,12 +19,12 @@ class PartitionSearch:
 
     def __init__(self, params):
         self.params = params
-        self.best_network = None
-        self.tic = 0
         self.stats = {
             "unique": {},
             "compression": [],
             "count": 0,
+            "tic": 0,
+            "best_network": None,
         }
         self.constraint_engine = ConstraintSearch(params)
         self.costs = {}
@@ -35,7 +37,8 @@ class PartitionSearch:
         new_st: SearchState,
         best_cost: List[int],
         result_queue: multiprocessing.Queue,
-    ):
+    ) -> List[int]:
+        """Call a constraint solver to estimate the cost of a given network."""
         if self.params["fit_mode"] == "topk":
             rank, cost = self.constraint_engine.get_cost(new_st, best_cost[-1])
             if cost != BAD_SCORE:
@@ -47,20 +50,24 @@ class PartitionSearch:
             self.ranks[tuple(new_st.past_actions)] = rank
 
             return best_cost
-        else:
+
+        if self.params["fit_mode"] == "all":
             # equally distribute the errors between steps
             delta = self.delta / np.sqrt(len(new_st.past_actions))
             for ac in new_st.past_actions:
-                # index_ac = ac.to_index(st, idx)
+                # index_ac = ac.to_osplit(st, idx)
                 index_ac = ac
                 index_ac.delta = delta
 
             self.replay(init_st, new_st.past_actions, result_queue, True)
             return best_cost
 
+        return best_cost
+
     def pseudo_action_execution(self, curr_st: SearchState, action: Action):
-        if isinstance(action, SplitIndex):
-            split_ac = action.to_split(curr_st.network)
+        """Perform a split without actual data computation."""
+        if isinstance(action, OSplit):
+            split_ac = action.to_isplit(curr_st.network)
         else:
             split_ac = action
 
@@ -114,9 +121,7 @@ class PartitionSearch:
                 self.stats["best_acs"] = acs
                 self.replay(st, acs, result_queue, True)
 
-        result_queue.put(
-            {"best_network": self.best_network, "stats": self.stats}
-        )
+        result_queue.put(self.stats)
 
     def replay(
         self,
@@ -137,8 +142,8 @@ class PartitionSearch:
                 # plt.show()
                 # plt.savefig(f"debug_{n}.png")
                 # plt.close()
-                if net.cost() < self.best_network.cost():
-                    self.best_network = net
+                if net.cost() < self.stats["best_network"].cost():
+                    self.stats["best_network"] = net
 
             return
 
@@ -151,18 +156,16 @@ class PartitionSearch:
         else:
             svd = None
         # print("new action", new_ac)
-        for new_st in st.take_action(
-            ac, svd=svd, split_errors=self.params["split_errors"]
-        ):
+        for new_st in st.take_action(ac, svd=svd, params=self.params):
             # print(ac)
-            # if self.best_network.cost() > new_st.network.cost():
-            #     self.best_network = new_st.network
+            # if self.stats["best_network"].cost() > new_st.network.cost():
+            #     self.stats["best_network"] = new_st.network
             # new_st.network.draw()
             # plt.show()
 
             self.stats["compression"].append(
                 (
-                    time.time() - self.tic,
+                    time.time() - self.stats["tic"],
                     new_st.network.cost(),
                 )
             )
@@ -184,31 +187,32 @@ class PartitionSearch:
 
         _ = self.get_cost(init_st, new_st, net.cost(), None)
 
-        self.best_network = net
+        self.stats["best_network"] = net
         # get the smallest
         costs = sorted([(v, k) for k, v in self.costs.items()])
         # print(costs[:5])
         # try the top 10?
-        for c, acs in costs[:1]:
+        for c, actions in costs[:1]:
             print("expect cost", c)
-            print([str(ac) for ac in acs], self.ranks[acs])
-            for k, ac in enumerate(acs):
-                ac.target_size = self.ranks[acs][k]
+            print([str(ac) for ac in actions], self.ranks[actions])
+            for k, ac in enumerate(actions):
+                ac.target_size = self.ranks[actions][k]
 
-            self.stats["best_acs"] = acs
-            self.replay(init_st, acs, None, True)
+            self.stats["best_acs"] = actions
+            self.replay(init_st, actions, None, True)
 
-        self.stats["time"] = time.time() - self.tic
-        self.stats["preprocess"] = preprocess_end - self.tic
-        self.stats["best_network"] = self.best_network
+        self.stats["time"] = time.time() - self.stats["tic"]
+        self.stats["preprocess"] = preprocess_end - self.stats["tic"]
+        self.stats["best_network"] = self.stats["best_network"]
         self.stats["cr_core"] = (
             float(np.prod([i.size for i in free_indices]))
-            / self.best_network.cost()
+            / self.stats["best_network"].cost()
         )
-        self.stats["cr_start"] = net.cost() / self.best_network.cost()
+        self.stats["cr_start"] = net.cost() / self.stats["best_network"].cost()
         self.stats["reconstruction_error"] = float(
             np.linalg.norm(
-                self.best_network.contract().value - net.contract().value
+                self.stats["best_network"].contract().value
+                - net.contract().value
             )
             / np.linalg.norm(net.contract().value)
         )
@@ -220,7 +224,7 @@ class PartitionSearch:
         """
         if self.params["replay_from"] is not None:
             start = time.time()
-            self.tic = start
+            self.stats["tic"] = start
             with open(self.params["replay_from"], "rb") as ac_file:
                 acs = pickle.load(ac_file)
 
@@ -231,7 +235,7 @@ class PartitionSearch:
         if "core" not in self.params["start_from"]:
             raise ValueError("Only starting from single cores is supported")
 
-        self.best_network = net
+        self.stats["best_network"] = net
 
         delta = net.norm() * self.params["eps"]
         self.delta = delta
@@ -241,7 +245,8 @@ class PartitionSearch:
         start = time.time()
         # print(start)
         self.constraint_engine.preprocess(
-            net.contract(), compute_uv=self.params["fit_mode"] == "all"
+            net.contract(),
+            compute_uv=self.params["fit_mode"] == "all",
         )
         print("preprocessing time", time.time() - start)
         toc1 = time.time()
@@ -251,9 +256,9 @@ class PartitionSearch:
         #     # pickle.dump(self.constraint_engine, f)
         #     self.constraint_engine = pickle.load(f)
 
-        # tmp_indices = [SplitIndex([Index("I3", 120), Index("I4", 12)]),
-        #                SplitIndex([Index("I2", 120)]),
-        #                SplitIndex([Index("I0", 3), Index("I1", 1122)])]
+        # tmp_indices = [OSplit([Index("I3", 120), Index("I4", 12)]),
+        #                OSplit([Index("I2", 120)]),
+        #                OSplit([Index("I0", 3), Index("I1", 1122)])]
         # replay_ranks = {
         #     tmp_indices[0]: 120,
         #     tmp_indices[1]: 40,
@@ -266,14 +271,12 @@ class PartitionSearch:
 
         # self.replay(init_st, tmp_indices, replay_ranks)
 
-        self.tic = time.time()
+        self.stats["tic"] = time.time()
         q = multiprocessing.Queue()
         p = multiprocessing.Process(target=self.fill_holes, args=(init_st, q))
         p.start()
         try:
-            result = q.get(timeout=self.params["timeout"])
-            self.best_network = result["best_network"]
-            self.stats = result["stats"]
+            self.stats = q.get(timeout=self.params["timeout"])
             p.join(timeout=self.params["timeout"])
         except (multiprocessing.TimeoutError, queue.Empty):
             pass
@@ -287,15 +290,15 @@ class PartitionSearch:
         print(toc2, start)
         self.stats["time"] = toc2 - start
         self.stats["preprocess"] = toc1 - start
-        self.stats["best_network"] = self.best_network
         self.stats["cr_core"] = (
             float(np.prod([i.size for i in free_indices]))
-            / self.best_network.cost()
+            / self.stats["best_network"].cost()
         )
-        self.stats["cr_start"] = net.cost() / self.best_network.cost()
+        self.stats["cr_start"] = net.cost() / self.stats["best_network"].cost()
         self.stats["reconstruction_error"] = float(
             np.linalg.norm(
-                self.best_network.contract().value - net.contract().value
+                self.stats["best_network"].contract().value
+                - net.contract().value
             )
             / np.linalg.norm(net.contract().value)
         )

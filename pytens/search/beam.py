@@ -3,11 +3,11 @@
 import time
 import heapq
 
-from typing import List, Optional
+from typing import List
 import torch
 
-from pytens.search.state import SearchState, Split
-from pytens.search.nn import RLTrainer
+from pytens.search.state import SearchState, ISplit
+# from pytens.search.nn import RLTrainer
 
 
 class BeamSearch:
@@ -39,7 +39,8 @@ class BeamSearch:
         tic = time.time()
         trainer = None
         if guided:
-            trainer = RLTrainer(self.params)
+            # trainer = RLTrainer(self.params)
+            trainer = None
             with open("models/value.pkl", "rb") as value_model:
                 trainer.value_net.load_state_dict(
                     torch.load(value_model, weights_only=True)
@@ -64,15 +65,15 @@ class BeamSearch:
         # self.stats["unique"] = len(self.stats["unique"])
         # print(self.stats)
 
-    def get_score(self, st: SearchState, trainer: Optional[RLTrainer] = None):
+    def get_score(self, st: SearchState, trainer=None):
         """Get the prediction score for a given state."""
         if trainer is None:
             return (st.curr_delta**2) / st.network.cost()
-        else:
-            st_encoding = trainer.state_to_torch(st)
-            return trainer.value_net(st_encoding)
 
-    def step(self, tic, trainer: Optional[RLTrainer] = None):
+        st_encoding = trainer.state_to_torch(st)
+        return trainer.value_net(st_encoding)
+
+    def step(self, tic, trainer=None):
         """Make a step in a beam search."""
         next_level = []
 
@@ -88,11 +89,7 @@ class BeamSearch:
             # plt.show()
             for ac in state.get_legal_actions():
                 action_start = time.time()
-                for new_state in state.take_action(
-                    ac,
-                    split_errors=self.params["split_errors"],
-                    no_heuristic=self.params["no_heuristic"],
-                ):
+                for new_state in state.take_action(ac, params=self.params):
                     if new_state.is_noop:
                         continue
 
@@ -134,7 +131,7 @@ class BeamSearch:
                     #     new_state.network.draw()
                     #     plt.show()
 
-                if isinstance(ac, Split):
+                if isinstance(ac, ISplit):
                     self.stats["split time"] += time.time() - action_start
                     self.stats["split"] += 1
                 else:

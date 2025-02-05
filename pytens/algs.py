@@ -315,6 +315,7 @@ class EinsumArgs:
         self.output_str = self.output_str.replace(value, replacement)
 
 
+# pylint: disable=R0904
 class TensorNetwork:
     """Tensor Network Base Class."""
 
@@ -942,8 +943,8 @@ class TensorNetwork:
             visited[name] = 2
             if consider_ranks:
                 return hash((self_free_indices, ranks, sorted_children_rs))
-            else:
-                return hash((self_free_indices, sorted_children_rs))
+
+            return hash((self_free_indices, sorted_children_rs))
 
         return _postorder(root)
 
@@ -1081,7 +1082,7 @@ class TensorNetwork:
                     cmap=plt.get_cmap("Accent"),
                     # with_label=with_label[group]
                 )
-                node_labels = {node: node for node in node_groups[group]}
+                node_labels = {node: node for node in nodes}
                 nx.draw_networkx_labels(
                     new_graph, pos, ax=ax, labels=node_labels, font_size=12
                 )

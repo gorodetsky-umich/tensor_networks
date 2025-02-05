@@ -5,7 +5,7 @@ import random
 import time
 from typing import Self
 
-from pytens.search.state import SearchState, Split
+from pytens.search.state import SearchState, ISplit
 
 
 class Node:
@@ -55,7 +55,7 @@ class Node:
         action = random.choice(untried_actions)
         start = time.time()
         next_state = self.state.take_action(action)
-        if isinstance(action, Split):
+        if isinstance(action, ISplit):
             print(
                 "completing the action",
                 action,
