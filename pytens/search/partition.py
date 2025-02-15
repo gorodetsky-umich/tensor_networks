@@ -7,7 +7,8 @@ import multiprocessing
 import queue
 import pickle
 import atexit
-import shutil
+import glob
+import os
 
 import numpy as np
 
@@ -18,7 +19,12 @@ from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 
 def remove_temp_dir(temp_dir):
     try:
-        shutil.rmtree(temp_dir)
+        for npfile in glob.glob(f"temp_dir/*.npz"):
+            os.remove(npfile)
+
+        if len(os.listdir(temp_dir)) == 0:
+            os.rmdir(temp_dir)
+
     except FileNotFoundError:
         pass
     except Exception as e:
