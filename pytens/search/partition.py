@@ -10,6 +10,7 @@ import pickle
 import numpy as np
 
 from pytens.algs import TensorNetwork, SVDConfig
+from pytens.search.configuration import SearchConfig
 from pytens.search.state import SearchState, Action, OSplit
 from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 
@@ -17,8 +18,8 @@ from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 class PartitionSearch:
     """Search by partitions free indices"""
 
-    def __init__(self, params):
-        self.params = params
+    def __init__(self, config: SearchConfig):
+        self.config = config
         self.stats = {
             "unique": {},
             "compression": [],
@@ -26,7 +27,7 @@ class PartitionSearch:
             "tic": 0,
             "best_network": None,
         }
-        self.constraint_engine = ConstraintSearch(params)
+        self.constraint_engine = ConstraintSearch(config)
         self.costs = {}
         self.ranks = {}
         self.delta = 0
@@ -39,19 +40,19 @@ class PartitionSearch:
         result_queue: multiprocessing.Queue,
     ) -> List[int]:
         """Call a constraint solver to estimate the cost of a given network."""
-        if self.params["fit_mode"] == "topk":
+        if self.config.rank_search.fit_mode == "topk":
             rank, cost = self.constraint_engine.get_cost(new_st, best_cost[-1])
             if cost != BAD_SCORE:
                 best_cost.append(cost)
                 best_cost = sorted(best_cost)
-                if len(best_cost) > self.params["k"]:
-                    best_cost = best_cost[: self.params["k"]]
+                if len(best_cost) > self.config.rank_search.k:
+                    best_cost = best_cost[: self.config.rank_search.k]
             self.costs[tuple(new_st.past_actions)] = cost
             self.ranks[tuple(new_st.past_actions)] = rank
 
             return best_cost
 
-        if self.params["fit_mode"] == "all":
+        if self.config.rank_search.fit_mode == "all":
             # equally distribute the errors between steps
             delta = self.delta / np.sqrt(len(new_st.past_actions))
             for ac in new_st.past_actions:
@@ -91,11 +92,12 @@ class PartitionSearch:
         sts = [st]
         # best_costs = [st.network.cost()]
         best_cost = [st.network.cost()]
-        for _ in range(1, self.params["max_ops"] + 1):
+        for _ in range(1, self.config.engine.max_ops + 1):
             next_sts = []
             for curr_st in sts:
+                is_osplit = self.config.synthesizer.action_type == "osplit"
                 for action in curr_st.get_legal_actions(
-                    index_actions=self.params["action_type"] == "output"
+                    index_actions=is_osplit
                 ):
                     new_st = self.pseudo_action_execution(curr_st, action)
                     self.stats["count"] += 1
@@ -106,15 +108,13 @@ class PartitionSearch:
 
             sts = next_sts
 
-        if self.params["fit_mode"] == "topk":
+        if self.config.rank_search.fit_mode == "topk":
             # get the smallest and
             # replay with error splits around the estimated ranks
             costs = sorted([(v, k) for k, v in self.costs.items()])
             # print(costs[:5])
             # try the top 10?
-            for c, acs in costs[: self.params["k"]]:
-                print("expect cost", c)
-                print([str(ac) for ac in acs], self.ranks[acs])
+            for _, acs in costs[: self.config.rank_search.k]:
                 for k, ac in enumerate(acs):
                     ac.target_size = self.ranks[acs][k]
 
@@ -149,14 +149,14 @@ class PartitionSearch:
 
         # print("replaying actions:", [str(ac) for ac in actions])
         ac = actions[0]
-        if first_iter and self.params["fit_mode"] == "all":
+        if first_iter and self.config.rank_search.fit_mode == "all":
             svd_file = self.constraint_engine.first_steps.get(ac, None)
             svd_data = np.load(svd_file)
             svd = (svd_data["u"], svd_data["s"], svd_data["v"])
         else:
             svd = None
         # print("new action", new_ac)
-        for new_st in st.take_action(ac, svd=svd, params=self.params):
+        for new_st in st.take_action(ac, svd=svd, config=self.config):
             # print(ac)
             # if self.stats["best_network"].cost() > new_st.network.cost():
             #     self.stats["best_network"] = new_st.network
@@ -176,7 +176,7 @@ class PartitionSearch:
     def rank_search_and_replay(self, net: TensorNetwork, acs: List[Action]):
         """Replay actions on the given tensor network."""
         preprocess_end = time.time()
-        delta = net.norm() * self.params["eps"]
+        delta = net.norm() * self.config.engine.eps
         self.delta = delta
         init_st = SearchState(net, delta)
         free_indices = net.free_indices()
@@ -190,11 +190,7 @@ class PartitionSearch:
         self.stats["best_network"] = net
         # get the smallest
         costs = sorted([(v, k) for k, v in self.costs.items()])
-        # print(costs[:5])
-        # try the top 10?
-        for c, actions in costs[:1]:
-            print("expect cost", c)
-            print([str(ac) for ac in actions], self.ranks[actions])
+        for _, actions in costs[:1]:
             for k, ac in enumerate(actions):
                 ac.target_size = self.ranks[actions][k]
 
@@ -222,22 +218,19 @@ class PartitionSearch:
         """Start the search from a given network.
         Only support single core now.
         """
-        if self.params["replay_from"] is not None:
+        if self.config.synthesizer.replay_from is not None:
             start = time.time()
             self.stats["tic"] = start
-            with open(self.params["replay_from"], "rb") as ac_file:
+            with open(self.config.synthesizer.replay_from, "rb") as ac_file:
                 acs = pickle.load(ac_file)
 
             # preprocess only for the given actions
             self.constraint_engine.preprocess(net.contract(), acs)
             return self.rank_search_and_replay(net, acs)
 
-        if "core" not in self.params["start_from"]:
-            raise ValueError("Only starting from single cores is supported")
-
         self.stats["best_network"] = net
 
-        delta = net.norm() * self.params["eps"]
+        delta = net.norm() * self.config.engine.eps
         self.delta = delta
         init_st = SearchState(net, delta)
         free_indices = net.free_indices()
@@ -246,48 +239,24 @@ class PartitionSearch:
         # print(start)
         self.constraint_engine.preprocess(
             net.contract(),
-            compute_uv=self.params["fit_mode"] == "all",
+            compute_uv=self.config.rank_search.fit_mode == "all",
         )
-        print("preprocessing time", time.time() - start)
         toc1 = time.time()
-
-        # with open("constraint_engine.pkl", "rb") as f:
-        #     import pickle
-        #     # pickle.dump(self.constraint_engine, f)
-        #     self.constraint_engine = pickle.load(f)
-
-        # tmp_indices = [OSplit([Index("I3", 120), Index("I4", 12)]),
-        #                OSplit([Index("I2", 120)]),
-        #                OSplit([Index("I0", 3), Index("I1", 1122)])]
-        # replay_ranks = {
-        #     tmp_indices[0]: 120,
-        #     tmp_indices[1]: 40,
-        #     tmp_indices[2]: 792,
-        # }
-        # for ind in tmp_indices:
-        #     sums, sizes = self.constraint_engine.split_actions[ind]
-        #     print(sums)
-        #     print(sizes)
-
-        # self.replay(init_st, tmp_indices, replay_ranks)
 
         self.stats["tic"] = time.time()
         q = multiprocessing.Queue()
         p = multiprocessing.Process(target=self.fill_holes, args=(init_st, q))
         p.start()
         try:
-            self.stats = q.get(timeout=self.params["timeout"])
-            p.join(timeout=self.params["timeout"])
+            self.stats = q.get(timeout=self.config.engine.timeout)
+            p.join(timeout=self.config.engine.timeout)
         except (multiprocessing.TimeoutError, queue.Empty):
             pass
         finally:
             if p.is_alive():
                 p.kill()
-        # self.fill_holes(init_st, queue)
-        # result = queue.get(timeout=self.params["timeout"])
         toc2 = time.time()
 
-        print(toc2, start)
         self.stats["time"] = toc2 - start
         self.stats["preprocess"] = toc1 - start
         self.stats["cr_core"] = (

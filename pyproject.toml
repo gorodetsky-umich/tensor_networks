@@ -28,12 +28,10 @@ dependencies = [
   "flake8",
   "flake8-pyproject",
   "pydantic", # better dataclasses
-  "tensorboard",
-  "torchgeo"
 ]
 
 [tool.setuptools]
-packages = ["pytens", "htucker", "benchmarks"]
+packages = ["pytens"]
 
 
 [project.urls]
@@ -41,6 +39,8 @@ Documentation = "https://github.com/unknown/temporary#readme"
 Issues = "https://github.com/unknown/temporary/issues"
 Source = "https://github.com/unknown/temporary"
 
+[project.optional-dependencies]
+search = ["gurobipy"]
 
 [tool.pylint.main]
 analyse-fallback-blocks = false

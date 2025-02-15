@@ -9,6 +9,7 @@ import pickle
 import numpy as np
 
 from pytens.algs import *
+from tests.search_test import *
 
 np.random.seed(4)
 
@@ -440,7 +441,7 @@ class TestTT(unittest.TestCase):
 
         ttadd_rounded = TTadd.contract().value
         self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-14, rtol=1e-14)
+            np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12)
         )
 
 

@@ -1,6 +1,6 @@
 """Linear constraints for finding best rank assignment."""
 
-from typing import List, Dict, Sequence
+from typing import List, Sequence
 import itertools
 import os
 
@@ -9,6 +9,7 @@ from gurobipy import GRB
 import numpy as np
 
 from pytens.algs import Tensor, Index
+from pytens.search.configuration import SearchConfig
 from pytens.search.state import OSplit, SearchState, Action
 
 BAD_SCORE = 9999999999999
@@ -17,9 +18,15 @@ BAD_SCORE = 9999999999999
 class ILPSolver:
     """An ILP solver to find near-optimal rank assignments."""
 
-    def __init__(self, params: Dict):
-        self.params = params
-        self.model = gp.Model("A model")
+    def __init__(self, config: SearchConfig):
+        self.config = config
+        # Create empty environment, set options and start
+        env = gp.Env(empty=True)
+        env.setParam("OutputFlag", 0)
+        env.setParam("TimeLimit", 60)
+        env.start()
+        self.env = env
+        self.model = gp.Model("A model", env=env)
         self.vars = gp.tupledict()
 
     def add_var(self, ind: Index):
@@ -105,8 +112,8 @@ class ILPSolver:
 class ConstraintSearch:
     """Search rank assignments by constraint solving."""
 
-    def __init__(self, params):
-        self.params = params
+    def __init__(self, config: SearchConfig):
+        self.config = config
 
         self.split_actions = {}
         self.first_steps = {}
@@ -120,7 +127,7 @@ class ConstraintSearch:
         s_sizes = [1]
         s_sums = [s[-1] ** 2]
 
-        chunk_size = self.params["bin_size"] * self.delta**2
+        chunk_size = self.config.synthesizer.bin_size * self.delta**2
         truncation_values = [
             x for x in np.cumsum(np.flip(s) ** 2) if x <= self.delta**2
         ]
@@ -166,15 +173,15 @@ class ConstraintSearch:
             )
             # save to file to avoid memory explosion
             file_name = (
-                f"{self.params['output_dir']}/{len(self.first_steps)}.npz"
+                f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"
             )
             np.savez(file_name, u=u, s=s, v=v)
             self.first_steps[OSplit(comb)] = file_name
         else:
             file_name = (
-                f"{self.params['output_dir']}/{len(self.first_steps)}.npz"
+                f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"
             )
-            if not self.params["force_preprocess"] and os.path.exists(
+            if not self.config.preprocess.force_recompute and os.path.exists(
                 file_name
             ):
                 data = np.load(file_name)
@@ -199,7 +206,7 @@ class ConstraintSearch:
         """
         free_indices = target_tensor.indices
         x_norm = np.linalg.norm(target_tensor.value)
-        self.delta = self.params["eps"] * x_norm
+        self.delta = self.config.engine.eps * x_norm
         if acs is not None:
             for ac in acs:
                 comb = ac.indices
@@ -216,8 +223,6 @@ class ConstraintSearch:
     def get_cost(self, st: SearchState, upper: int):
         """Compute cost for a given set of splits."""
         solver = ILPSolver({})
-        solver.model.params.OutputFlag = 0
-        solver.model.params.TimeLimit = 60
 
         pfsums = {}
         # extract nodes from the current network
@@ -268,6 +273,11 @@ class ConstraintSearch:
                     if v == ind:
                         result[k] = ind_size
                         break
+
+            solver.model.dispose()
+            solver.env.dispose()
             return result, st.network.cost()
         except AttributeError:
+            solver.model.dispose()
+            solver.env.dispose()
             return {}, BAD_SCORE

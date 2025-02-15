@@ -8,6 +8,7 @@ import numpy as np
 import networkx as nx
 
 from pytens.algs import NodeName, TensorNetwork, Index, SVDConfig
+from pytens.search.configuration import SearchConfig
 
 
 class Action:
@@ -33,7 +34,7 @@ class OSplit(Action):
         target_size: Optional[int] = None,
         delta: Optional[float] = None,
     ):
-        self.indices = indices
+        self.indices = sorted(indices)
         self.target_size = target_size
         self.delta = delta
 
@@ -164,13 +165,31 @@ class ISplit(Action):
         node: NodeName,
         left_indices: Sequence[int],
         target_size: Optional[int] = None,
+        delta: Optional[float] = None,
     ):
         self.node = node
-        self.left_indices = left_indices
+        self.left_indices = sorted(left_indices)
         self.target_size = target_size
+        self.delta = delta
 
     def __str__(self) -> str:
         return f"ISplit({self.node}, {self.left_indices})"
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, ISplit):
+            return False
+
+        if self.node != other.node:
+            return False
+
+        if len(self.left_indices) != len(other.left_indices):
+            return False
+
+        for i, j in zip(self.left_indices, other.left_indices):
+            if i != j:
+                return False
+
+        return True
 
     def execute(
         self, net: TensorNetwork, svd: Tuple[np.ndarray] = None
@@ -328,8 +347,8 @@ class SearchState:
         self,
         new_net: TensorNetwork,
         usv: Tuple[Tuple[NodeName, NodeName, NodeName], int],
+        config: SearchConfig,
         target_size: int = None,
-        params: dict = None,
     ) -> Generator["SearchState", None, None]:
         """Truncate the node u, s, v in the specified tensor network."""
         [u, s, v], max_sz = usv
@@ -346,15 +365,26 @@ class SearchState:
             else:
                 break
 
-        if (
-            params is not None
-            and not params["no_heuristic"]
-            and len(truncpost) == 0
-            and max_sz == len(s_val)
-        ):
+        if len(truncpost) == 0:
+            if config.heuristics.prune_full_rank and max_sz == len(s_val):
+                return
+
+            tmp_net = copy.deepcopy(new_net)
+            tmp_net.merge(v, s)
+
+            remaining_delta = self.curr_delta
+            new_state = SearchState(
+                tmp_net,
+                remaining_delta,
+                max_ops=self.max_ops,
+                threshold=self.threshold,
+            )
+            new_state.links.append(tmp_net.get_contraction_index(u, v)[0].name)
+
+            yield new_state
             return
 
-        split_errors = params["split_errors"] if params is not None else 1
+        split_errors = config.rank_search.error_split_stepsize
         if target_size is not None:
             target_trunc = max(len(s_val) - target_size + split_errors // 2, 0)
             truncpost = truncpost[:target_trunc]
@@ -401,8 +431,8 @@ class SearchState:
     def take_action(
         self,
         action: Action,
+        config: SearchConfig,
         svd: Tuple[np.ndarray] = None,
-        params: dict = None,
     ) -> Generator["SearchState", None, None]:
         """Return a new GameState after taking the specified action."""
         if isinstance(action, (ISplit, OSplit)):
@@ -419,7 +449,10 @@ class SearchState:
                 # we allow specify the node values
                 exec_result = action.execute(new_net, svd)
                 for new_state in self.truncate(
-                    new_net, exec_result, action.target_size, params
+                    new_net,
+                    exec_result,
+                    config=config,
+                    target_size=action.target_size,
                 ):
                     new_state.past_actions = self.past_actions + [action]
                     yield new_state
