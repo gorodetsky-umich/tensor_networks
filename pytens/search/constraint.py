@@ -172,6 +172,9 @@ class ConstraintSearch:
                 tensor_val.reshape(left_size, -1), False, True
             )
             # save to file to avoid memory explosion
+            if not os.path.exists(self.config.output.output_dir):
+                os.makedirs(self.config.output.output_dir)
+
             file_name = (
                 f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"
             )

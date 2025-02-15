@@ -6,6 +6,8 @@ import copy
 import multiprocessing
 import queue
 import pickle
+import atexit
+import shutil
 
 import numpy as np
 
@@ -14,6 +16,13 @@ from pytens.search.configuration import SearchConfig
 from pytens.search.state import SearchState, Action, OSplit
 from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 
+def remove_temp_dir(temp_dir):
+    try:
+        shutil.rmtree(temp_dir)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"Error removing directory: {e}")
 
 class PartitionSearch:
     """Search by partitions free indices"""
@@ -28,6 +37,7 @@ class PartitionSearch:
             "best_network": None,
         }
         self.constraint_engine = ConstraintSearch(config)
+        atexit.register(remove_temp_dir, config.output.output_dir)
         self.costs = {}
         self.ranks = {}
         self.delta = 0

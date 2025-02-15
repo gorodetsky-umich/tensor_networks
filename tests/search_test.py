@@ -148,28 +148,6 @@ class TestSearch(unittest.TestCase):
         self.net = TensorNetwork()
         self.net.add_node("G", tensor)
 
-        config_str = json.dumps({
-            "synthesizer": {
-                "action_type": "osplit",
-            },
-            "rank_search": {
-                "fit_mode": "topk",
-                "k": 1,
-            },
-        })
-        self.osplit_config = SearchConfig.load(config_str)
-
-        config_str = json.dumps({
-            "synthesizer": {
-                "action_type": "isplit",
-            },
-            "rank_search": {
-                "fit_mode": "topk",
-                "k": 1,
-            },
-        })
-        self.isplit_config = SearchConfig.load(config_str)
-
         return super().setUp()
     
     def test_dfs(self):
@@ -200,6 +178,19 @@ class TestSearch(unittest.TestCase):
         config = SearchConfig()
         config.engine.eps = 0.5
         config.engine.verbose = True
+        search_engine = SearchEngine(config=config)
+        stats = search_engine.partition_search(self.net)
+        self.assertEqual(stats["count"], 7)
+
+        bn = stats["best_network"]
+        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
+        self.assertLessEqual(bn.cost(), self.net.cost())
+
+    def test_partition_all(self):
+        config = SearchConfig()
+        config.engine.eps = 0.5
+        config.engine.verbose = True
+        config.rank_search.fit_mode = "all"
         search_engine = SearchEngine(config=config)
         stats = search_engine.partition_search(self.net)
         self.assertEqual(stats["count"], 7)
