@@ -1,6 +1,5 @@
 """Utility function for structure search."""
 
-import glob
 import os
 
 import numpy as np
@@ -54,11 +53,11 @@ def log_stats(
     search_stats["unique"][ukey] = search_stats["unique"].get(ukey, 0) + 1
 
 
-def remove_temp_dir(temp_dir):
+def remove_temp_dir(temp_dir, temp_files):
     """Remove temporary npz files"""
     try:
-        for npfile in glob.glob(f"{temp_dir}/*.npz"):
-            os.remove(npfile)
+        for temp_file in temp_files:
+            os.remove(temp_file)
 
         if len(os.listdir(temp_dir)) == 0:
             os.rmdir(temp_dir)

@@ -117,6 +117,7 @@ class ConstraintSearch:
 
         self.split_actions = {}
         self.first_steps = {}
+        self.temp_files = []
         self.delta = 0
 
     def abstract(self, s):
@@ -180,6 +181,7 @@ class ConstraintSearch:
             )
             np.savez(file_name, u=u, s=s, v=v)
             self.first_steps[OSplit(comb)] = file_name
+            self.temp_files.append(file_name)
         else:
             file_name = (
                 f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"

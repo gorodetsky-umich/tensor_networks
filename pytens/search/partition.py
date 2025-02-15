@@ -30,7 +30,6 @@ class PartitionSearch:
             "best_network": None,
         }
         self.constraint_engine = ConstraintSearch(config)
-        atexit.register(remove_temp_dir, config.output.output_dir)
         self.costs = {}
         self.ranks = {}
         self.delta = 0
@@ -229,6 +228,12 @@ class PartitionSearch:
 
             # preprocess only for the given actions
             self.constraint_engine.preprocess(net.contract(), acs)
+            if self.config.output.remove_temp_after_run:
+                atexit.register(
+                    remove_temp_dir,
+                    self.config.output.output_dir,
+                    self.constraint_engine.temp_files,
+                )
             return self.rank_search_and_replay(net, acs)
 
         self.stats["best_network"] = net
@@ -244,6 +249,12 @@ class PartitionSearch:
             net.contract(),
             compute_uv=self.config.rank_search.fit_mode == "all",
         )
+        if self.config.output.remove_temp_after_run:
+            atexit.register(
+                remove_temp_dir,
+                self.config.output.output_dir,
+                self.constraint_engine.temp_files,
+            )
         toc1 = time.time()
 
         self.stats["tic"] = time.time()

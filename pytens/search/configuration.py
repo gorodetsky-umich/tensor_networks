@@ -101,6 +101,10 @@ class OutputConfig(pydantic.BaseModel):
         default="./output",
         description="Directory for storing temp data, results, and logs",
     )
+    remove_temp_after_run: bool = pydantic.Field(
+        default=True,
+        description="Configuration for removing temp data before termination",
+    )
 
 
 class PreprocessConfig(pydantic.BaseModel):
