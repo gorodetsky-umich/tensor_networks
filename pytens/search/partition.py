@@ -7,8 +7,6 @@ import multiprocessing
 import queue
 import pickle
 import atexit
-import glob
-import os
 
 import numpy as np
 
@@ -16,19 +14,8 @@ from pytens.algs import TensorNetwork, SVDConfig
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import SearchState, Action, OSplit
 from pytens.search.constraint import ConstraintSearch, BAD_SCORE
+from pytens.search.utils import remove_temp_dir
 
-def remove_temp_dir(temp_dir):
-    try:
-        for npfile in glob.glob(f"temp_dir/*.npz"):
-            os.remove(npfile)
-
-        if len(os.listdir(temp_dir)) == 0:
-            os.rmdir(temp_dir)
-
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"Error removing directory: {e}")
 
 class PartitionSearch:
     """Search by partitions free indices"""

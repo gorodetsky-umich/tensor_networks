@@ -62,9 +62,9 @@ class Tensor:
 
     def update_val_size(self, value: np.ndarray) -> Self:
         """Update the tensor with a new value."""
-        assert value.ndim == len(
-            self.indices
-        ), f"{value.shape}, {self.indices}"
+        assert value.ndim == len(self.indices), (
+            f"{value.shape}, {self.indices}"
+        )
         self.value = value
         for ii, index in enumerate(self.indices):
             self.indices[ii] = index.with_new_size(value.shape[ii])
@@ -1141,7 +1141,7 @@ def rand_tt(indices: List[Index], ranks: List[int]) -> TensorNetwork:
 
     core = 1
     for ii, index in enumerate(indices[1:-1]):
-        r.append(Index(f"r{ii+2}", ranks[ii + 1]))
+        r.append(Index(f"r{ii + 2}", ranks[ii + 1]))
         tt.add_node(
             core,
             Tensor(
@@ -1178,7 +1178,7 @@ def tt_rank1(indices: List[Index], vals: List[np.ndarray]) -> TensorNetwork:
 
     core = 1
     for ii, index in enumerate(indices[1:-1]):
-        r.append(Index(f"r{ii+2}", 1))
+        r.append(Index(f"r{ii + 2}", 1))
         new_tens = Tensor(
             vals[ii + 1][np.newaxis, :, np.newaxis], [r[ii], index, r[ii + 1]]
         )
@@ -1202,7 +1202,7 @@ def tt_separable(
     tt = TensorNetwork()
     ranks = []
     for ii, index in enumerate(indices):
-        ranks.append(Index(f"r_{ii+1}", 2))
+        ranks.append(Index(f"r_{ii + 1}", 2))
         if ii == 0:
             val = np.ones((index.size, 2))
             val[:, 0] = funcs[ii]
@@ -1554,9 +1554,9 @@ def multiply_core_unfolding(  # pylint: disable=R0912
         n = cores_list[0].shape[1]
 
         if v_unfolding and (not transpose):
-            assert (
-                cols == rk_sum * n
-            ), f"Dimension mismatch {cols} != {rk_sum*n}"
+            assert cols == rk_sum * n, (
+                f"Dimension mismatch {cols} != {rk_sum * n}"
+            )
             res = np.zeros((rows, rk1_sum))
             for i in range(n_cores):
                 res[:, rk1_cumsum[i] : rk1_cumsum[i + 1]] = mat[
@@ -1565,9 +1565,9 @@ def multiply_core_unfolding(  # pylint: disable=R0912
             return res
 
         if (not v_unfolding) and (transpose):
-            assert (
-                cols == rk1_sum * n
-            ), f"Dimension mismatch {cols} != {rk1_sum*n}"
+            assert cols == rk1_sum * n, (
+                f"Dimension mismatch {cols} != {rk1_sum * n}"
+            )
             res = np.zeros((rows, rk_sum))
             for i in range(n_cores):
                 ind = get_indices(cols, rk1_sum, rk1[i], rk1_cumsum[i])
@@ -1727,9 +1727,11 @@ class TTRandRound:
             self.d = y.network.number_of_nodes()
 
         else:
-            raise ValueError(f"Invalid type for y ({type(y)}). \
+            raise ValueError(
+                f"Invalid type for y ({type(y)}). \
                              Argument y only accepts a list of \
-                             TensorNetworks or a TensorNetwork")
+                             TensorNetworks or a TensorNetwork"
+            )
 
     def init_rand_mat(self, ranks: Optional[List] = None) -> List[np.ndarray]:
         """Generates a list of random TT-cores. Individual entries
@@ -1968,7 +1970,7 @@ def ttop_rank1(
     )
     tt_op.add_node(0, a1_tens)
     for ii in range(1, dim):
-        rank_indices.append(Index(f"{rank_name_prefix}_r{ii+1}", 1))
+        rank_indices.append(Index(f"{rank_name_prefix}_r{ii + 1}", 1))
         if ii < dim - 1:
             eye = cores[ii][np.newaxis, :, :, np.newaxis]
             eye_tens = Tensor(
@@ -2017,7 +2019,7 @@ def ttop_rank2(
 
     tt_op.add_node(0, a1_tens)
     for ii in range(1, dim):
-        rank_indices.append(Index(f"{rank_name_prefix}_r{ii+1}", 2))
+        rank_indices.append(Index(f"{rank_name_prefix}_r{ii + 1}", 2))
         if ii < dim - 1:
             core = np.zeros((2, indices_out[ii].size, indices_in[ii].size, 2))
             core[0, :, :, 0] = cores_r1[ii]
@@ -2068,7 +2070,7 @@ def ttop_sum(
 
     tt_op.add_node(0, a1_tens)
     for ii in range(1, dim):
-        rank_indices.append(Index(f"{rank_name_prefix}_r{ii+1}", num_sum))
+        rank_indices.append(Index(f"{rank_name_prefix}_r{ii + 1}", num_sum))
         if ii < dim - 1:
             core = np.zeros(
                 (num_sum, indices_out[ii].size, indices_in[ii].size, num_sum)
@@ -2121,7 +2123,7 @@ def tt_sum(
 
         elif ii == dim - 1:
             new_value = np.vstack(core_values)
-            index_left = Index(f"rank_{ii-1}", new_value.shape[0])
+            index_left = Index(f"rank_{ii - 1}", new_value.shape[0])
             index_right = Index(inds[1].name, inds[1].size)
             new_inds = [index_left, index_right]
 
@@ -2143,7 +2145,7 @@ def tt_sum(
                 on_rank_left += increment_left
                 on_rank_right += increment_right
 
-            index_left = Index(f"rank_{ii-1}", new_value.shape[0])
+            index_left = Index(f"rank_{ii - 1}", new_value.shape[0])
             index_middle = Index(inds[1].name, inds[1].size)
             index_right = Index(f"rank_{ii}", new_value.shape[2])
             new_inds = [index_left, index_middle, index_right]
@@ -2188,7 +2190,7 @@ def ttop_sum_apply(
 
         if ii < dim - 1:
             rank_indices.append(
-                Index(f"{rank_name_prefix}_r{ii+1}", v.shape[2] * num_sum)
+                Index(f"{rank_name_prefix}_r{ii + 1}", v.shape[2] * num_sum)
             )
 
             core = np.zeros(

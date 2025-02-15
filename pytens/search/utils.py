@@ -1,5 +1,8 @@
 """Utility function for structure search."""
 
+import glob
+import os
+
 import numpy as np
 
 from pytens.search.state import SearchState
@@ -49,3 +52,16 @@ def log_stats(
     search_stats["best_cost"].append((ts, bn.cost()))
     ukey = st.network.canonical_structure()
     search_stats["unique"][ukey] = search_stats["unique"].get(ukey, 0) + 1
+
+
+def remove_temp_dir(temp_dir):
+    """Remove temporary npz files"""
+    try:
+        for npfile in glob.glob(f"{temp_dir}/*.npz"):
+            os.remove(npfile)
+
+        if len(os.listdir(temp_dir)) == 0:
+            os.rmdir(temp_dir)
+
+    except FileNotFoundError:
+        pass
