@@ -40,7 +40,10 @@ Issues = "https://github.com/unknown/temporary/issues"
 Source = "https://github.com/unknown/temporary"
 
 [project.optional-dependencies]
-search = ["gurobipy"]
+search = [
+  "gurobipy",
+  "sympy"
+]
 
 [tool.pylint.main]
 analyse-fallback-blocks = false

@@ -115,6 +115,17 @@ class PreprocessConfig(pydantic.BaseModel):
         description="Enable recomputation and ignore the stored SVD results",
     )
 
+class TopDownConfig(pydantic.BaseModel):
+    """Configuration for the top down structure search"""
+
+    enabled: bool = pydantic.Field(
+        default=False,
+        description="Configure for enabling the top down search"
+    )
+    group_threshold: int = pydantic.Field(
+        default=4,
+        description="Configure the number of indices allowed in one search"
+    )
 
 class SearchConfig(pydantic.BaseModel):
     """Configuration for the entire search process"""
@@ -143,8 +154,21 @@ class SearchConfig(pydantic.BaseModel):
         default_factory=PreprocessConfig,
         description="Configurations for the preprocessing phase",
     )
+    topdown: TopDownConfig = pydantic.Field(
+        default_factory=TopDownConfig,
+        description="Configurations for top down hierarchical search",
+    )
 
     @staticmethod
     def load(json_str: str) -> "SearchConfig":
-        """Load configurations from JSON files"""
-        return SearchConfig.model_validate_json(json_str)
+        """Load configurations from JSON strings"""
+        try:
+            return SearchConfig.model_validate_json(json_str)
+        except pydantic.ValidationError as e:
+            print(e)
+
+    @staticmethod
+    def load_file(json_file: str) -> "SearchConfig":
+        """Load configuration from JSON files"""
+        with open(json_file, "r", encoding="utf-8") as json_file:
+            return SearchConfig.load(json_file.read())

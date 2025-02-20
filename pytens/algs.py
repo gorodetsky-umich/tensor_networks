@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import typing
 from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Any
 import itertools
+import math
 
 import numpy as np
 import opt_einsum as oe
@@ -15,42 +16,11 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 from .utils import delta_svd
+from .types import Index, IndexName, IndexMerge, IndexSplit, NodeName, SVDConfig
 
-IntOrStr = Union[str, int]
-IndexChain = Union[List[int], Tuple[int]]
 
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-NodeName = IntOrStr
-
-
-@dataclass(frozen=True, eq=True)
-class Index:
-    """Class for denoting an index."""
-
-    name: Union[str, int]
-    size: int
-
-    def with_new_size(self, new_size: int) -> "Index":
-        """Create a new index with same name but new size"""
-        return Index(self.name, new_size)
-
-    def with_new_name(self, name: IntOrStr) -> "Index":
-        """Create a new index with same size but new name"""
-        return Index(name, self.size)
-
-    def __lt__(self, other: Self) -> bool:
-        return str(self.name) < str(other.name)
-
-
-@dataclass
-class SVDConfig:
-    """Configuration fields for SVD in tensor networks."""
-
-    delta: float = 1e-5
-    with_orthonormal: bool = True
-    compute_data: bool = True
 
 
 @dataclass  # (frozen=True, eq=True)
@@ -70,7 +40,7 @@ class Tensor:
             self.indices[ii] = index.with_new_size(value.shape[ii])
         return self
 
-    def rename_indices(self, rename_map: Dict[IntOrStr, str]) -> Self:
+    def rename_indices(self, rename_map: Dict[IndexName, IndexName]) -> Self:
         """Rename the indices of the tensor."""
         for ii, index in enumerate(self.indices):
             if index.name in rename_map:
@@ -78,7 +48,7 @@ class Tensor:
 
         return self
 
-    def relabel_indices(self, relabel_map: Dict[IntOrStr, Any]) -> Self:
+    def relabel_indices(self, relabel_map: Dict[IndexName, Any]) -> Self:
         """Relabel the index size."""
         for ii, index in enumerate(self.indices):
             if index.name in relabel_map:
@@ -289,15 +259,59 @@ class Tensor:
 
         return q_tensor, r_tensor
 
-    def permute(self, target_indices: Optional[Sequence[int]]) -> "Tensor":
+    def permute(self, target_indices: Sequence[int]) -> "Tensor":
         """Return a new tensor with indices permuted by the specified order."""
-        if not target_indices:
-            return self
-
         value = np.permute_dims(self.value, tuple(target_indices))
         indices = [self.indices[i] for i in target_indices]
         return Tensor(value, indices)
+    
+    def permute_by_name(self, target_indices: Sequence[IndexName]) -> "Tensor":
+        """Permute a tensor by its index names"""
+        index_names = [ind.name for ind in self.indices]
+        perm = [index_names.index(n) for n in target_indices]
+        return self.permute(perm)
 
+    def merge_indices(self, merged_indices: Sequence[Index], new_ind: IndexName) -> "Tensor":
+        """Merge the specified indices into one"""
+        # print("merge_indices:", self.indices)
+        if set(merged_indices).issubset(set(self.indices)):
+            merged_sizes, unmerged_sizes = [], []
+            merged_names, unmerged_names = [], []
+            unmerged_indices = []
+            for ind in self.indices:
+                if ind in merged_indices:
+                    merged_sizes.append(ind.size)
+                    merged_names.append(ind.name)
+                else:
+                    unmerged_indices.append(ind)
+                    unmerged_names.append(ind.name)
+                    unmerged_sizes.append(ind.size)
+
+            perm_names = itertools.chain(merged_names, unmerged_names)
+            new_tensor = self.permute_by_name(perm_names)
+            new_data = new_tensor.value.reshape(-1, *unmerged_sizes)
+
+            new_size = math.prod(merged_sizes)
+            new_index = Index(new_ind, new_size)
+            return Tensor(new_data, [new_index] + unmerged_indices)
+        
+        return self
+
+    def split_indices(self, split_into: IndexSplit) -> "Tensor":
+        """Split specified indices into smaller ones"""
+        new_indices = []
+        next_index = 0
+        for ind in self.indices:
+            if ind == split_into.splitting_index:
+                for sz in split_into.split_target:
+                    new_ind = f"_fresh_index_{next_index}"
+                    new_indices.append(Index(new_ind, sz))
+                    next_index += 1
+            else:
+                new_indices.append(ind)
+
+        new_data = self.value.reshape([ind.size for ind in new_indices])
+        return Tensor(new_data, new_indices)
 
 # @dataclass(frozen=True, eq=True)
 @dataclass(eq=True)
@@ -317,6 +331,7 @@ class EinsumArgs:
 
 class TensorNetwork:  # pylint: disable=R0904
     """Tensor Network Base Class."""
+    next_index_id = 0
 
     def __init__(self) -> None:
         """Initialize the network."""
@@ -352,13 +367,13 @@ class TensorNetwork:  # pylint: disable=R0904
         cnt = Counter(indices)
         return cnt
 
-    def rename_indices(self, rename_map: Dict[IntOrStr, IntOrStr]) -> Self:
+    def rename_indices(self, rename_map: Dict[IndexName, IndexName]) -> Self:
         """Rename the indices in the network."""
         for _, data in self.network.nodes(data=True):
             data["tensor"].rename_indices(rename_map)
         return self
 
-    def relabel_indices(self, relabel_map: Dict[IntOrStr, Any]) -> Self:
+    def relabel_indices(self, relabel_map: Dict[IndexName, Any]) -> Self:
         """Relabel the indices in the network."""
         for _, data in self.network.nodes(data=True):
             data["tensor"].relabel_indices(relabel_map)
@@ -566,12 +581,19 @@ class TensorNetwork:  # pylint: disable=R0904
 
         return out
 
+    @classmethod
+    def get_next_id(cls) -> int:
+        """Return the next available index id"""
+        i = cls.next_index_id
+        cls.next_index_id += 1
+        return i
+
     def fresh_index(self) -> str:
         """Generate an index that does not appear in the current network."""
-        all_indices = [i.name for i in self.all_indices().keys()]
-        i = 0
+        all_indices = [ind.name for ind in self.all_indices().keys()]
+        i = self.get_next_id()
         while f"s_{i}" in all_indices:
-            i += 1
+            i = self.get_next_id()
 
         return f"s_{i}"
 
@@ -847,10 +869,12 @@ class TensorNetwork:  # pylint: disable=R0904
             left_indices, right_indices = [], []
             merged_indices = self.network.nodes[merged]["tensor"].indices
             # print(merged_indices)
+            # print(visited)
             for i, index in enumerate(merged_indices):
                 common_index = None
                 for n in self.network.neighbors(merged):
                     n_indices = self.network.nodes[n]["tensor"].indices
+                    # print(n, merged, n not in visited, visited[n], index, n_indices)
                     if index in n_indices:
                         common_index = i
 
@@ -873,10 +897,13 @@ class TensorNetwork:  # pylint: disable=R0904
                             right_indices.append(common_index)
 
                         break
+                    # print(left_indices, right_indices)
 
                 if common_index is None:
                     left_indices.append(i)
 
+            # if len(right_indices) == 0:
+            #     print(self)
             visited[name] = 2
             visited[merged] = 2
 
@@ -962,6 +989,94 @@ class TensorNetwork:  # pylint: disable=R0904
             return hash((self_free_indices, sorted_children_rs))
 
         return _postorder(root)
+
+    def split_index(self, split_op: IndexSplit) -> NodeName:
+        """Split free indices into smaller parts"""
+        for n in self.network.nodes:
+            tensor = self.network.nodes[n]["tensor"]
+            tensor = tensor.split_indices(split_op)
+            rename_map = {}
+            new_indices = []
+            used_results_cnt = 0
+            for ind in tensor.indices:
+                if isinstance(ind.name, str) and ind.name.startswith("_fresh_index_"):
+                    if split_op.split_result is not None:
+                        new_ind = split_op.split_result[used_results_cnt]
+                        used_results_cnt += 1
+                    else:
+                        new_ind = self.fresh_index()
+                    rename_map[ind.name] = new_ind
+                    new_indices.append(new_ind)
+            # print(rename_map)
+            tensor = tensor.rename_indices(rename_map)
+            if len(new_indices) > 0:
+                split_op.split_result = [ind for ind in tensor.indices if ind.name in new_indices]
+                self.network.nodes[n]["tensor"] = tensor
+                return n
+
+    def merge_index(self, merge_op: IndexMerge):
+        """Merge specified free indices"""
+        for n in self.network.nodes:
+            tensor = self.network.nodes[n]["tensor"]
+
+            if merge_op.merge_result is None:
+                new_ind = self.fresh_index()
+            else:
+                new_ind = merge_op.merge_result
+            tensor = tensor.merge_indices(merge_op.merging_indices, new_ind)
+
+            self.network.nodes[n]["tensor"] = tensor
+
+    def replace_with(self, name: NodeName, subnet: "TensorNetwork", split_info: List[Union[IndexSplit, IndexMerge]] = None):
+        """Replace a node with a sub-tensor network."""
+        if name not in self.network.nodes:
+            return
+
+        ind_names = [ind.name for ind in self.all_indices()]
+        subnet_free_indices = subnet.free_indices()
+        index_subst = {}
+        node_subst = {}
+        for m in subnet.network.nodes:
+            m_tensor = subnet.network.nodes[m]["tensor"]
+            if m in self.network.nodes:
+                # rename the node
+                new_m = self.fresh_node()
+                node_subst[m] = new_m
+                m = new_m
+            else:
+                node_subst[m] = m
+
+            m_indices = []
+            for mind in m_tensor.indices:
+                mind_name = mind.name
+                if mind in subnet_free_indices or mind_name not in ind_names:
+                    m_indices.append(mind)
+                elif mind.name in index_subst:
+                    mind_name = index_subst[mind.name]
+                    m_indices.append(Index(mind_name, mind.size))
+                else:
+                    ind_name = self.fresh_index()
+                    index_subst[mind_name] = ind_name
+                    ind_names.append(ind_name)
+                    m_indices.append(Index(ind_name, mind.size))
+
+            self.add_node(m, Tensor(m_tensor.value, m_indices))
+            m_inds_set = set(m_indices)
+            for nbr in self.network.neighbors(name):
+                nbr_indices = set(self.network.nodes[nbr]["tensor"].indices)
+                if len(nbr_indices.intersection(m_inds_set)) != 0:
+                    self.add_edge(m, nbr)
+                elif split_info is not None:
+                    for split_op in split_info:
+                        if isinstance(split_op, IndexSplit) and split_op.splitting_index in nbr_indices:
+                            split_ind_names = split_op.split_result
+                            if len(set(split_ind_names).intersection(m_inds_set)) != 0:
+                                self.add_edge(m, nbr)
+
+        self.network.remove_node(name)
+
+        for u, v in subnet.network.edges:
+            self.add_edge(node_subst[u], node_subst[v])
 
     def __lt__(self, other: Self) -> bool:
         return self.cost() < other.cost()
@@ -1059,12 +1174,12 @@ class TensorNetwork:  # pylint: disable=R0904
 
         # To use graphviz layout,
         # you need to install both graphviz and pygraphviz.
-        # pos = nx.drawing.nx_agraph.graphviz_layout(
-        #     new_graph,
-        #     prog="neato",
-        #     args="-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy",
-        # )
-        pos = nx.planar_layout(new_graph)
+        pos = nx.drawing.nx_agraph.graphviz_layout(
+            new_graph,
+            prog="neato",
+            args="-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy",
+        )
+        # pos = nx.planar_layout(new_graph)
 
         for node, data in self.network.nodes(data=True):
             node_groups["A"].append(node)

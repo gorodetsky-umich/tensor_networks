@@ -155,10 +155,10 @@ class TestSearch(unittest.TestCase):
         config.engine.eps = 0.5
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
-        stats = search_engine.dfs(self.net)
-        self.assertEqual(stats["count"], 8)
+        result = search_engine.dfs(self.net)
+        self.assertEqual(result.stats.count, 8)
 
-        bn = stats["best_network"]
+        bn = result.best_network
         self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
@@ -167,10 +167,10 @@ class TestSearch(unittest.TestCase):
         config.engine.eps = 0.5
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
-        stats = search_engine.bfs(self.net)
-        self.assertEqual(stats["count"], 7)
+        result = search_engine.bfs(self.net)
+        self.assertEqual(result.stats.count, 7)
 
-        bn = stats["best_network"]
+        bn = result.best_network
         self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
@@ -179,10 +179,10 @@ class TestSearch(unittest.TestCase):
         config.engine.eps = 0.5
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
-        stats = search_engine.partition_search(self.net)
-        self.assertEqual(stats["count"], 7)
+        result = search_engine.partition_search(self.net)
+        self.assertEqual(result.stats.count, 7)
 
-        bn = stats["best_network"]
+        bn = result.best_network
         self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
@@ -192,9 +192,9 @@ class TestSearch(unittest.TestCase):
         config.engine.verbose = True
         config.rank_search.fit_mode = "all"
         search_engine = SearchEngine(config=config)
-        stats = search_engine.partition_search(self.net)
-        self.assertEqual(stats["count"], 7)
+        result = search_engine.partition_search(self.net)
+        self.assertEqual(result.stats.count, 7)
 
-        bn = stats["best_network"]
+        bn = result.best_network
         self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
