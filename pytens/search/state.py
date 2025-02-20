@@ -34,6 +34,7 @@ class OSplit(Action):
         target_size: Optional[int] = None,
         delta: Optional[float] = None,
     ):
+        super().__init__()
         self.indices = sorted(indices)
         self.target_size = target_size
         self.delta = delta
@@ -167,6 +168,7 @@ class ISplit(Action):
         target_size: Optional[int] = None,
         delta: Optional[float] = None,
     ):
+        super().__init__()
         self.node = node
         self.left_indices = sorted(left_indices)
         self.target_size = target_size

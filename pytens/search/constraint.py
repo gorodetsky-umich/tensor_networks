@@ -168,6 +168,9 @@ class ConstraintSearch:
         ]
         tensor_val = target_tensor.value.transpose(positions)
         left_size = np.prod([x.size for x in comb])
+        file_name = (
+            f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"
+        )
         if compute_uv:
             u, s, v = np.linalg.svd(
                 tensor_val.reshape(left_size, -1), False, True
@@ -176,16 +179,10 @@ class ConstraintSearch:
             if not os.path.exists(self.config.output.output_dir):
                 os.makedirs(self.config.output.output_dir)
 
-            file_name = (
-                f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"
-            )
             np.savez(file_name, u=u, s=s, v=v)
             self.first_steps[OSplit(comb)] = file_name
             self.temp_files.append(file_name)
         else:
-            file_name = (
-                f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"
-            )
             if not self.config.preprocess.force_recompute and os.path.exists(
                 file_name
             ):
@@ -204,14 +201,19 @@ class ConstraintSearch:
         target_tensor: Tensor,
         acs: Sequence[Action] = None,
         compute_uv: bool = False,
+        delta: float = None,
     ):
         """Compute the mapping between splits and singular values.
 
         Build the abstractions.
         """
         free_indices = target_tensor.indices
-        x_norm = np.linalg.norm(target_tensor.value)
-        self.delta = self.config.engine.eps * x_norm
+        if delta is not None:
+            self.delta = delta
+        else:
+            x_norm = np.linalg.norm(target_tensor.value)
+            self.delta = self.config.engine.eps * x_norm
+
         if acs is not None:
             for ac in acs:
                 comb = ac.indices

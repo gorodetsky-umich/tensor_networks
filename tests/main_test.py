@@ -135,6 +135,8 @@ class TestTT(unittest.TestCase):
         self.assertTrue(
             np.allclose(integral, np.sum(ttarr), atol=1e-14, rtol=1e-14)
         )
+        ttarr = self.TT.contract().value
+        self.assertTrue(np.allclose(integral, np.sum(ttarr), atol=1e-14, rtol=1e-14))
 
         int_partial = self.TT.integrate([self.v], np.ones(1)).contract().value
         self.assertEqual(int_partial.ndim, 2)
@@ -238,9 +240,7 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
-        )
+        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13))
 
     def test_gramsvd_rounding(self):
         # print("\nROUNDING")
@@ -257,9 +257,7 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
-        )
+        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13))
 
     def test_gram_rounding_ttsum(self):
         # print("\nROUNDING")
@@ -305,9 +303,7 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
-        )
+        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13))
 
     def test_rand_rounding_ttsum(self):
         # print("\nROUNDING")
@@ -1320,6 +1316,82 @@ class TestCross(unittest.TestCase):
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
+        )
+
+
+
+class TestGeneralOps(unittest.TestCase):
+    """Test general operations over tensor networks"""
+
+    def test_reshape(self):
+        """Reshape should support both splitting and merging"""
+        net = TensorNetwork()
+        data = np.random.randn(4, 16, 6)
+        indices = [Index("i", 4), Index("j", 16), Index("k", 6)]
+        tensor = Tensor(data, indices)
+        net.add_node("n0", tensor)
+
+        net.split_index(IndexSplit(splitting_index = Index("k", 6), split_target = [2, 3]))
+        self.assertEqual(len(net.free_indices()), 4)
+
+        (_, s, v), _ = net.svd("n0", [0])
+        net.merge(v, s)
+        self.assertEqual(len(net.free_indices()), 4)
+        net.split_index(IndexSplit(splitting_index = Index("i", 4), split_target = [2, 2]))
+        self.assertEqual(len(net.free_indices()), 5)
+
+        net.split_index(IndexSplit(splitting_index=Index("j", 16), split_target = [8, 2]))
+        net.merge_index(IndexMerge(merging_indices=[Index("s_11", 2), Index("s_12", 3)]))
+        self.assertEqual(net.free_indices(), [
+            # Index("s_11", 2),
+            # Index("s_12", 3),
+            Index("s_15", 2),
+            Index("s_16", 2),
+            Index("s_17", 8),
+            Index("s_18", 2),
+            Index("s_19", 6),
+        ])
+
+    def test_replace_with(self):
+        """Replace should remove the old node and rewire the edges"""
+        net = TensorNetwork()
+        u_data = np.random.randn(4, 5, 6)
+        u_indices = [Index("i", 4), Index("j", 5), Index("k", 6)]
+        u = Tensor(u_data, u_indices)
+        net.add_node("u", u)
+
+        v_data = np.random.randn(6, 7, 8)
+        v_indices = [Index("k", 6), Index("l", 7), Index("m", 8)]
+        v = Tensor(v_data, v_indices)
+        net.add_node("v", v)
+
+        net.add_edge("u", "v")
+
+        subnet = TensorNetwork()
+        s_data = np.random.randn(4, 5, 2)
+        s_indices = [Index("i", 4), Index("j", 5), Index("l", 2)]
+        s = Tensor(s_data, s_indices)
+        subnet.add_node("s", s)
+
+        t_data = np.random.randn(2, 6)
+        t_indices = [Index("l", 2), Index("k", 6)]
+        t = Tensor(t_data, t_indices)
+        subnet.add_node("t", t)
+
+        subnet.add_edge("s", "t")
+
+        net.replace_with("u", subnet)
+        self.assertEqual(sorted(net.network.nodes), ["s", "t", "v"])
+        self.assertEqual(
+            sorted(net.all_indices()),
+            [
+                Index("i", 4),
+                Index("j", 5),
+                Index("k", 6),
+                Index("l", 7),
+                Index("m", 8),
+                Index("s_10", 2),
+            ],
         )
 
 

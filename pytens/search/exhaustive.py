@@ -7,7 +7,7 @@ import copy
 from pytens.algs import TensorNetwork
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import SearchState
-from pytens.search.utils import log_stats, EMPTY_SEARCH_STATS
+from pytens.search.utils import log_stats, SearchStats, SearchResult
 
 
 class ExhaustiveSearch:
@@ -22,7 +22,7 @@ class ExhaustiveSearch:
 
         self.start = 0
         self.logging_time = 0
-        self.search_stats = copy.deepcopy(EMPTY_SEARCH_STATS)
+        self.search_stats = SearchStats()
 
 
 class BFSSearch(ExhaustiveSearch):
@@ -57,7 +57,7 @@ class BFSSearch(ExhaustiveSearch):
 
         return best_network
 
-    def run(self, net: TensorNetwork):
+    def run(self, net: TensorNetwork) -> SearchResult:
         """Execute the BFS search algorithm on the given tensor network"""
 
         self.target_tensor = net.contract()
@@ -120,10 +120,13 @@ class BFSSearch(ExhaustiveSearch):
 
         end = time.time()
 
-        self.search_stats["time"] = end - start - logging_time
-        self.search_stats["count"] = count
-        self.best_network = best_network
-        return self.search_stats
+        self.search_stats.time = end - start - logging_time
+        self.search_stats.count = count
+
+        result = SearchResult()
+        result.best_network = best_network
+        result.stats = self.search_stats
+        return result
 
 
 class DFSSearch(ExhaustiveSearch):
@@ -146,7 +149,7 @@ class DFSSearch(ExhaustiveSearch):
 
     def dfs(self, worked: set, curr_st: SearchState):
         """Implementation of the DFS recursion."""
-        self.search_stats["count"] += 1
+        self.search_stats.count += 1
         used_ops = len(curr_st.past_actions)
         if used_ops >= self.config.engine.max_ops:
             return
@@ -200,7 +203,7 @@ class DFSSearch(ExhaustiveSearch):
                 #     # greedy = True
                 #     break
 
-    def run(self, net: TensorNetwork):
+    def run(self, net: TensorNetwork) -> SearchResult:
         """Run a DFS search from the given tensor network."""
 
         self.target_tensor = net.contract()
@@ -213,4 +216,8 @@ class DFSSearch(ExhaustiveSearch):
         # network = copy.deepcopy(net)
         worked = set()
         self.dfs(worked, SearchState(net, self.delta))
-        return self.search_stats
+
+        result = SearchResult()
+        result.stats = self.search_stats
+        result.best_network = self.best_network
+        return result

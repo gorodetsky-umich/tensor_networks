@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Self, Sequence, Union, Tuple
 
 import numpy as np
+import pydantic
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,6 @@ IntOrStr = Union[str, int]
 IndexName = IntOrStr
 IndexChain = Union[List[int], Tuple[int]]
 NodeName = IntOrStr
-
 
 @dataclass(frozen=True, eq=True)
 class Index:
@@ -57,6 +57,9 @@ class Index:
         return cls(**data_dict)
 
 
+    def __lt__(self, other: Self) -> bool:
+        return str(self.name) < str(other.name)
+    
 @dataclass
 class SVDConfig:
     """Configuration fields for SVD in tensor networks."""
@@ -319,3 +322,14 @@ class DimTreeNode:
                 return True
 
         return False
+class IndexMerge(pydantic.BaseModel):
+    """An index merge request and response."""
+    merging_indices: Sequence[Index]
+    merging_positions: Optional[Sequence[int]] = None
+    merge_result: Optional[Index] = None
+
+class IndexSplit(pydantic.BaseModel):
+    """An index split request and response."""
+    splitting_index: Index
+    split_target: Sequence[int]
+    split_result: Optional[Sequence[Index]] = None

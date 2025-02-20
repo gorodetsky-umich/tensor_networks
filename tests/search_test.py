@@ -155,11 +155,12 @@ class TestSearch(unittest.TestCase):
         config.engine.eps = 0.5
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
-        stats = search_engine.dfs(self.net)
-        self.assertEqual(stats["count"], 8)
+        result = search_engine.dfs(self.net)
+        self.assertEqual(result.stats.count, 8)
 
         free_indices = self.net.free_indices()
-        bn = stats["best_network"]
+        bn = result.best_network
+        assert bn is not None
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
         bn_val = bn.contract().permute(perm).value
@@ -171,11 +172,12 @@ class TestSearch(unittest.TestCase):
         config.engine.eps = 0.5
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
-        stats = search_engine.bfs(self.net)
-        self.assertEqual(stats["count"], 7)
+        result = search_engine.bfs(self.net)
+        self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
-        bn = stats["best_network"]
+        bn = result.best_network
+        assert bn is not None
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
         bn_val = bn.contract().permute(perm).value
@@ -187,11 +189,12 @@ class TestSearch(unittest.TestCase):
         config.engine.eps = 0.5
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
-        stats = search_engine.partition_search(self.net)
-        self.assertEqual(stats["count"], 7)
+        result = search_engine.partition_search(self.net)
+        self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
-        bn = stats["best_network"]
+        bn = result.best_network
+        assert bn is not None
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
         bn_val = bn.contract().permute(perm).value
@@ -204,11 +207,12 @@ class TestSearch(unittest.TestCase):
         config.engine.verbose = True
         config.rank_search.fit_mode = "all"
         search_engine = SearchEngine(config=config)
-        stats = search_engine.partition_search(self.net)
-        self.assertEqual(stats["count"], 7)
+        result = search_engine.partition_search(self.net)
+        self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
-        bn = stats["best_network"]
+        bn = result.best_network
+        assert bn is not None
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
         bn_val = bn.contract().permute(perm).value
