@@ -9,6 +9,7 @@ import pickle
 import numpy as np
 
 from pytens.algs import *
+from tests.search_test import *
 
 np.random.seed(4)
 
@@ -25,7 +26,7 @@ class TestIndex(unittest.TestCase):
 class TestTT(unittest.TestCase):
 
     def setUp(self):
-        self.x = Index('x', 5)
+        self.x = Index('t', 5)
         self.u = Index('u', 10)
         self.v = Index('v', 20)
         self.tt_ranks = [2, 2]
@@ -255,7 +256,7 @@ class TestTT(unittest.TestCase):
 
         # print(TTadd)
         ttadd = TTadd.contract().value
-        
+
         TTadd =  tt_randomized_round(y=TTadd,
                                      target_ranks=target)
         
@@ -327,14 +328,18 @@ class TestTT(unittest.TestCase):
         e2 = np.eye(3, 3)
         ttop = ttop_rank1(indices_in, indices_out, [A, e1, e2], "A")
 
-        ttop_arr = ttop.contract().value
+        ttop_res = ttop.contract()
+        # print(ttop_res.indices)
+        ttop_arr = ttop_res.value
         # print(ttop_arr.shape)
 
         tt = rand_tt([x, y, z], [3, 2])
-        tt_arr = tt.contract().value
+        tt_res = tt.contract()
+        # print(tt_res.indices)
+        tt_arr = tt_res.value
         # print(tt_arr.shape)
 
-        should_be = np.einsum('ijklmn,jln->ikm', ttop_arr, tt_arr)
+        should_be = np.einsum('ijklmn,ikm->jln', ttop_arr, tt_arr)
         check = ttop_apply(ttop, tt).contract().value
 
         self.assertTrue(np.allclose(check, should_be,
@@ -360,7 +365,7 @@ class TestTT(unittest.TestCase):
         tt_arr = tt.contract().value
         # print(tt_arr.shape)
 
-        should_be = np.einsum('ijklmn,jln->ikm', ttop_arr, tt_arr)
+        should_be = np.einsum('ijklmn,ikm->jln', ttop_arr, tt_arr)
         check = ttop_apply(ttop, tt).contract().value
 
         err = np.linalg.norm(should_be - check)
@@ -419,6 +424,27 @@ class TestTT(unittest.TestCase):
     #     self.assertTrue(np.allclose(check, should_be,
     #                                 atol=1e-5, rtol=1e-5))
 
+    def test_optimize(self):
+
+        # print("\nROUNDING")
+        TTadd = self.TT + self.TT
+        # TTadd = TTadd.rename('added')
+
+        # print(TTadd)
+        ttadd = TTadd.contract().value
+        TTadd.round(0, 1e-5)
+        # # exit(1)
+        new_ranks = TTadd.ranks()
+
+        self.assertTrue(new_ranks[0], self.tt_ranks[0])
+        self.assertTrue(new_ranks[1], self.tt_ranks[1])
+
+        ttadd_rounded = TTadd.contract().value
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12)
+        )
+
+
 class TestTree(unittest.TestCase):
 
     def setUp(self):
@@ -432,7 +458,7 @@ class TestTree(unittest.TestCase):
         original = self.tree.contract().value
         original_free = self.tree.free_indices()
 
-        self.tree.split(4, [0, 2], [1])
+        self.tree.svd(4, [0, 2])
         after_split = self.tree.contract().value
         after_split_free = self.tree.free_indices()
         permutation = [after_split_free.index(i) for i in original_free]
@@ -444,7 +470,7 @@ class TestTree(unittest.TestCase):
         original = self.tree.contract().value
         original_free = self.tree.free_indices()
 
-        self.tree.split(3, [0, 1], [2])
+        self.tree.svd(3, [0, 1])
         after_split = self.tree.contract().value
         after_split_free = self.tree.free_indices()
         permutation = [after_split_free.index(i) for i in original_free]
@@ -482,13 +508,78 @@ class TestTree(unittest.TestCase):
         for n in nbrs:
             self.tree.network.remove_edge(root, n)
             reachable_nodes = nx.descendants(self.tree.network, n)
-            reachable_graph = self.tree.network.subgraph(reachable_nodes)
+            reachable_graph = self.tree.network.subgraph([n] + list(reachable_nodes))
             subnet = TensorNetwork()
             subnet.network = reachable_graph
             self.assertTrue(subnet.norm(), 1)
 
             self.tree.network.add_edge(root, n)
 
+    def test_tree_canonicalize(self):
+        x = np.random.randn(3,4,5)
+        single_node1 = TensorNetwork()
+        indices1 = [Index("i",3), Index("j",4), Index("k",5)]
+        single_node1.add_node("x", Tensor(x, indices1))
+
+        single_node2 = TensorNetwork()
+        indices2 = [Index("j",4), Index("i",3), Index("k",5)]
+        single_node2.add_node("y", Tensor(x.transpose(1,0,2), indices2))
+
+        self.assertEqual(single_node1.canonical_structure(), single_node2.canonical_structure())
+
+        # test symmetry
+        tree1 = TensorNetwork()
+        u = np.random.randn(2,3,4)
+        u_indices = [Index("iu", 2), Index("ju", 3), Index("ku", 4)]
+        v = np.random.randn(4,5,6)
+        v_indices = [Index("iv", 4), Index("jv", 5), Index("kv", 6)]
+        root = np.random.randn(2, 4, 3)
+        root_indices = [Index("iu", 2), Index("iv", 4), Index("f", 3)]
+        tree1.add_node("root", Tensor(root, root_indices))
+        tree1.add_node("u", Tensor(u, u_indices))
+        tree1.add_node("v", Tensor(v, v_indices))
+        tree1.add_edge("root", "u")
+        tree1.add_edge("root", "v")
+
+        tree2 = TensorNetwork()
+        root_indices2 = [Index("iv", 4), Index("iu", 2),  Index("f", 3)]
+        tree2.add_node("root", Tensor(root.transpose(1,0,2), root_indices2))
+        u_indices2 = [Index("ju", 3), Index("ku", 4), Index("iu", 2), ]
+        tree2.add_node("u", Tensor(u.transpose(1,2,0), u_indices2))
+        v_indices2 = [Index("kv", 6), Index("iv", 4), Index("jv", 5), ]
+        tree2.add_node("v", Tensor(v.transpose(2,0,1), v_indices2))
+        tree2.add_edge("root", "u")
+        tree2.add_edge("root", "v")
+
+        self.assertEqual(tree1.canonical_structure(), tree2.canonical_structure())
+
+        tt1 = TensorNetwork()
+        u1 = np.random.randn(2,3)
+        u1_indices = [Index("iu", 2), Index("uv", 3)]
+        v1 = np.random.randn(3,4,5)
+        v1_indices = [Index("uv", 3), Index("jv", 4), Index("vw", 5)]
+        w1 = np.random.randn(5,6)
+        w1_indices = [Index("vw", 5), Index("jw", 6)]
+        tt1.add_node("u", Tensor(u1, u1_indices))
+        tt1.add_node("v", Tensor(v1, v1_indices))
+        tt1.add_node("w", Tensor(w1, w1_indices))
+        tt1.add_edge("u", "v")
+        tt1.add_edge("v", "w")
+        
+        tt2 = TensorNetwork()
+        u2 = np.random.randn(4,3)
+        u2_indices = [Index("iu", 4), Index("uv", 3)]
+        v2 = np.random.randn(3,2,5)
+        v2_indices = [Index("uv", 3), Index("jv", 2), Index("vw", 5)]
+        w2 = np.random.randn(5, 6)
+        w2_indices = [Index("vw", 5), Index("jw", 6)]
+        tt2.add_node("u", Tensor(u2, u2_indices))
+        tt2.add_node("v", Tensor(v2, v2_indices))
+        tt2.add_node("w", Tensor(w2, w2_indices))
+        tt2.add_edge("u", "v")
+        tt2.add_edge("v", "w")
+
+        self.assertNotEqual(tt1.canonical_structure(), tt2.canonical_structure())
 
 if __name__ == "__main__":
     unittest.main()
