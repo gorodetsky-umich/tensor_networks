@@ -11,9 +11,8 @@ from pytens.search.configuration import SearchConfig
 from pytens.search.exhaustive import DFSSearch, BFSSearch
 from pytens.search.partition import PartitionSearch
 from pytens.search.hierarchical.top_down import TopDownSearch
-from pytens.search.hierarchical.error_dist import exponential_decrease
+from pytens.search.hierarchical.error_dist import BaseErrorDist, AlphaErrorDist
 from pytens.search.utils import approx_error, SearchResult, reshape_indices
-from pytens.types import IndexSplit, IndexMerge
 
 
 class SearchEngine:
@@ -27,6 +26,19 @@ class SearchEngine:
 
         engine = PartitionSearch(self.config)
         result = engine.search(net)
+        free_indices = net.free_indices()
+        result.stats.cr_core = (
+            float(np.prod([i.size for i in free_indices]))
+            / result.best_network.cost()
+        )
+        result.stats.cr_start = net.cost() / result.best_network.cost()
+        result.stats.re = float(
+            np.linalg.norm(
+                result.best_network.contract().value
+                - net.contract().value
+            )
+            / np.linalg.norm(net.contract().value)
+        )
         return result
 
     def dfs(
@@ -71,10 +83,9 @@ class SearchEngine:
     def top_down(self, net: TensorNetwork):
         """Start point of a top down hierarchical search."""
 
-        random.seed(5)
         top_down_runner = TopDownSearch(self.config)
         start = time.time()
-        best_network = top_down_runner.search(net, exponential_decrease)
+        best_network = top_down_runner.search(net, AlphaErrorDist(alpha=2.5))
         end = time.time()
 
         result = SearchResult()
