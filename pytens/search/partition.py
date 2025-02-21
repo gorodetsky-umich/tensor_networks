@@ -25,6 +25,7 @@ class PartitionSearch:
         self.constraint_engine = ConstraintSearch(config)
         self.best_network = None
         self.best_acs = []
+        self.unused_delta = 0.0
         self.search_stats = SearchStats()
 
         self._costs = {}
@@ -141,7 +142,7 @@ class PartitionSearch:
             # plt.show()
             for n in st.network.network.nodes:
                 net = copy.deepcopy(st.network)
-                net.round(n, st.curr_delta)
+                _, unused_delta = net.round(n, st.curr_delta)
                 # print("round",n)
                 # net.draw()
                 # plt.show()
@@ -149,6 +150,7 @@ class PartitionSearch:
                 # plt.close()
                 if net.cost() < self.best_network.cost():
                     self.best_network = net
+                    self.unused_delta = unused_delta
 
             return
 
@@ -281,16 +283,5 @@ class PartitionSearch:
 
         result.stats.time = toc2 - start
         result.stats.preprocess_time = toc1 - start
-        result.stats.cr_core = (
-            float(np.prod([i.size for i in free_indices]))
-            / result.best_network.cost()
-        )
-        result.stats.cr_start = net.cost() / result.best_network.cost()
-        result.stats.re = float(
-            np.linalg.norm(
-                result.best_network.contract().value
-                - net.contract().value
-            )
-            / np.linalg.norm(net.contract().value)
-        )
+        result.unused_delta = self.unused_delta
         return result

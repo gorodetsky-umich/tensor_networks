@@ -28,13 +28,15 @@ class SearchStats(pydantic.BaseModel):
 
 class SearchResult:
     stats: SearchStats
+    unused_delta: Optional[float] = 0.0
     best_network: Optional[TensorNetwork] = None
     best_actions: Optional[Sequence[Action]] = None
 
-    def __init__(self, stats = SearchStats(), best_network = None, best_actions = None):
+    def __init__(self, stats = SearchStats(), best_network = None, best_actions = None, unused_delta = 0.0):
         self.stats = stats
         self.best_network = best_network
         self.best_actions = best_actions
+        self.unused_delta = unused_delta
 
 
 def approx_error(tensor: Tensor, net: TensorNetwork) -> float:

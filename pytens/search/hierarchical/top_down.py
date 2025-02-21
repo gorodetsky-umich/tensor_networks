@@ -12,6 +12,7 @@ from pytens.search.configuration import SearchConfig
 from pytens.search.partition import PartitionSearch
 from pytens.algs import TensorNetwork, NodeName
 from pytens.types import IndexSplit, IndexMerge
+from pytens.search.hierarchical.error_dist import BaseErrorDist
 
 
 class TopDownSearch:
@@ -25,21 +26,21 @@ class TopDownSearch:
     def search(
         self,
         net: TensorNetwork,
-        error_dist: Callable[[int, float], Tuple[float, float]],
+        error_dist: BaseErrorDist,
     ):
         """Perform the topdown search starting from the given net"""
         self.free_indices = net.free_indices()
         remaining_delta = net.norm() * self.config.engine.eps
-        bn = self._search_at_level(0, net, remaining_delta, error_dist)
-        remaining_delta = (remaining_delta ** 2 - net.norm() ** 2 + bn.norm() ** 2) ** 0.5
-        print(remaining_delta)
-        # best_network = bn
-        # for n in bn.network.nodes:
-        #     network = copy.deepcopy(bn)
-        #     network.round(n, delta=remaining_delta)
-        #     if network.cost() < best_network.cost():
-        #         best_network = network
-        return bn
+        bn, remaining_delta = self._search_at_level(0, net, remaining_delta, error_dist)
+        # remaining_delta = math.sqrt(remaining_delta ** 2 - net.norm() ** 2 + bn.norm() ** 2) # ** 0.5
+        # print(remaining_delta)
+        best_network = bn
+        for n in bn.network.nodes:
+            network = copy.deepcopy(bn)
+            network.round(n, delta=remaining_delta)
+            if network.cost() < best_network.cost():
+                best_network = network
+        return best_network
 
     def _random_group_indices(self, net: TensorNetwork, node: NodeName):
         indices = net.network.nodes[node]["tensor"].indices
@@ -54,8 +55,8 @@ class TopDownSearch:
             merge_op = IndexMerge(merging_indices = merged_indices,
                                   merging_positions = [indices.index(ind) for ind in merged_indices])
             net.merge_index(merge_op)
-            print("after merging", merged_indices)
-            print(net)
+            # print("after merging", merged_indices)
+            # print(net)
             new_indices = []
             indices = net.network.nodes[node]["tensor"].indices
             # print(indices)
@@ -100,8 +101,8 @@ class TopDownSearch:
                 remaining_size = math.prod(remaining_factors)
                 
                 old_indices = net.free_indices()
-                print("splitting", ind, "into", random_factors)
-                print("current index id", TensorNetwork.next_index_id)
+                # print("splitting", ind, "into", random_factors)
+                # print("current index id", TensorNetwork.next_index_id)
                 split_op = IndexSplit(splitting_index = ind, split_target = random_factors + [remaining_size])
                 net.split_index(split_op
                 )
@@ -123,16 +124,17 @@ class TopDownSearch:
         return refactored, split_info
 
     def _search_at_level(
-        self, level: int, net: TensorNetwork, remaining_delta: float, error_dist: Callable[[int, float], Tuple[float, float]],
-    ) -> TensorNetwork:
+        self, level: int, net: TensorNetwork, remaining_delta: float, error_dist: BaseErrorDist,
+    ) -> Tuple[TensorNetwork, float]:
         # print("optimizing")
         # print(net)
         search_engine = PartitionSearch(self.config)
         # decrease the delta budget exponentially
-        delta, remaining_delta = error_dist(level, remaining_delta)
+        delta, remaining_delta = error_dist.get_delta(level, remaining_delta)
         result = search_engine.search(net, delta=delta)
         bn = result.best_network
-        print(net.norm() ** 2 - bn.norm() ** 2, delta ** 2)
+        unused_delta = result.unused_delta
+        # print(net.norm() ** 2 - bn.norm() ** 2, delta ** 2)
 
         next_nodes = list(bn.network.nodes)
         # distribute delta equally to all subnets
@@ -153,11 +155,16 @@ class TopDownSearch:
                 bn.orthonormalize(n)
                 new_sn = TensorNetwork()
                 new_sn.add_node(n, bn.network.nodes[n]["tensor"])
-                optimized_net = self._search_at_level(level + 1, new_sn, remaining_delta, error_dist)
+                optimized_net, left_delta = self._search_at_level(level + 1, new_sn, remaining_delta, error_dist)
+
                 # print("before replacement")
                 # print(bn)
                 bn.replace_with(n, optimized_net, split_info)
                 # print("after replacement")
                 # print(bn)
+            else:
+                left_delta = remaining_delta
 
-        return bn
+            unused_delta = math.sqrt(unused_delta ** 2 + left_delta ** 2)
+
+        return bn, unused_delta
