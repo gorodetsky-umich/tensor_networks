@@ -158,8 +158,12 @@ class TestSearch(unittest.TestCase):
         stats = search_engine.dfs(self.net)
         self.assertEqual(stats["count"], 8)
 
+        free_indices = self.net.free_indices()
         bn = stats["best_network"]
-        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
+        bn_indices = bn.free_indices()
+        perm = [bn_indices.index(ind) for ind in free_indices]
+        bn_val = bn.contract().permute(perm).value
+        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn_val), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_bfs(self):
@@ -170,8 +174,12 @@ class TestSearch(unittest.TestCase):
         stats = search_engine.bfs(self.net)
         self.assertEqual(stats["count"], 7)
 
+        free_indices = self.net.free_indices()
         bn = stats["best_network"]
-        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
+        bn_indices = bn.free_indices()
+        perm = [bn_indices.index(ind) for ind in free_indices]
+        bn_val = bn.contract().permute(perm).value
+        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn_val), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_partition(self):
@@ -182,8 +190,12 @@ class TestSearch(unittest.TestCase):
         stats = search_engine.partition_search(self.net)
         self.assertEqual(stats["count"], 7)
 
+        free_indices = self.net.free_indices()
         bn = stats["best_network"]
-        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
+        bn_indices = bn.free_indices()
+        perm = [bn_indices.index(ind) for ind in free_indices]
+        bn_val = bn.contract().permute(perm).value
+        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn_val), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_partition_all(self):
@@ -195,6 +207,10 @@ class TestSearch(unittest.TestCase):
         stats = search_engine.partition_search(self.net)
         self.assertEqual(stats["count"], 7)
 
+        free_indices = self.net.free_indices()
         bn = stats["best_network"]
-        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
+        bn_indices = bn.free_indices()
+        perm = [bn_indices.index(ind) for ind in free_indices]
+        bn_val = bn.contract().permute(perm).value
+        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn_val), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())

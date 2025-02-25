@@ -278,11 +278,12 @@ class PartitionSearch:
             / self.stats["best_network"].cost()
         )
         self.stats["cr_start"] = net.cost() / self.stats["best_network"].cost()
+        best_tensor = self.stats["best_network"].contract()
+        best_tensor_indices = best_tensor.indices
+        perm = [best_tensor_indices.index(ind) for ind in free_indices]
+        best_tensor = best_tensor.permute(perm)
         self.stats["reconstruction_error"] = float(
-            np.linalg.norm(
-                self.stats["best_network"].contract().value
-                - net.contract().value
-            )
+            np.linalg.norm(best_tensor.value - net.contract().value)
             / np.linalg.norm(net.contract().value)
         )
         return self.stats

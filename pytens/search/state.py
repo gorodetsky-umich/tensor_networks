@@ -320,6 +320,7 @@ class SearchState:
         free_indices: Sequence[Index],
     ) -> Generator[Sequence[Index], None, None]:
         """Compute all index partitions for the given index set."""
+        free_indices = sorted(free_indices)
         for k in range(1, len(free_indices) // 2 + 1):
             combs = list(itertools.combinations(free_indices, k))
             if len(free_indices) % 2 == 0 and k == len(free_indices) // 2:
