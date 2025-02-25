@@ -120,7 +120,11 @@ class TopDownConfig(pydantic.BaseModel):
 
     enabled: bool = pydantic.Field(
         default=False,
-        description="Configure for enabling the top down search"
+        description="Configure for enabling the top down search",
+    )
+    enable_random: bool = pydantic.Field(
+        default=True,
+        description="Configure whether to use random algorithms",
     )
     group_threshold: int = pydantic.Field(
         default=4,

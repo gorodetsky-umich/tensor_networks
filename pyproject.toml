@@ -30,9 +30,8 @@ dependencies = [
   "pydantic", # better dataclasses
 ]
 
-[tool.setuptools]
-packages = ["pytens"]
-
+[tool.poetry]
+packages = [{include = "pytens"}]
 
 [project.urls]
 Documentation = "https://github.com/unknown/temporary#readme"
