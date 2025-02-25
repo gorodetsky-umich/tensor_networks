@@ -1,7 +1,6 @@
 """Search algorithsm for tensor networks."""
 
 import time
-import random
 import itertools
 
 import numpy as np
@@ -85,7 +84,7 @@ class SearchEngine:
 
         top_down_runner = TopDownSearch(self.config)
         start = time.time()
-        best_network = top_down_runner.search(net, AlphaErrorDist(alpha=2.5))
+        best_network, best_st = top_down_runner.search(net, AlphaErrorDist(alpha=2.5))
         end = time.time()
 
         result = SearchResult()
@@ -95,7 +94,8 @@ class SearchEngine:
         result.stats.cr_core = np.prod([i.size for i in net.free_indices()]) / best_network.cost()
         approx_tensor = best_network.contract()
         data_val = net.contract().value
-        reordered_indices, data_val = reshape_indices(top_down_runner.reshape_info, net.free_indices(), data_val)
+        # print(best_st.reshape_history)
+        reordered_indices, data_val = reshape_indices(best_st.reshape_history, net.free_indices(), data_val)
         # print(top_down_runner.reshape_info)
         # free_indices_name = [ind.name for ind in net.free_indices()]
         # approx_net = undo_reshape(top_down_runner.reshape_info, best_network)
