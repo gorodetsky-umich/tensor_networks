@@ -128,7 +128,7 @@ class TopDownSearch:
         for st in self._search_at_level(0, init_st, remaining_delta, error_dist):
             for n in st.network.network.nodes:
                 network = copy.deepcopy(st.network)
-                print("unused_delta", math.sqrt(st.unused_delta))
+                # print("unused_delta", math.sqrt(st.unused_delta))
                 network.round(n, delta=math.sqrt(st.unused_delta))
                 if network.cost() < best_network.cost():
                     best_network = network
@@ -246,20 +246,20 @@ class TopDownSearch:
         remaining_delta: float,
     ):
         """Optimize the children nodes in a given network"""
+        if len(nodes) == 0:
+            yield st
+            return
+        
         node = nodes[0]
-        print("before index splitting", node)
-        print(st.network)
+        # print("before index splitting", node)
+        # print(st.network)
         for ok, split_result in self._split_indices(st, node):
             if not ok:
-                if len(nodes) == 1:
-                    yield st
-                else:
-                    yield from self._optimize_subnet(st, nodes[1:], level, error_dist, remaining_delta)
-
+                yield from self._optimize_subnet(st, nodes[1:], level, error_dist, remaining_delta)
                 continue
 
-            print("after index splitting", node)
-            print(split_result.network)
+            # print("after index splitting", node)
+            # print(split_result.network)
             curr_net = split_result.network
             n_indices = curr_net.network.nodes[node]["tensor"].indices
             assert len(n_indices) <= self.config.topdown.group_threshold
@@ -292,12 +292,6 @@ class TopDownSearch:
                 # )
                 # print("after replacement")
                 # print(optimized_st.network)
-
-                if len(nodes) == 1:
-                    # print("nodes length is 1")
-                    yield optimized_st
-                    return
-
                 yield from self._optimize_subnet(
                     optimized_st,
                     nodes[1:],
@@ -313,16 +307,16 @@ class TopDownSearch:
         remaining_delta: float,
         error_dist: BaseErrorDist,
     ) -> Generator[SearchState, None, None]:
-        print("Optimizing")
-        print(st.network)
+        # print("Optimizing")
+        # print(st.network)
         search_engine = PartitionSearch(self.config)
         # decrease the delta budget exponentially
         delta, remaining_delta = error_dist.get_delta(level, remaining_delta)
         result = search_engine.search(st.network, delta=delta)
         bn = result.best_network
-        print("best network")
-        print(bn)
-        print(delta, remaining_delta, result.unused_delta)
+        # print("best network")
+        # print(bn)
+        # print(delta, remaining_delta, result.unused_delta)
         next_nodes = list(bn.network.nodes)
         # distribute delta equally to all subnets
         remaining_delta = remaining_delta / math.sqrt(len(next_nodes))
@@ -331,7 +325,12 @@ class TopDownSearch:
         best_st = SearchState(
             st.free_indices, st.reshape_history, bn, unused_delta
         )
-        if len(next_nodes) > 1:
+        # For the last node, there can be two cases:
+        # 1) this node can be split into two after reshaping
+        # 2) this node cannot be split in any reshaping
+        # In the enumerative case, we enumerate all possible cases;
+        # In the random case, we randomly end this recursion.
+        if len(next_nodes) > 1 or random.random() < 0.5:
             yield from self._optimize_subnet(
                 best_st, next_nodes, level + 1, error_dist, remaining_delta
             )
