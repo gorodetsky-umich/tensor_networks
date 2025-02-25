@@ -301,7 +301,7 @@ class TopDownSearch:
         bn = result.best_network
         print("best network")
         print(bn)
-
+        print(delta, remaining_delta, result.unused_delta)
         next_nodes = list(bn.network.nodes)
         # distribute delta equally to all subnets
         remaining_delta = remaining_delta / math.sqrt(len(next_nodes))

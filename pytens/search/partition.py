@@ -245,6 +245,7 @@ class PartitionSearch:
         if delta is None:
             delta = net.norm() * self.config.engine.eps
 
+        self.unused_delta = delta
         self._delta = delta
         init_st = SearchState(net, delta)
         free_indices = net.free_indices()
