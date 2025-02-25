@@ -25,6 +25,22 @@ def _create_split_target(
     remaining_size = math.prod(remaining_factors)
     return list(selected_factors) + [remaining_size]
 
+def _get_last_split_info(reshape_history: List[Union[IndexSplit, IndexMerge]]):
+    last_index = -1
+    while(len(reshape_history) >= abs(last_index)):
+        reshape_op = reshape_history[last_index]
+        if isinstance(reshape_op, IndexSplit):
+            split_info = {
+                        reshape_op.splitting_index.name: [
+                            ind.name for ind in reshape_op.split_result
+                        ]
+                    }
+            return split_info
+        
+        last_index -= 1
+
+    return {}
+
 
 class SearchState:
     """Hierarchical search state"""
@@ -149,14 +165,17 @@ class TopDownSearch:
         self, st: SearchState, node: NodeName
     ) -> Generator[SearchState, None, None]:
         indices = st.network.network.nodes[node]["tensor"].indices
-        while len(indices) > self.config.topdown.group_threshold:
+        if len(indices) > self.config.topdown.group_threshold:
             merge_candidates = []
             for ind in indices:
                 if ind in st.free_indices:
                     merge_candidates.append(ind)
 
             for merge_op in self._get_merge_op(indices, merge_candidates):
-                yield st.merge_index(merge_op, node)
+                st = st.merge_index(merge_op)
+                yield from self._merge_indices(st, node)
+        else:
+            yield st
 
     def _get_split_op(
         self, st: SearchState, index: Index
@@ -188,7 +207,7 @@ class TopDownSearch:
 
     def _split_indices(
         self, st: SearchState, node: NodeName
-    ) -> Generator[SearchState, None, None]:
+    ) -> Generator[Tuple[bool, SearchState], None, None]:
         net = st.network
         indices = net.network.nodes[node]["tensor"].indices
         index_splits = itertools.product(
@@ -196,6 +215,7 @@ class TopDownSearch:
         )
 
         for index_split in index_splits:
+            refactored = False
             new_st = copy.deepcopy(st)
             # print(index_split)
             for split_op in index_split:
@@ -203,17 +223,19 @@ class TopDownSearch:
                     continue
 
                 new_st = new_st.split_index(split_op)
+                refactored = True
                 # To avoid merge in the middle, we need to ensure that
                 # none of the splits goes beyond the threshold
                 new_net = new_st.network
                 new_indices = new_net.network.nodes[node]["tensor"].indices
                 ndims = len(new_indices)
-                # if ndims > self.config.topdown.group_threshold:
-                #     # continue
-                #     yield from self._merge_indices(new_st, node)
-                #     return
+                if ndims > self.config.topdown.group_threshold:
+                    for merged_st in self._merge_indices(new_st, node):
+                        yield refactored, merged_st
 
-            yield new_st
+                    return
+
+            yield refactored, new_st
 
     def _optimize_subnet(
         self,
@@ -227,7 +249,11 @@ class TopDownSearch:
         node = nodes[0]
         print("before index splitting", node)
         print(st.network)
-        for split_result in self._split_indices(st, node):
+        for ok, split_result in self._split_indices(st, node):
+            if not ok:
+                yield st
+                continue
+
             print("after index splitting", node)
             print(split_result.network)
             curr_net = split_result.network
@@ -252,16 +278,7 @@ class TopDownSearch:
                 level + 1, new_st, remaining_delta, error_dist
             ):
                 optimized_st = copy.deepcopy(sn_st)
-                if len(split_result.reshape_history) > 0:
-                    split_op = split_result.reshape_history[-1]
-                    split_info = {
-                        split_op.splitting_index.name: [
-                            ind.name for ind in split_op.split_result
-                        ]
-                    }
-                else:
-                    split_info = {}
-
+                split_info = _get_last_split_info(sn_st.reshape_history)
                 optimized_st.network = copy.deepcopy(split_result.network)
                 optimized_st.network.replace_with(
                     node, sn_st.network, split_info
