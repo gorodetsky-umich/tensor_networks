@@ -251,7 +251,11 @@ class TopDownSearch:
         print(st.network)
         for ok, split_result in self._split_indices(st, node):
             if not ok:
-                yield st
+                if len(nodes) == 1:
+                    yield st
+                else:
+                    yield from self._optimize_subnet(st, nodes[1:], level, error_dist, remaining_delta)
+
                 continue
 
             print("after index splitting", node)
