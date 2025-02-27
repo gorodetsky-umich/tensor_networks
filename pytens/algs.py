@@ -367,7 +367,7 @@ class TensorNetwork:  # pylint: disable=R0904
     def free_indices(self) -> List[Index]:
         """Get the free indices."""
         icount = self.all_indices()
-        free_indices = sorted([i for i, v in icount.items() if v == 1])
+        free_indices = [i for i, v in icount.items() if v == 1]
         return free_indices
 
     def get_contraction_index(
@@ -384,7 +384,7 @@ class TensorNetwork:  # pylint: disable=R0904
     def inner_indices(self) -> List[Index]:
         """Get hte interior indices."""
         icount = self.all_indices()
-        free_indices = sorted([i for i, v in icount.items() if v > 1])
+        free_indices = [i for i, v in icount.items() if v > 1]
         return free_indices
 
     def ranks(self) -> List[int]:
@@ -404,7 +404,7 @@ class TensorNetwork:  # pylint: disable=R0904
         Need to respect the edges, currently not using edges
         """
         all_indices = self.all_indices()
-        free_indices = sorted([i for i, v in all_indices.items() if v == 1])
+        free_indices = [i for i, v in all_indices.items() if v == 1]
 
         mapping = {
             name: chr(i + 97) for i, name in enumerate(all_indices.keys())

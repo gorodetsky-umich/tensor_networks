@@ -328,18 +328,14 @@ class TestTT(unittest.TestCase):
         e2 = np.eye(3, 3)
         ttop = ttop_rank1(indices_in, indices_out, [A, e1, e2], "A")
 
-        ttop_res = ttop.contract()
-        # print(ttop_res.indices)
-        ttop_arr = ttop_res.value
+        ttop_arr = ttop.contract().value
         # print(ttop_arr.shape)
 
         tt = rand_tt([x, y, z], [3, 2])
-        tt_res = tt.contract()
-        # print(tt_res.indices)
-        tt_arr = tt_res.value
+        tt_arr = tt.contract().value
         # print(tt_arr.shape)
 
-        should_be = np.einsum('ijklmn,ikm->jln', ttop_arr, tt_arr)
+        should_be = np.einsum('ijklmn,jln->ikm', ttop_arr, tt_arr)
         check = ttop_apply(ttop, tt).contract().value
 
         self.assertTrue(np.allclose(check, should_be,
@@ -365,7 +361,7 @@ class TestTT(unittest.TestCase):
         tt_arr = tt.contract().value
         # print(tt_arr.shape)
 
-        should_be = np.einsum('ijklmn,ikm->jln', ttop_arr, tt_arr)
+        should_be = np.einsum('ijklmn,jln->ikm', ttop_arr, tt_arr)
         check = ttop_apply(ttop, tt).contract().value
 
         err = np.linalg.norm(should_be - check)
@@ -431,6 +427,7 @@ class TestTT(unittest.TestCase):
         # TTadd = TTadd.rename('added')
 
         # print(TTadd)
+        indices = TTadd.free_indices()
         ttadd = TTadd.contract().value
         TTadd.round(0, 1e-5)
         # # exit(1)
@@ -439,7 +436,10 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[0], self.tt_ranks[0])
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
-        ttadd_rounded = TTadd.contract().value
+        ttadd_rounded = TTadd.contract()
+        rounded_indices = TTadd.free_indices()
+        perm = [rounded_indices.index(ind) for ind in indices]
+        ttadd_rounded = ttadd_rounded.permute(perm).value
         self.assertTrue(
             np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12)
         )

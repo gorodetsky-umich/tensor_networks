@@ -148,3 +148,9 @@ class SearchConfig(pydantic.BaseModel):
     def load(json_str: str) -> "SearchConfig":
         """Load configurations from JSON files"""
         return SearchConfig.model_validate_json(json_str)
+
+    @staticmethod
+    def load_file(json_file: str) -> "SearchConfig":
+        """Load configurations from JSON files"""
+        with open(json_file, "r", encoding="utf-8") as f:
+            return SearchConfig.model_validate_json(f.read())
