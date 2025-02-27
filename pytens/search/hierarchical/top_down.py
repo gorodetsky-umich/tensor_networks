@@ -3,7 +3,7 @@
 import random
 import math
 import copy
-from typing import Generator, List, Optional, Union, Tuple
+from typing import Generator, List, Optional, Union, Tuple, Dict
 import itertools
 
 import sympy
@@ -22,24 +22,75 @@ def _create_split_target(
     for f in selected_factors:
         remaining_factors.remove(f)
 
+    if len(remaining_factors) == 0:
+        return list(selected_factors)
+
     remaining_size = math.prod(remaining_factors)
     return list(selected_factors) + [remaining_size]
 
-def _get_last_split_info(reshape_history: List[Union[IndexSplit, IndexMerge]]):
-    last_index = -1
-    while(len(reshape_history) >= abs(last_index)):
-        reshape_op = reshape_history[last_index]
-        if isinstance(reshape_op, IndexSplit):
-            split_info = {
-                        reshape_op.splitting_index.name: [
-                            ind.name for ind in reshape_op.split_result
-                        ]
-                    }
-            return split_info
+# def _get_last_split_info(reshape_history: List[Union[IndexSplit, IndexMerge]]):
+#     last_index = -1
+#     while(len(reshape_history) >= abs(last_index)):
+#         reshape_op = reshape_history[last_index]
+#         if isinstance(reshape_op, IndexSplit):
+#             # split_info = {
+#             #             reshape_op.splitting_index.name: [
+#             #                 ind.name for ind in reshape_op.split_result
+#             #             ]
+#             #         }
+#             # return split_info
+#             return reshape_op
         
-        last_index -= 1
+#         last_index -= 1
 
-    return {}
+#     return {}
+
+def permute_unique(nums: List[int]) -> Generator[List[int], None, None]:
+    nums.sort()
+    used = [False] * len(nums)
+
+    def backtrack(pat):
+        if len(pat) == len(nums):
+            yield pat[:]
+            return
+
+        for i, num in enumerate(nums):
+            if used[i]:
+                continue
+            if i > 0 and num == nums[i - 1] and not used[i - 1]:
+                continue
+            used[i] = True
+            pat.append(num)
+            yield from backtrack(pat)
+            used[i] = False
+            pat.pop()
+
+    yield from backtrack([])
+
+def select_factors(factors: Dict[int, int]) -> Generator[List[int], None, None]:
+    # enumerate all possible choices for each factor
+    seen = set()
+    for counts in itertools.product(*[range(v+1) for v in factors.values()]):
+        if sum(counts) == 0:
+            continue
+
+        selected_factors, remaining_factors = [], []
+        for i, (f, c) in enumerate(factors.items()):
+            selected_factors.extend([f] * counts[i])
+            remaining_factors.extend([f] * (c - counts[i]))
+
+        for permuted_selection in permute_unique(selected_factors):
+            if len(remaining_factors) == 0:
+                shape = tuple(permuted_selection)
+            else:
+                remaining_size = math.prod(remaining_factors)
+                shape = tuple(list(permuted_selection) + [remaining_size])
+
+            if shape in seen:
+                continue
+
+            seen.add(shape)
+            yield shape
 
 
 class SearchState:
@@ -125,7 +176,9 @@ class TopDownSearch:
         best_network = net
         best_st = None
         init_st = SearchState(net.free_indices(), [], net, 0)
+        print(net.free_indices())
         for st in self._search_at_level(0, init_st, remaining_delta, error_dist):
+            print(st.network.cost(), st.unused_delta)
             for n in st.network.network.nodes:
                 network = copy.deepcopy(st.network)
                 # print("unused_delta", math.sqrt(st.unused_delta))
@@ -134,6 +187,9 @@ class TopDownSearch:
                     best_network = network
                     best_st = st
 
+            print(best_network.cost())
+            import sys
+            sys.stdout.flush()
         return best_network, best_st
 
     def _get_merge_op(
@@ -172,8 +228,8 @@ class TopDownSearch:
                     merge_candidates.append(ind)
 
             for merge_op in self._get_merge_op(indices, merge_candidates):
-                st = st.merge_index(merge_op)
-                yield from self._merge_indices(st, node)
+                new_st = st.merge_index(merge_op)
+                yield from self._merge_indices(new_st, node)
         else:
             yield st
 
@@ -191,19 +247,20 @@ class TopDownSearch:
             return
 
         if self.config.topdown.enable_random:
-            k = random.randint(0, len(factors) - 1)
+            k = random.randint(0, len(factors))
             selected = random.sample(factors, k=k)
             yield IndexSplit(
                 splitting_index=index,
                 split_target=_create_split_target(factors, selected),
             )
         else:
-            for k in range(0, len(factors) - 1):
-                for selected in itertools.combinations(factors, r=k):
-                    yield IndexSplit(
-                        splitting_index=index,
-                        split_target=_create_split_target(factors, selected),
-                    )
+            # for k in range(0, len(factors)):
+            for split_target in select_factors(res):
+            # for selected in itertools.combinations(factors, r=k):
+                yield IndexSplit(
+                    splitting_index=index,
+                    split_target=split_target,
+                )
 
     def _split_indices(
         self, st: SearchState, node: NodeName
@@ -217,23 +274,31 @@ class TopDownSearch:
         for index_split in index_splits:
             refactored = False
             new_st = copy.deepcopy(st)
-            # print(index_split)
+            print(index_split)
             for split_op in index_split:
                 if split_op is None:
+                    continue
+
+                split_op = copy.deepcopy(split_op)
+
+                tmp_net = new_st.network
+                tmp_indices = tmp_net.network.nodes[node]["tensor"].indices
+                ndims = len(tmp_indices) + len(split_op.split_target) - 1
+                if ndims > self.config.topdown.group_threshold:
                     continue
 
                 new_st = new_st.split_index(split_op)
                 refactored = True
                 # To avoid merge in the middle, we need to ensure that
                 # none of the splits goes beyond the threshold
-                new_net = new_st.network
-                new_indices = new_net.network.nodes[node]["tensor"].indices
-                ndims = len(new_indices)
-                if ndims > self.config.topdown.group_threshold:
-                    for merged_st in self._merge_indices(new_st, node):
-                        yield refactored, merged_st
+                # new_net = new_st.network
+                # new_indices = new_net.network.nodes[node]["tensor"].indices
+                # ndims = len(new_indices)
+                # if ndims > self.config.topdown.group_threshold:
+                #     for merged_st in self._merge_indices(new_st, node):
+                #         yield refactored, merged_st
 
-                    return
+                #     return
 
             yield refactored, new_st
 
@@ -251,15 +316,15 @@ class TopDownSearch:
             return
         
         node = nodes[0]
-        # print("before index splitting", node)
-        # print(st.network)
+        print("before index splitting", node)
+        print(st.network)
         for ok, split_result in self._split_indices(st, node):
             if not ok:
                 yield from self._optimize_subnet(st, nodes[1:], level, error_dist, remaining_delta)
                 continue
 
-            # print("after index splitting", node)
-            # print(split_result.network)
+            print("after index splitting", node)
+            print(split_result.network)
             curr_net = split_result.network
             n_indices = curr_net.network.nodes[node]["tensor"].indices
             assert len(n_indices) <= self.config.topdown.group_threshold
@@ -282,16 +347,16 @@ class TopDownSearch:
                 level + 1, new_st, remaining_delta, error_dist
             ):
                 optimized_st = copy.deepcopy(sn_st)
-                split_info = _get_last_split_info(sn_st.reshape_history)
                 optimized_st.network = copy.deepcopy(split_result.network)
                 optimized_st.network.replace_with(
-                    node, sn_st.network, split_info
+                    node, sn_st.network, sn_st.reshape_history
                 )
                 # optimized_st.unused_delta = math.sqrt(
                 #     sn_st.unused_delta**2 + st.unused_delta**2
                 # )
-                # print("after replacement")
-                # print(optimized_st.network)
+                print("replacing", node)
+                print("after replacement")
+                print(optimized_st.network)
                 yield from self._optimize_subnet(
                     optimized_st,
                     nodes[1:],
@@ -307,15 +372,15 @@ class TopDownSearch:
         remaining_delta: float,
         error_dist: BaseErrorDist,
     ) -> Generator[SearchState, None, None]:
-        # print("Optimizing")
-        # print(st.network)
+        print("Optimizing")
+        print(st.network)
         search_engine = PartitionSearch(self.config)
         # decrease the delta budget exponentially
         delta, remaining_delta = error_dist.get_delta(level, remaining_delta)
         result = search_engine.search(st.network, delta=delta)
         bn = result.best_network
-        # print("best network")
-        # print(bn)
+        print("best network")
+        print(bn)
         # print(delta, remaining_delta, result.unused_delta)
         next_nodes = list(bn.network.nodes)
         # distribute delta equally to all subnets
@@ -330,7 +395,7 @@ class TopDownSearch:
         # 2) this node cannot be split in any reshaping
         # In the enumerative case, we enumerate all possible cases;
         # In the random case, we randomly end this recursion.
-        if len(next_nodes) > 1 or random.random() < 0.5:
+        if len(next_nodes) > 1 or (self.config.topdown.enable_random and random.random() < 0.5):
             yield from self._optimize_subnet(
                 best_st, next_nodes, level + 1, error_dist, remaining_delta
             )

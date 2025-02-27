@@ -1001,7 +1001,7 @@ class TensorNetwork:  # pylint: disable=R0904
             for ind in tensor.indices:
                 if isinstance(ind.name, str) and ind.name.startswith("_fresh_index_"):
                     if split_op.split_result is not None:
-                        new_ind = split_op.split_result[used_results_cnt]
+                        new_ind = split_op.split_result[used_results_cnt].name
                         used_results_cnt += 1
                     else:
                         new_ind = self.fresh_index()
