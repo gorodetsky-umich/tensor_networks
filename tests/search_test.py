@@ -8,6 +8,7 @@ from pytens.algs import TensorNetwork, Index, Tensor
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import ISplit, OSplit, SearchState
 from pytens.search.search import SearchEngine
+from pytens.search.hierarchical.top_down import TopDownSearch, Rule
 
 class TestConfig(unittest.TestCase):
     """Test configuration properties"""
@@ -198,3 +199,60 @@ class TestSearch(unittest.TestCase):
         bn = result.best_network
         self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn.contract().value), 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
+
+class TestTopDownSearch(unittest.TestCase):
+    # def test_hint(self):
+    #     config = SearchConfig()
+    #     search_engine = TopDownSearch(config)
+    #     search_engine.samples = [TopDownSearch.Sample([Index("i1", 2), Index("i2", 2), Index("i3", 2), Index("i4", 15), Index("i5", 17)], [
+    #         [Index("i1", 2), Index("i2", 2), Index("i5", 17), Index("s", 9)],
+    #         [Index("i3", 2), Index("i4", 15), Index("s", 9)],
+    #     ])]
+
+    #     new_sample = TopDownSearch.Sample([Index("i1", 4), Index("i2", 2), Index("i3", 3), Index("i4", 5), Index("i5", 17)], [
+    #         [Index("i1", 4), Index("i5", 17), Index("s2", 9)],
+    #         [Index("i3", 3), Index("i4", 5), Index("s1", 6)],
+    #         [Index("i2", 2), Index("s1", 6), Index("s2", 9)],
+    #     ])
+    #     hints = search_engine.mine_hint(new_sample)
+    #     self.assertDictEqual(hints, {
+    #         (2, 2, 2, 15, 17): [[range(0,2), range(4,5)],[range(3,4)], [range(2,3)]],
+    #     })
+
+    #     new_sample = TopDownSearch.Sample([Index("i1", 2), Index("i2", 4), Index("i3", 3), Index("i4", 5), Index("i5", 17)], [
+    #         [Index("i1", 2), Index("i5", 17), Index("s2", 9)],
+    #         [Index("i3", 3), Index("i4", 5), Index("s1", 6)],
+    #         [Index("i2", 4), Index("s1", 6), Index("s2", 9)],
+    #     ])
+    #     hints = search_engine.mine_hint(new_sample)
+    #     self.assertDictEqual(hints, {
+    #         (2, 2, 2, 15, 17): [[range(0,1), range(4,5)], [range(3,4)]],
+    #         (4, 2, 3, 5, 17): [[range(4,5)],[range(2,3), range(3,4)]],
+    #     })
+
+    #     tensor = Tensor(np.random.randn(2,2,6,5,17), [Index("i1", 2), Index("i2", 2), Index("i3", 6), Index("i4", 5), Index("i5", 17)])
+    #     out, applied = search_engine.with_hint(tensor)
+    #     self.assertListEqual(out.indices, [Index("i5", 34), Index("i2",2), Index("i3", 6), Index("i4", 5)])
+    #     self.assertTrue(np.allclose(out.value, tensor.value.transpose(0,4,1,2,3).reshape(-1, 2, 6, 5)))
+
+    def test_rule(self):
+        rule1 = Rule([2, 2, 2, 15, 17], [0, 4])
+        rule2 = Rule([2, 2, 6, 5, 17], [0, 4])
+        rule3 = Rule([2, 2, 5, 6, 17], [0, 1, 4])
+        rule4 = Rule([2, 2, 2, 15, 17], [3])
+        rule5 = Rule([4, 3, 2, 5, 17], [1, 3])
+        self.assertTrue(rule1.match([2, 2, 2, 15, 17]))
+        self.assertFalse(rule1.match([2, 2, 3, 15, 17]))
+        self.assertTrue(rule1.match([2, 2, 4, 15, 17]))
+        self.assertFalse(rule1.match([2, 2, 2, 3, 17]))
+
+        rule12 = rule1.join(rule2)
+        self.assertListEqual(rule12.pattern, [2, 2, 2, 5, 17])
+        self.assertListEqual(rule12.interest_points, [0, 4])
+
+        rule13 = rule1.join(rule3)
+        self.assertListEqual(rule13.pattern, [2, 2, 1, 3, 17])
+        self.assertListEqual(rule13.interest_points, [0, 4])
+
+        self.assertIsNone(rule1.join(rule4))
+        self.assertIsNone(rule1.join(rule5))

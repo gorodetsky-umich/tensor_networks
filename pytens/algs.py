@@ -1022,7 +1022,7 @@ class TensorNetwork:  # pylint: disable=R0904
             if merge_op.merge_result is None:
                 new_ind = self.fresh_index()
             else:
-                new_ind = merge_op.merge_result
+                new_ind = merge_op.merge_result.name
             tensor = tensor.merge_indices(merge_op.merging_indices, new_ind)
 
             self.network.nodes[n]["tensor"] = tensor

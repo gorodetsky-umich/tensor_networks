@@ -84,7 +84,10 @@ class SearchEngine:
 
         top_down_runner = TopDownSearch(self.config)
         start = time.time()
-        best_network, best_st = top_down_runner.search(net, AlphaErrorDist(alpha=2.5))
+        if self.config.topdown.random_algorithm == "random":
+            best_network, best_st = top_down_runner.search(net, AlphaErrorDist(alpha=2.5))
+        elif self.config.topdown.random_algorithm == "anneal":
+            best_network, best_st = top_down_runner.anneal(net, AlphaErrorDist(alpha=2.5))
         end = time.time()
 
         result = SearchResult()

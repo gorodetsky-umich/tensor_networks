@@ -111,7 +111,7 @@ class PreprocessConfig(pydantic.BaseModel):
     """Configuration for the preprocess phase"""
 
     force_recompute: bool = pydantic.Field(
-        default=False,
+        default=True,
         description="Enable recomputation and ignore the stored SVD results",
     )
 
@@ -126,9 +126,29 @@ class TopDownConfig(pydantic.BaseModel):
         default=True,
         description="Configure whether to use random algorithms",
     )
+    random_algorithm: Literal["random", "anneal"] = pydantic.Field(
+        default="random",
+        description="Configure to use which random search algorithm",
+    )
     group_threshold: int = pydantic.Field(
         default=4,
-        description="Configure the number of indices allowed in one search"
+        description="Configure the number of indices allowed in one search",
+    )
+    annel_step: int = pydantic.Field(
+        default=10,
+        description="Configure the step number for simulated annealing",
+    )
+    init_temp: float = pydantic.Field(
+        default=100,
+        description="Configure the initial temperature for simulated annealing",
+    )
+    temp_schedule: Literal["linear", "exp", "log"] = pydantic.Field(
+        default="linear",
+        description="Configure the temperature schedule for simulated annealing",
+    )
+    alpha: float = pydantic.Field(
+        default=0.01,
+        description="Configure the temperature changing step"
     )
 
 class SearchConfig(pydantic.BaseModel):
