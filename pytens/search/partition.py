@@ -4,7 +4,6 @@ from typing import List
 import time
 import copy
 import multiprocessing
-import queue
 import pickle
 import atexit
 
@@ -240,7 +239,8 @@ class PartitionSearch:
                 )
             return self.rank_search_and_replay(net, acs, delta)
 
-        self.best_network = net
+        if self.best_network is None:
+            self.best_network = net
 
         if delta is None:
             delta = net.norm() * self.config.engine.eps
@@ -248,7 +248,6 @@ class PartitionSearch:
         self.unused_delta = delta
         self._delta = delta
         init_st = SearchState(net, delta)
-        free_indices = net.free_indices()
 
         start = time.time()
         # print(start)
