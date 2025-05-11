@@ -171,6 +171,12 @@ class ConstraintSearch:
         file_name = (
             f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"
         )
+        # if OSplit(comb) in self.split_actions:
+        #     print("skipping", [str(ac) for ac in comb])
+        #     return
+        # else:
+        #     print("not skipping", [str(ac) for ac in comb])
+
         if compute_uv:
             u, s, v = np.linalg.svd(
                 tensor_val.reshape(left_size, -1), False, True

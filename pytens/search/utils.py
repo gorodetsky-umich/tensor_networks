@@ -31,6 +31,7 @@ class SearchResult:
     unused_delta: Optional[float] = 0.0
     best_network: Optional[TensorNetwork] = None
     best_actions: Optional[Sequence[Action]] = None
+    best_solver_cost: Optional[int] = -1
 
     def __init__(self, stats = SearchStats(), best_network = None, best_actions = None, unused_delta = 0.0):
         self.stats = stats
