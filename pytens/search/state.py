@@ -295,6 +295,15 @@ class SearchState:
         self.is_noop = False
         self.links = []
 
+    def count_actions_of_size(self, k:int = 2):
+        """Count the number of actions of the given size in the history."""
+        cnt = 0
+        for ac in self.past_actions:
+            if len(ac.indices) >= k:
+                cnt += 1
+
+        return cnt
+
     def get_legal_actions(self, index_actions=False):
         """Return a list of all legal actions in this state."""
         if index_actions:
@@ -319,12 +328,17 @@ class SearchState:
 
     @staticmethod
     def all_index_combs(
-        free_indices: Sequence[Index],
+        free_indices: Sequence[Index], k: Optional[int] = None
     ) -> Generator[Sequence[Index], None, None]:
         """Compute all index partitions for the given index set."""
-        for k in range(1, len(free_indices) // 2 + 1):
-            combs = list(itertools.combinations(free_indices, k))
-            if len(free_indices) % 2 == 0 and k == len(free_indices) // 2:
+        if k is not None:
+            upper = min(k, len(free_indices) // 2 + 1)
+        else:
+            upper = len(free_indices) // 2 + 1
+
+        for i in range(1, upper):
+            combs = list(itertools.combinations(free_indices, i))
+            if len(free_indices) % 2 == 0 and i == len(free_indices) // 2:
                 combs = combs[: len(combs) // 2]
 
             yield from combs
@@ -367,6 +381,11 @@ class SearchState:
             else:
                 break
 
+        split_errors = config.rank_search.error_split_stepsize
+        if target_size is not None:
+            target_trunc = max(len(s_val) - target_size + split_errors // 2, 0)
+            truncpost = truncpost[:target_trunc]
+
         if len(truncpost) == 0:
             if config.heuristics.prune_full_rank and max_sz == len(s_val):
                 return
@@ -386,11 +405,7 @@ class SearchState:
             yield new_state
             return
 
-        split_errors = config.rank_search.error_split_stepsize
-        if target_size is not None:
-            target_trunc = max(len(s_val) - target_size + split_errors // 2, 0)
-            truncpost = truncpost[:target_trunc]
-
+        # print("len of singular values", len(s_val), "target size", target_size)
         # print("remaining truncpost", len(truncpost))
 
         if split_errors == 0:
@@ -459,6 +474,7 @@ class SearchState:
                     new_state.past_actions = self.past_actions + [action]
                     yield new_state
             except np.linalg.LinAlgError:
+                print("linalgerror")
                 pass
 
         elif isinstance(action, Merge):

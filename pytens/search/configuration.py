@@ -122,9 +122,17 @@ class TopDownConfig(pydantic.BaseModel):
         default=False,
         description="Configure for enabling the top down search",
     )
-    enable_random: bool = pydantic.Field(
-        default=True,
+    merge_mode: Literal["all", "not_first"] = pydantic.Field(
+        default="not_first",
+        description="Configure whether to merge indices at the first level",
+    )
+    search_algo: Literal["random", "enumerate", "correlation", "svd"] = pydantic.Field(
+        default="enumerate",
         description="Configure whether to use random algorithms",
+    )
+    aggregation: Literal["mean", "det", "norm", "sval"] = pydantic.Field(
+        default="mean",
+        description="Configure the aggregation method for correlations",
     )
     random_algorithm: Literal["random", "anneal"] = pydantic.Field(
         default="random",
@@ -148,7 +156,7 @@ class TopDownConfig(pydantic.BaseModel):
     )
     alpha: float = pydantic.Field(
         default=0.01,
-        description="Configure the temperature changing step"
+        description="Configure the error distribution between steps"
     )
 
 class SearchConfig(pydantic.BaseModel):

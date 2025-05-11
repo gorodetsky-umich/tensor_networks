@@ -1,6 +1,6 @@
 """Structure search with output-directed splits."""
 
-from typing import List
+from typing import List, Optional, Generator
 import time
 import copy
 import multiprocessing
@@ -31,6 +31,14 @@ class PartitionSearch:
         self._ranks = {}
         self._delta = 0
         self._tic = 0
+
+    def reset(self):
+        self.best_network = None
+        self.best_acs = []
+        self._costs = {}
+        self._ranks = {}
+        self.unused_delta = 0.0
+        self.search_stats = SearchStats()
 
     def get_cost(
         self,
@@ -85,9 +93,16 @@ class PartitionSearch:
         new_st.past_actions = curr_st.past_actions + [action]
         new_st.links = copy.deepcopy(curr_st.links)
         new_st.links.append(new_link.name)
+        # print("adding action", action)
         return new_st
 
-    def fill_holes(self, st: SearchState, result_queue: multiprocessing.Queue) -> SearchResult:
+    def fill_holes(
+        self,
+        st: SearchState,
+        result_queue: multiprocessing.Queue,
+        actions: Optional[List[Action]] = None,
+        budget: int = 2,
+    ) -> Generator[SearchResult, None, None]:
         """Enumerate all possible splits up to the maximum number of ops."""
         sts = [st]
         # best_costs = [st.network.cost()]
@@ -96,13 +111,41 @@ class PartitionSearch:
             next_sts = []
             for curr_st in sts:
                 is_osplit = self.config.synthesizer.action_type == "osplit"
-                for action in curr_st.get_legal_actions(
-                    index_actions=is_osplit
-                ):
+                if actions is not None:
+                    legal_actions = actions
+                else:
+                    legal_actions = curr_st.get_legal_actions(
+                        index_actions=is_osplit
+                    )
+                for action in legal_actions:
+                    if (
+                        is_osplit
+                        and curr_st.past_actions
+                        and (
+                            action < curr_st.past_actions[-1]
+                            or not action.is_valid(curr_st.past_actions)
+                        )
+                    ):
+                        continue
+
+                    # we want to see at most two size two actions
+                    if (
+                        actions is not None
+                        and len(curr_st.past_actions) >= budget
+                    ):
+                        continue
+
                     new_st = self.pseudo_action_execution(curr_st, action)
                     self.search_stats.count += 1
                     best_cost = self.get_cost(
                         st, new_st, best_cost, result_queue
+                    )
+                    print("cost for new action", action, "is", best_cost)
+                    print(
+                        "cost for new action",
+                        action,
+                        "is",
+                        self.best_network.cost(),
                     )
                     next_sts.append(new_st)
 
@@ -118,15 +161,28 @@ class PartitionSearch:
                 if c == BAD_SCORE:
                     acs = []
 
+                # print("best actions", [str(ac) for ac in acs])
                 for k, ac in enumerate(acs):
                     ac.target_size = self._ranks[acs][k]
 
                 self.best_acs = acs
-                self.replay(st, acs, result_queue, True)
+                if actions is None:
+                    self.replay(st, acs, result_queue, True)
 
-        result = SearchResult(stats = self.search_stats, best_network = self.best_network, best_actions=self.best_acs,)
-        # result_queue.put(result)
-        return result
+                result = SearchResult(
+                    stats=self.search_stats,
+                    best_network=self.best_network,
+                    best_actions=self.best_acs,
+                )
+                result.best_solver_cost = c
+                # result_queue.put(result)
+                yield result
+        else:
+            yield SearchResult(
+                stats=self.search_stats,
+                best_network=self.best_network,
+                best_actions=self.best_acs,
+            )
 
     def replay(
         self,
@@ -170,8 +226,11 @@ class PartitionSearch:
                 )
             )
             ukey = new_st.network.canonical_structure()
-            self.search_stats.unique[ukey] = self.search_stats.unique.get(ukey, 0) + 1
+            self.search_stats.unique[ukey] = (
+                self.search_stats.unique.get(ukey, 0) + 1
+            )
             self.replay(new_st, actions[1:], result_queue)
+            # print(new_st.network)
 
     def rank_search_and_replay(
         self,
@@ -212,14 +271,18 @@ class PartitionSearch:
         self.search_stats.cr_start = net.cost() / self.best_network.cost()
         net_val = net.contract().value
         self.search_stats.re = float(
-            np.linalg.norm(
-                self.best_network.contract().value - net_val
-            )
+            np.linalg.norm(self.best_network.contract().value - net_val)
             / np.linalg.norm(net_val)
         )
         return self.search_stats
 
-    def search(self, net: TensorNetwork, delta: float = None) -> SearchResult:
+    def search(
+        self,
+        net: TensorNetwork,
+        delta: Optional[float] = None,
+        actions: Optional[List[Action]] = None,
+        budget: int = 2,
+    ) -> Generator[SearchResult, None, None]:
         """Start the search from a given network.
         Only support single core now.
         """
@@ -254,6 +317,7 @@ class PartitionSearch:
         self.constraint_engine.preprocess(
             net.contract(),
             compute_uv=self.config.rank_search.fit_mode == "all",
+            acs=actions,
             delta=delta,
         )
         if self.config.output.remove_temp_after_run:
@@ -266,22 +330,22 @@ class PartitionSearch:
 
         self._tic = time.time()
         q = multiprocessing.Queue()
-        result = self.fill_holes(init_st, q)
-        # q = multiprocessing.Queue()
-        # p = multiprocessing.Process(target=self.fill_holes, args=(init_st, q))
-        # p.start()
-        # result = SearchResult()
-        # try:
-        #     result = q.get(timeout=self.config.engine.timeout)
-        #     p.join(timeout=self.config.engine.timeout)
-        # except (multiprocessing.TimeoutError, queue.Empty):
-        #     pass
-        # finally:
-        #     if p.is_alive():
-        #         p.kill()
-        toc2 = time.time()
+        for result in self.fill_holes(init_st, q, actions, budget):
+            # q = multiprocessing.Queue()
+            # p = multiprocessing.Process(target=self.fill_holes, args=(init_st, q))
+            # p.start()
+            # result = SearchResult()
+            # try:
+            #     result = q.get(timeout=self.config.engine.timeout)
+            #     p.join(timeout=self.config.engine.timeout)
+            # except (multiprocessing.TimeoutError, queue.Empty):
+            #     pass
+            # finally:
+            #     if p.is_alive():
+            #         p.kill()
+            toc2 = time.time()
 
-        result.stats.time = toc2 - start
-        result.stats.preprocess_time = toc1 - start
-        result.unused_delta = self.unused_delta
-        return result
+            result.stats.time = toc2 - start
+            result.stats.preprocess_time = toc1 - start
+            result.unused_delta = self.unused_delta
+            yield result

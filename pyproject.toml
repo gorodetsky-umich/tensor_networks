@@ -28,6 +28,7 @@ dependencies = [
   "flake8",
   "flake8-pyproject",
   "pydantic", # better dataclasses
+  "seaborn (>=0.13.2,<0.14.0)",
 ]
 
 [tool.poetry]

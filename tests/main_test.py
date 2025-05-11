@@ -7,17 +7,42 @@ import tempfile
 import pickle
 
 import numpy as np
+import networkx as nx
 
-from pytens.algs import *
-from tests.search_test import *
+from pytens.algs import (
+    TensorNetwork,
+    Tensor,
+    Index,
+    gmres,
+    rand_tt,
+    rand_tree,
+    tt_gramsvd_round,
+    tt_randomized_round,
+    tt_right_orth,
+    tt_sum,
+    tt_sum_gramsvd_round,
+    tt_sum_randomized_round,
+    tt_svd_round,
+    ttop_apply,
+    ttop_rank1,
+    ttop_rank2,
+    ttop_sum_apply,
+)
+from pytens.utils import TensorFunc, cross_approx
+from tests.search_test import (
+    TestConfig,  # noqa: F401
+    TestAction,  # noqa: F401
+    TestSearch,  # noqa: F401
+    TestState,  # noqa: F401
+    TestTopDownSearch,  # noqa: F401
+)
+from pytens.search.utils import IndexSplit, IndexMerge
 
 np.random.seed(4)
 
 
 class TestIndex(unittest.TestCase):
-
     def test_equality(self):
-
         x = Index("x", 5)
         y = Index("x", 5)
         z = Index("z", 5)
@@ -26,7 +51,6 @@ class TestIndex(unittest.TestCase):
 
 
 class TestTT(unittest.TestCase):
-
     def setUp(self):
         self.x = Index("t", 5)
         self.u = Index("u", 10)
@@ -37,12 +61,10 @@ class TestTT(unittest.TestCase):
         self.TT2 = rand_tt([self.x, self.u, self.v], self.tt_ranks2)
 
     def test_save(self):
-
         with tempfile.TemporaryDirectory() as td:
-
             fname = os.path.join(td, "test")
             with open(fname, "wb") as fp:
-                out = pickle.dump(self.TT, fp, pickle.HIGHEST_PROTOCOL)
+                pickle.dump(self.TT, fp, pickle.HIGHEST_PROTOCOL)
 
             with open(fname, mode="rb") as f:
                 new_tt = pickle.load(f)
@@ -77,7 +99,9 @@ class TestTT(unittest.TestCase):
         val = self.TT[2:4, 5:7, 3].value
         val_should_be = ttarr[2:4, 5:7, 3]
 
-        self.assertTrue(np.allclose(val_should_be, val, atol=1e-14, rtol=1e-14))
+        self.assertTrue(
+            np.allclose(val_should_be, val, atol=1e-14, rtol=1e-14)
+        )
 
     def test_inner(self):
         inner_val = self.TT.inner(self.TT2)
@@ -90,17 +114,23 @@ class TestTT(unittest.TestCase):
 
     def test_integrate(self):
         integral = (
-            self.TT.integrate([self.x, self.u, self.v], np.ones(3)).contract().value
+            self.TT.integrate([self.x, self.u, self.v], np.ones(3))
+            .contract()
+            .value
         )
         ttarr = self.TT.contract().value
-        self.assertTrue(np.allclose(integral, np.sum(ttarr), atol=1e-14, rtol=1e-14))
+        self.assertTrue(
+            np.allclose(integral, np.sum(ttarr), atol=1e-14, rtol=1e-14)
+        )
 
         int_partial = self.TT.integrate([self.v], np.ones(1)).contract().value
         self.assertEqual(int_partial.ndim, 2)
         self.assertEqual(int_partial.shape[0], self.x.size)
         self.assertEqual(int_partial.shape[1], self.u.size)
         self.assertTrue(
-            np.allclose(int_partial, np.sum(ttarr, axis=2), atol=1e-14, rtol=1e-14)
+            np.allclose(
+                int_partial, np.sum(ttarr, axis=2), atol=1e-14, rtol=1e-14
+            )
         )
 
     def test_addition(self):
@@ -111,7 +141,7 @@ class TestTT(unittest.TestCase):
 
         out1 = self.TT.contract().value
         out2 = self.TT2.contract().value
-        err = sum1 - out1 - out2
+        # err = sum1 - out1 - out2
         # print("error = ", np.linalg.norm(err), np.linalg.norm(out1+out2))
         self.assertTrue(np.allclose(sum1, out1 + out2, atol=1e-14, rtol=1e-14))
         ranks = tt_add.ranks()
@@ -119,7 +149,6 @@ class TestTT(unittest.TestCase):
         self.assertEqual(ranks[1], self.tt_ranks[1] + self.tt_ranks2[1])
 
     def test_sum_multiple_tt(self):
-
         TT1 = rand_tt([self.x, self.u, self.v], [2, 2])
         TT2 = rand_tt([self.x, self.u, self.v], [4, 3])
         TT3 = rand_tt([self.x, self.u, self.v], [8, 12])
@@ -139,7 +168,6 @@ class TestTT(unittest.TestCase):
         self.assertEqual(ranks[1], 2 + 3 + 12 + 4)
 
     def test_multiplication(self):
-
         # print("\n MULTIPLICATION")
         # print(self.TT)
         tt_mult = self.TT * self.TT2
@@ -147,7 +175,9 @@ class TestTT(unittest.TestCase):
 
         out1 = self.TT.contract().value
         out2 = self.TT2.contract().value
-        self.assertTrue(np.allclose(mult1, out1 * out2, atol=1e-14, rtol=1e-14))
+        self.assertTrue(
+            np.allclose(mult1, out1 * out2, atol=1e-14, rtol=1e-14)
+        )
 
         ranks = tt_mult.ranks()
         self.assertEqual(2, len(ranks))
@@ -181,7 +211,6 @@ class TestTT(unittest.TestCase):
         self.assertTrue(np.allclose(arr1, arr2, atol=1e-14, rtol=1e-14))
 
     def test_rounding(self):
-
         # print("\nROUNDING")
         TTadd = self.TT + self.TT
         # TTadd = TTadd.rename('added')
@@ -196,10 +225,11 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13))
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+        )
 
     def test_gramsvd_rounding(self):
-
         # print("\nROUNDING")
         TTadd = self.TT + self.TT
         # TTadd = TTadd.rename('added')
@@ -214,7 +244,9 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13))
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+        )
 
     def test_gram_rounding_ttsum(self):
         # print("\nROUNDING")
@@ -237,10 +269,11 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13))
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+        )
 
     def test_rand_rounding(self):
-
         # print("\nROUNDING")
         TTadd = self.TT + self.TT
 
@@ -259,10 +292,11 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13))
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+        )
 
     def test_rand_rounding_ttsum(self):
-
         # print("\nROUNDING")
         s = 3
         TTadd = self.TT
@@ -286,17 +320,20 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13))
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+        )
 
     def test_scale(self):
-
         TT = copy.deepcopy(self.TT)
         TT.scale(2.0)
 
         tt_arr1 = self.TT.contract().value
         tt_arr2 = TT.contract().value
 
-        self.assertTrue(np.allclose(2 * tt_arr1, tt_arr2, atol=1e-14, rtol=1e-14))
+        self.assertTrue(
+            np.allclose(2 * tt_arr1, tt_arr2, atol=1e-14, rtol=1e-14)
+        )
 
     def test_ttop(self):
         # print("\nTTOP APPLY")
@@ -337,7 +374,9 @@ class TestTT(unittest.TestCase):
         f1 = np.eye(3, 3)
         f2 = np.random.randn(3, 3)
 
-        ttop = ttop_rank2(indices_in, indices_out, [A1, e1, f1], [A2, e2, f2], "A")
+        ttop = ttop_rank2(
+            indices_in, indices_out, [A1, e1, f1], [A2, e2, f2], "A"
+        )
 
         ttop_arr = ttop.contract().value
         # print(ttop_arr.shape)
@@ -349,7 +388,7 @@ class TestTT(unittest.TestCase):
         should_be = np.einsum("ijklmn,ikm->jln", ttop_arr, tt_arr)
         check = ttop_apply(ttop, tt).contract().value
 
-        err = np.linalg.norm(should_be - check)
+        # err = np.linalg.norm(should_be - check)
         # print("error = ", err)
         self.assertTrue(np.allclose(check, should_be, atol=1e-13, rtol=1e-13))
 
@@ -372,13 +411,12 @@ class TestTT(unittest.TestCase):
             "A",
         )
         check2 = out.contract().value
-        err2 = np.linalg.norm(should_be - check2)
+        # err2 = np.linalg.norm(should_be - check2)
         self.assertTrue(np.allclose(check2, should_be, atol=1e-13, rtol=1e-13))
         # print("out = ", out)
 
     # @unittest.skip('other stuff first')
     def test_gmres(self):
-
         x = Index("x", 10)
         xp = Index("xp", 10)
         y = Index("y", 5)
@@ -389,7 +427,9 @@ class TestTT(unittest.TestCase):
         indices_in = [x, y, z]
         indices_out = [xp, yp, zp]
         A = np.random.randn(10, 10)
-        ttop = ttop_rank1(indices_in, indices_out, [A, np.eye(5, 5), np.eye(3, 3)], "A")
+        ttop = ttop_rank1(
+            indices_in, indices_out, [A, np.eye(5, 5), np.eye(3, 3)], "A"
+        )
         tt = rand_tt([x, y, z], [3, 2])
 
         x0 = rand_tt([x, y, z], [3, 2])
@@ -405,7 +445,6 @@ class TestTT(unittest.TestCase):
     #                                 atol=1e-5, rtol=1e-5))
 
     def test_optimize(self):
-
         # print("\nROUNDING")
         TTadd = self.TT + self.TT
         # TTadd = TTadd.rename('added')
@@ -420,11 +459,12 @@ class TestTT(unittest.TestCase):
         self.assertTrue(new_ranks[1], self.tt_ranks[1])
 
         ttadd_rounded = TTadd.contract().value
-        self.assertTrue(np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12))
+        self.assertTrue(
+            np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12)
+        )
 
 
 class TestTree(unittest.TestCase):
-
     def setUp(self):
         np.random.seed(100)
         self.x = Index("x", 5)
@@ -442,7 +482,9 @@ class TestTree(unittest.TestCase):
         permutation = [after_split_free.index(i) for i in original_free]
         after_split = after_split.transpose(permutation)
 
-        self.assertTrue(np.allclose(original, after_split, atol=1e-5, rtol=1e-5))
+        self.assertTrue(
+            np.allclose(original, after_split, atol=1e-5, rtol=1e-5)
+        )
 
     def test_tree_split_free(self):
         original = self.tree.contract().value
@@ -454,7 +496,9 @@ class TestTree(unittest.TestCase):
         permutation = [after_split_free.index(i) for i in original_free]
         after_split = after_split.transpose(permutation)
 
-        self.assertTrue(np.allclose(original, after_split, atol=1e-5, rtol=1e-5))
+        self.assertTrue(
+            np.allclose(original, after_split, atol=1e-5, rtol=1e-5)
+        )
 
     def test_tree_merge(self):
         original = self.tree.contract().value
@@ -466,7 +510,9 @@ class TestTree(unittest.TestCase):
         permutation = [after_merge_free.index(i) for i in original_free]
         after_merge = after_merge.transpose(permutation)
 
-        self.assertTrue(np.allclose(original, after_merge, atol=1e-5, rtol=1e-5))
+        self.assertTrue(
+            np.allclose(original, after_merge, atol=1e-5, rtol=1e-5)
+        )
 
     def test_tree_orthonorm(self):
         original = self.tree.contract().value
@@ -476,17 +522,23 @@ class TestTree(unittest.TestCase):
         root = self.tree.orthonormalize(root)
         after_orthonormal = self.tree.contract().value
         after_orthonormal_indices = self.tree.free_indices()
-        permutation = [after_orthonormal_indices.index(i) for i in original_indices]
+        permutation = [
+            after_orthonormal_indices.index(i) for i in original_indices
+        ]
         after_orthonormal = after_orthonormal.transpose(permutation)
 
-        self.assertTrue(np.allclose(after_orthonormal, original, atol=1e-5, rtol=1e-5))
+        self.assertTrue(
+            np.allclose(after_orthonormal, original, atol=1e-5, rtol=1e-5)
+        )
 
         # check each neighbor of root becomes isometry
         nbrs = list(self.tree.network.neighbors(root))
         for n in nbrs:
             self.tree.network.remove_edge(root, n)
             reachable_nodes = nx.descendants(self.tree.network, n)
-            reachable_graph = self.tree.network.subgraph([n] + list(reachable_nodes))
+            reachable_graph = self.tree.network.subgraph(
+                [n] + list(reachable_nodes)
+            )
             subnet = TensorNetwork()
             subnet.network = reachable_graph
             self.assertTrue(subnet.norm(), 1)
@@ -504,7 +556,8 @@ class TestTree(unittest.TestCase):
         single_node2.add_node("y", Tensor(x.transpose(1, 0, 2), indices2))
 
         self.assertEqual(
-            single_node1.canonical_structure(), single_node2.canonical_structure()
+            single_node1.canonical_structure(),
+            single_node2.canonical_structure(),
         )
 
         # test symmetry
@@ -539,7 +592,9 @@ class TestTree(unittest.TestCase):
         tree2.add_edge("root", "u")
         tree2.add_edge("root", "v")
 
-        self.assertEqual(tree1.canonical_structure(), tree2.canonical_structure())
+        self.assertEqual(
+            tree1.canonical_structure(), tree2.canonical_structure()
+        )
 
         tt1 = TensorNetwork()
         u1 = np.random.randn(2, 3)
@@ -567,7 +622,9 @@ class TestTree(unittest.TestCase):
         tt2.add_edge("u", "v")
         tt2.add_edge("v", "w")
 
-        self.assertNotEqual(tt1.canonical_structure(), tt2.canonical_structure())
+        self.assertNotEqual(
+            tt1.canonical_structure(), tt2.canonical_structure()
+        )
 
 
 class TestGeneralOps(unittest.TestCase):
@@ -581,26 +638,37 @@ class TestGeneralOps(unittest.TestCase):
         tensor = Tensor(data, indices)
         net.add_node("n0", tensor)
 
-        net.split_index(IndexSplit(splitting_index = Index("k", 6), split_target = [2, 3]))
+        net.split_index(
+            IndexSplit(splitting_index=Index("k", 6), split_target=[2, 3])
+        )
         self.assertEqual(len(net.free_indices()), 4)
 
         (_, s, v), _ = net.svd("n0", [0])
         net.merge(v, s)
         self.assertEqual(len(net.free_indices()), 4)
-        net.split_index(IndexSplit(splitting_index = Index("i", 4), split_target = [2, 2]))
+        net.split_index(
+            IndexSplit(splitting_index=Index("i", 4), split_target=[2, 2])
+        )
         self.assertEqual(len(net.free_indices()), 5)
 
-        net.split_index(IndexSplit(splitting_index=Index("j", 16), split_target = [8, 2]))
-        net.merge_index(IndexMerge(merging_indices=[Index("s_11", 2), Index("s_12", 3)]))
-        self.assertEqual(net.free_indices(), [
-            # Index("s_11", 2),
-            # Index("s_12", 3),
-            Index("s_15", 2),
-            Index("s_16", 2),
-            Index("s_17", 8),
-            Index("s_18", 2),
-            Index("s_19", 6),
-        ])
+        net.split_index(
+            IndexSplit(splitting_index=Index("j", 16), split_target=[8, 2])
+        )
+        net.merge_index(
+            IndexMerge(merging_indices=[Index("s_11", 2), Index("s_12", 3)])
+        )
+        self.assertEqual(
+            net.free_indices(),
+            [
+                # Index("s_11", 2),
+                # Index("s_12", 3),
+                Index("s_15", 2),
+                Index("s_16", 2),
+                Index("s_17", 8),
+                Index("s_18", 2),
+                Index("s_19", 6),
+            ],
+        )
 
     def test_replace_with(self):
         """Replace should remove the old node and rewire the edges"""
@@ -644,6 +712,30 @@ class TestGeneralOps(unittest.TestCase):
             ],
         )
 
+
+class TestCross(unittest.TestCase):
+    def test_cross_error(self):
+        p = 25
+        q = 25
+        tensor_func = TensorFunc(lambda i, j: ((i + 1) ** 2 + (j+1)**2) ** -0.5, (p, q))
+        def index_to_args(indices):
+            res = [[] for _ in tensor_func.dims]
+            assert len(indices) == 2
+            if indices[0] is None:
+                res[0] = list(range(p))
+            else:
+                res[0].append(indices[0])
+
+            if indices[1] is None:
+                res[1] = list(range(q))
+            else:
+                res[1].append(indices[1])
+
+            return res
+
+        u, v, rows, cols = cross_approx(tensor_func, index_to_args, (p, q), 1e-2)
+        m = tensor_func(*index_to_args((None, None))).reshape(p, q)
+        self.assertLessEqual(np.linalg.norm(u@v - m) / np.linalg.norm(m), 1e-1)
 
 if __name__ == "__main__":
     unittest.main()

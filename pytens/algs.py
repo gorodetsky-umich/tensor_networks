@@ -15,8 +15,15 @@ import opt_einsum as oe
 import networkx as nx
 import matplotlib.pyplot as plt
 
-from .utils import delta_svd
-from .types import Index, IndexName, IndexMerge, IndexSplit, NodeName, SVDConfig
+from .utils import delta_svd, TensorFunc, cross_approx, flatten_lists
+from .types import (
+    Index,
+    IndexName,
+    IndexMerge,
+    IndexSplit,
+    NodeName,
+    SVDConfig,
+)
 
 
 # logging.basicConfig(level=logging.DEBUG)
@@ -259,19 +266,90 @@ class Tensor:
 
         return q_tensor, r_tensor
 
+    def cross_approx(
+        self,
+        tensor_func: TensorFunc,
+        index_map: Dict[Index, Sequence[Index]],
+        restrictions: Dict[Index, Sequence[int]],
+        lefts: Sequence[int],
+        eps: float,
+    ) -> Tuple["Tensor", "Tensor", Sequence[np.ndarray]]:
+        """Compute the cross approximation of the tensor functions for the given reshaping."""
+        # create the mapping between row, col, and function arguments
+        left_sizes, right_sizes = [], []
+        rights = []
+        for i, ind in enumerate(self.indices):
+            if i in lefts:
+                left_sizes.append(ind.size)
+            else:
+                right_sizes.append(ind.size)
+                rights.append(i)
+
+        def index_to_args(indices: Sequence[int]) -> np.ndarray[int]:
+            assert len(indices) == 2, "only works for matrices"
+            # expand the flatten index to local indices
+            left_args = np.unravel_index(indices[0], left_sizes)
+            right_args = np.unravel_index(indices[1], right_sizes)
+            args = np.array(left_args + right_args)
+
+            order = []
+            global_args = []
+            for i, ind in enumerate(self.indices):
+                global_indices = index_map.get(ind, [ind])
+                order.extend(global_indices)
+
+                # restrict choices of indices if they have been chosen
+                if ind in restrictions:
+                    restricted_args = restrictions[ind][args[i]]
+                    assert len(global_indices) == len(restricted_args)
+                    global_args.extend(restricted_args)
+                else:
+                    # map internal indices to global indices
+                    global_sizes = [idx.size for idx in global_indices]
+                    global_args.extend(np.unravel_index(args[i], global_sizes))
+
+            assert len(global_args) == len(tensor_func.shape)
+            # reorder so that they match the order of function arguments
+            order = np.argsort(order)
+            return np.array(global_args).transpose(*order)
+
+        left_sz = np.prod(left_sizes)
+        right_sz = np.prod(right_sizes)
+        u, v, rows, cols = cross_approx(
+            tensor_func, index_to_args, (left_sz, right_sz), eps
+        )
+        # remember the selection of arguments for further splits
+        rc_args = []
+        for rc in itertools.product(rows, cols):
+            rc_args.append(index_to_args(rc))
+
+        u = u.reshape([self.indices[i].size for i in lefts] + [-1])
+        u_indices = [self.indices[i] for i in lefts]
+        u_indices.append(Index("r_split", u.shape[-1]))
+        u_tensor = Tensor(u, u_indices)
+
+        v = v.reshape([-1] + [self.indices[j].size for j in rights])
+        v_indices = [self.indices[j] for j in rights]
+        v_indices = [Index("r_split", v.shape[0])] + v_indices
+        v_tensor = Tensor(v, v_indices)
+
+        return u_tensor, v_tensor, rc_args
+
     def permute(self, target_indices: Sequence[int]) -> "Tensor":
         """Return a new tensor with indices permuted by the specified order."""
         value = np.permute_dims(self.value, tuple(target_indices))
         indices = [self.indices[i] for i in target_indices]
         return Tensor(value, indices)
-    
+
     def permute_by_name(self, target_indices: Sequence[IndexName]) -> "Tensor":
         """Permute a tensor by its index names"""
         index_names = [ind.name for ind in self.indices]
         perm = [index_names.index(n) for n in target_indices]
         return self.permute(perm)
 
-    def merge_indices(self, merged_indices: Sequence[Index], new_ind: IndexName) -> "Tensor":
+    def merge_indices(
+        self, merged_indices: Sequence[Index], new_ind: IndexName
+    ) -> "Tensor":
         """Merge the specified indices into one"""
         # print("merge_indices:", self.indices)
         if set(merged_indices).issubset(set(self.indices)):
@@ -294,7 +372,7 @@ class Tensor:
             new_size = math.prod(merged_sizes)
             new_index = Index(new_ind, new_size)
             return Tensor(new_data, [new_index] + unmerged_indices)
-        
+
         return self
 
     def split_indices(self, split_into: IndexSplit) -> "Tensor":
@@ -312,6 +390,7 @@ class Tensor:
 
         new_data = self.value.reshape([ind.size for ind in new_indices])
         return Tensor(new_data, new_indices)
+
 
 # @dataclass(frozen=True, eq=True)
 @dataclass(eq=True)
@@ -331,6 +410,7 @@ class EinsumArgs:
 
 class TensorNetwork:  # pylint: disable=R0904
     """Tensor Network Base Class."""
+
     next_index_id = 0
 
     def __init__(self) -> None:
@@ -389,8 +469,8 @@ class TensorNetwork:  # pylint: disable=R0904
         self, node1: NodeName, node2: NodeName
     ) -> List[Index]:
         """Get the contraction indices."""
-        ind1 = self.network.nodes[node1]["tensor"].indices
-        ind2 = self.network.nodes[node2]["tensor"].indices
+        ind1 = self.node_tensor(node1).indices
+        ind2 = self.node_tensor(node2).indices
         inds = list(ind1) + list(ind2)
         cnt = Counter(inds)
         indices = [i for i, v in cnt.items() if v > 1]
@@ -444,7 +524,7 @@ class TensorNetwork:  # pylint: disable=R0904
         estr_l = []
         arrs = []
         for key, val in eargs.input_str_map.items():
-            arrs.append(self.network.nodes[key]["tensor"].value)
+            arrs.append(self.value(key))
             estr_l.append(val)
         estr = ",".join(estr_l) + "->" + eargs.output_str  # explicit
         # estr = ','.join(estr)
@@ -618,7 +698,7 @@ class TensorNetwork:  # pylint: disable=R0904
         with_orthonormal: create orthogonality centers with QR before splitting
         compute_data: update the tensor values for the nodes created by split
         """
-        x = self.network.nodes[node_name]["tensor"]
+        x = self.node_tensor(node_name)
         rights = [i for i in range(len(x.indices)) if i not in lefts]
         if not config.compute_data:
             u = Tensor(
@@ -637,7 +717,7 @@ class TensorNetwork:  # pylint: disable=R0904
             if config.with_orthonormal:
                 node_name = self.orthonormalize(node_name)
 
-            x = self.network.nodes[node_name]["tensor"]
+            x = self.node_tensor(node_name)
             # svd decompose the data into specified index partition
             [u, s, v], d = x.svd(lefts, delta=config.delta)
 
@@ -660,7 +740,7 @@ class TensorNetwork:  # pylint: disable=R0904
         )
 
         for y in x_nbrs:
-            y_inds = self.network.nodes[y]["tensor"].indices
+            y_inds = self.node_tensor(y).indices
             if any(i in y_inds for i in u.indices):
                 self.add_edge(u_name, y)
             elif any(i in y_inds for i in v.indices):
@@ -685,7 +765,7 @@ class TensorNetwork:  # pylint: disable=R0904
         and return the new node names.
         """
         # To ensure the error bound in SVD, we first orthornormalize its env.
-        x = self.network.nodes[node_name]["tensor"]
+        x = self.node_tensor(node_name)
         # svd decompose the data into specified index partition
         q, r = x.qr(lefts)
 
@@ -699,7 +779,7 @@ class TensorNetwork:  # pylint: disable=R0904
         self.add_node(r_name, r.rename_indices({"r_split": new_index}))
 
         for y in x_nbrs:
-            y_inds = self.network.nodes[y]["tensor"].indices
+            y_inds = self.node_tensor(y).indices
             if any(i in y_inds for i in q.indices):
                 self.add_edge(q_name, y)
             if any(i in y_inds for i in r.indices):
@@ -718,8 +798,8 @@ class TensorNetwork:  # pylint: disable=R0904
                 f"Cannot merge nodes that are not adjacent: {name1}, {name2}"
             )
 
-        t1 = self.network.nodes[name1]["tensor"]
-        t2 = self.network.nodes[name2]["tensor"]
+        t1 = self.node_tensor(name1)
+        t2 = self.node_tensor(name2)
 
         if compute_data:
             result = t1.contract(t2)
@@ -730,7 +810,7 @@ class TensorNetwork:  # pylint: disable=R0904
 
         n2_nbrs = list(self.network.neighbors(name2))
         self.network.remove_node(name2)
-        self.network.nodes[name1]["tensor"] = result
+        self.set_node_tensor(name1, result)
         for n in n2_nbrs:
             if n != name1:
                 self.add_edge(name1, n)
@@ -750,7 +830,7 @@ class TensorNetwork:  # pylint: disable=R0904
         else:
             initial_optimize = False
 
-        node_indices = self.network.nodes[node_name]["tensor"].indices
+        node_indices = self.node_tensor(node_name).indices
         kept_indices = []
         free_indices = []
         r = node_name
@@ -762,7 +842,7 @@ class TensorNetwork:  # pylint: disable=R0904
             shared_index = None
             nbr = None
             for nbr in self.network.neighbors(node_name):
-                nbr_indices = self.network.nodes[nbr]["tensor"].indices
+                nbr_indices = self.node_tensor(nbr).indices
                 if idx in nbr_indices:
                     shared_index = idx
                     break
@@ -771,7 +851,7 @@ class TensorNetwork:  # pylint: disable=R0904
                 free_indices.append(idx)
                 continue
 
-            curr_indices = self.network.nodes[node_name]["tensor"].indices
+            curr_indices = self.node_tensor(node_name).indices
             left_indices = [
                 curr_indices.index(i) for i in curr_indices if i != idx
             ]
@@ -791,7 +871,7 @@ class TensorNetwork:  # pylint: disable=R0904
             self.merge(node_name, r)
 
         if not initial_optimize:
-            node_indices = self.network.nodes[node_name]["tensor"].indices
+            node_indices = self.node_tensor(node_name).indices
             left_indices, right_indices = [], []
             for i, idx in enumerate(node_indices):
                 if idx in free_indices or idx not in kept_indices:
@@ -814,7 +894,7 @@ class TensorNetwork:  # pylint: disable=R0904
                     # we can merge the nodes on the two ends of ind
                     nbrs = list(self.network.neighbors(n))
                     for nbr in nbrs:
-                        nbr_indices = self.network.nodes[nbr]["tensor"].indices
+                        nbr_indices = self.node_tensor(nbr).indices
                         if ind in nbr_indices:
                             self.merge(nbr, n)
                             deleted = True
@@ -846,7 +926,7 @@ class TensorNetwork:  # pylint: disable=R0904
 
                     # Since split relying on ordered indices,
                     # we should restore the index order here.
-                    indices = self.network.nodes[merged]["tensor"].indices
+                    indices = self.node_tensor(merged).indices
                     permute_index = indices.index(
                         self.get_contraction_index(merged, c)[0]
                     )
@@ -859,21 +939,22 @@ class TensorNetwork:  # pylint: disable=R0904
                     merged = self.merge(merged, c)
 
                     # restore the last index into the permute_index position
-                    self.network.nodes[merged]["tensor"] = self.network.nodes[
-                        merged
-                    ]["tensor"].permute(permute_indices)
+                    self.set_node_tensor(
+                        merged,
+                        self.node_tensor(merged).permute(permute_indices),
+                    )
 
             if pname is None:
                 return merged
 
             left_indices, right_indices = [], []
-            merged_indices = self.network.nodes[merged]["tensor"].indices
+            merged_indices = self.node_tensor(merged).indices
             # print(merged_indices)
             # print(visited)
             for i, index in enumerate(merged_indices):
                 common_index = None
                 for n in self.network.neighbors(merged):
-                    n_indices = self.network.nodes[n]["tensor"].indices
+                    n_indices = self.node_tensor(n).indices
                     # print(n, merged, n not in visited, visited[n], index, n_indices)
                     if index in n_indices:
                         common_index = i
@@ -927,13 +1008,81 @@ class TensorNetwork:  # pylint: disable=R0904
             permute_indices.extend(
                 list(range(right_indices[0], len(left_indices)))
             )
-            self.network.nodes[q]["tensor"] = self.network.nodes[q][
-                "tensor"
-            ].permute(permute_indices)
+            self.set_node_tensor(
+                q, self.node_tensor(q).permute(permute_indices)
+            )
 
             return r
 
         return _postorder(None, name)
+
+    def leaf_indices(self, node_name: NodeName) -> Sequence:
+        """Get all leaf indices for the subtree rooted at the given node."""
+        leaves = []
+        indices = self.node_tensor(node_name).indices
+        perm = []
+        for n in self.network.neighbors(node_name):
+            leaves.append(self.leaf_indices(n))
+            common_index = self.get_contraction_index(n, node_name)
+            assert len(common_index) == 1
+            perm.append(indices.index(common_index[0]))
+
+        # reorder the leaves according to the order of the indices
+        return [leaves[i] for i in np.argsort(perm)]
+
+    def cross(
+        self,
+        tensor_func: TensorFunc,
+        restrictions: Dict[Index, Sequence[int]],
+        node_name: NodeName,
+        lefts: Sequence[int],
+        delta: float,
+    ) -> Tuple[NodeName, NodeName]:
+        """Split a node by cross approximation."""
+        free_indices = self.free_indices()
+        tensor = self.node_tensor(node_name)
+
+        # create the index map by DFS
+        # the result is in the order of its indices
+        leaves = self.leaf_indices(node_name)
+        assert len(leaves) == len(tensor.indices)
+        index_map = {}
+        local_restrictions = {}
+        for ind, lvs in zip(tensor.indices, leaves):
+            index_map[ind] = flatten_lists(lvs)
+
+            # create a restriction for each internal index
+            if ind not in free_indices:
+                # extract the restrictions at the corresponding positions of index map
+                local_restrictions[ind] = [
+                    restrictions[ind][i] for i in index_map[ind]
+                ]
+
+        u, v, rcs = tensor.cross_approx(
+            tensor_func, index_map, local_restrictions, lefts, delta
+        )
+
+        new_index = self.fresh_index()
+        x_nbrs = list(self.network.neighbors(node_name))
+        self.network.remove_node(node_name)
+
+        u_name = node_name
+        self.add_node(u_name, u.rename_indices({"r_split": new_index}))
+        v_name = self.fresh_node()
+        self.add_node(v_name, v.rename_indices({"r_split": new_index}))
+
+        for y in x_nbrs:
+            y_inds = self.node_tensor(y).indices
+            if any(i in y_inds for i in u.indices):
+                self.add_edge(u_name, y)
+            if any(i in y_inds for i in v.indices):
+                self.add_edge(v_name, y)
+
+        self.add_edge(u_name, v_name)
+
+        restrictions[u.indices[-1]] = rcs
+
+        return u_name, v_name
 
     def cost(self) -> int:
         """Compute the cost for the tensor network.
@@ -942,7 +1091,7 @@ class TensorNetwork:  # pylint: disable=R0904
         """
         cost = 0
         for n in self.network.nodes:
-            indices = self.network.nodes[n]["tensor"].indices
+            indices = self.node_tensor(n).indices
             n_cost = np.prod([i.size for i in indices])
             cost += n_cost
 
@@ -975,7 +1124,7 @@ class TensorNetwork:  # pylint: disable=R0904
                     children_rs.append(_postorder(n))
 
             sorted_children_rs = tuple(sorted(children_rs))
-            indices = self.network.nodes[name]["tensor"].indices
+            indices = self.node_tensor(name).indices
             all_free_indices = self.free_indices()
             ranks = tuple(sorted([i.size for i in indices]))
             self_free_indices = tuple(
@@ -993,13 +1142,15 @@ class TensorNetwork:  # pylint: disable=R0904
     def split_index(self, split_op: IndexSplit) -> NodeName:
         """Split free indices into smaller parts"""
         for n in self.network.nodes:
-            tensor = self.network.nodes[n]["tensor"]
+            tensor = self.node_tensor(n)
             tensor = tensor.split_indices(split_op)
             rename_map = {}
             new_indices = []
             used_results_cnt = 0
             for ind in tensor.indices:
-                if isinstance(ind.name, str) and ind.name.startswith("_fresh_index_"):
+                if isinstance(ind.name, str) and ind.name.startswith(
+                    "_fresh_index_"
+                ):
                     if split_op.split_result is not None:
                         new_ind = split_op.split_result[used_results_cnt].name
                         used_results_cnt += 1
@@ -1010,14 +1161,16 @@ class TensorNetwork:  # pylint: disable=R0904
             # print(rename_map)
             tensor = tensor.rename_indices(rename_map)
             if len(new_indices) > 0:
-                split_op.split_result = [ind for ind in tensor.indices if ind.name in new_indices]
-                self.network.nodes[n]["tensor"] = tensor
+                split_op.split_result = [
+                    ind for ind in tensor.indices if ind.name in new_indices
+                ]
+                self.set_node_tensor(n, tensor)
                 return n
 
     def merge_index(self, merge_op: IndexMerge):
         """Merge specified free indices"""
         for n in self.network.nodes:
-            tensor = self.network.nodes[n]["tensor"]
+            tensor = self.node_tensor(n)
 
             if merge_op.merge_result is None:
                 new_ind = self.fresh_index()
@@ -1025,9 +1178,14 @@ class TensorNetwork:  # pylint: disable=R0904
                 new_ind = merge_op.merge_result.name
             tensor = tensor.merge_indices(merge_op.merging_indices, new_ind)
 
-            self.network.nodes[n]["tensor"] = tensor
+            self.set_node_tensor(n, tensor)
 
-    def replace_with(self, name: NodeName, subnet: "TensorNetwork", split_info: List[Union[IndexSplit, IndexMerge]] = None):
+    def replace_with(
+        self,
+        name: NodeName,
+        subnet: "TensorNetwork",
+        split_info: List[Union[IndexSplit, IndexMerge]] = None,
+    ):
         """Replace a node with a sub-tensor network."""
         if name not in self.network.nodes:
             return
@@ -1037,7 +1195,7 @@ class TensorNetwork:  # pylint: disable=R0904
         index_subst = {}
         node_subst = {}
         for m in subnet.network.nodes:
-            m_tensor = subnet.network.nodes[m]["tensor"]
+            m_tensor = subnet.node_tensor(m)
             if m in self.network.nodes:
                 # rename the node
                 new_m = self.fresh_node()
@@ -1063,14 +1221,24 @@ class TensorNetwork:  # pylint: disable=R0904
             self.add_node(m, Tensor(m_tensor.value, m_indices))
             m_inds_set = set(m_indices)
             for nbr in self.network.neighbors(name):
-                nbr_indices = set(self.network.nodes[nbr]["tensor"].indices)
+                nbr_indices = set(self.node_tensor(nbr).indices)
                 if len(nbr_indices.intersection(m_inds_set)) != 0:
                     self.add_edge(m, nbr)
                 elif split_info is not None:
                     for split_op in split_info:
-                        if isinstance(split_op, IndexSplit) and split_op.splitting_index in nbr_indices:
+                        if (
+                            isinstance(split_op, IndexSplit)
+                            and split_op.splitting_index in nbr_indices
+                        ):
                             split_ind_names = split_op.split_result
-                            if len(set(split_ind_names).intersection(m_inds_set)) != 0:
+                            if (
+                                len(
+                                    set(split_ind_names).intersection(
+                                        m_inds_set
+                                    )
+                                )
+                                != 0
+                            ):
                                 self.add_edge(m, nbr)
 
         self.network.remove_node(name)
@@ -1095,10 +1263,10 @@ class TensorNetwork:  # pylint: disable=R0904
         ):
             logger.debug("Adding: Node %r and Node %r", node1, node2)
 
-            tens1 = self.network.nodes[node1]["tensor"]
-            tens2 = other.network.nodes[node2]["tensor"]
-            new_tens.network.nodes[node1]["tensor"] = tens1.concat_fill(
-                tens2, free_indices
+            tens1 = self.node_tensor(node1)
+            tens2 = other.node_tensor(node2)
+            new_tens.set_node_tensor(
+                node1, tens1.concat_fill(tens2, free_indices)
             )
 
         return new_tens
@@ -1117,11 +1285,9 @@ class TensorNetwork:  # pylint: disable=R0904
         ):
             logger.debug("Multiplying: Node %r and Node %r", node1, node2)
 
-            tens1 = self.network.nodes[node1]["tensor"]
-            tens2 = other.network.nodes[node2]["tensor"]
-            new_tens.network.nodes[node1]["tensor"] = tens1.mult(
-                tens2, free_indices
-            )
+            tens1 = self.node_tensor(node1)
+            tens2 = other.node_tensor(node2)
+            new_tens.set_node_tensor(node1, tens1.mult(tens2, free_indices))
 
         return new_tens
 
@@ -1357,7 +1523,7 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
     """
     # pylint: disable=C0103
     # above disables the snake case complaints for variables like R
-    val1 = tn.network.nodes[node]["tensor"].value
+    val1 = tn.value(node)
     if val1.ndim == 3:
         # print("val1.shape = ", val1.shape)
         r, n, b = val1.shape
@@ -1379,16 +1545,16 @@ def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
         # print("q shape = ", q.shape)
         # new_val = np.reshape(q.T, (r, n, b), order="F")
         new_val = np.reshape(q.T, (r, n, b))
-        tn.network.nodes[node]["tensor"].update_val_size(new_val)
+        tn.node_tensor(node).update_val_size(new_val)
     else:
         q, R = np.linalg.qr(val1.T)
         new_val = q.T
-        tn.network.nodes[node]["tensor"].update_val_size(new_val)
+        tn.node_tensor(node).update_val_size(new_val)
 
-    val2 = tn.network.nodes[node - 1]["tensor"].value
+    val2 = tn.value(node - 1)
     # new_val2 = np.einsum("...i,ij->...j", val2, R.T)
     new_val2 = np.dot(val2, R.T)
-    tn.network.nodes[node - 1]["tensor"].update_val_size(new_val2)
+    tn.node_tensor(node - 1).update_val_size(new_val2)
 
     return tn
 
@@ -1519,8 +1685,8 @@ def tt_gramsvd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
         shp1[0] = rk
         curr_val = curr_val.reshape(sh)
         next_val = next_val.reshape(shp1)
-        tn.network.nodes[i]["tensor"].update_val_size(curr_val)
-        tn.network.nodes[i + 1]["tensor"].update_val_size(next_val)
+        tn.node_tensor(i).update_val_size(curr_val)
+        tn.node_tensor(i + 1).update_val_size(next_val)
 
     return tn
 
@@ -1569,9 +1735,9 @@ def tt_svd_round(
     data["tensor"].update_val_size(new_core)
 
     # print("In here")
-    val_old = out.network.nodes[node + 1]["tensor"].value
+    val_old = out.node_tensor(node + 1).value
     next_val = np.einsum("ij,jk...->ik...", v, val_old)
-    out.network.nodes[node + 1]["tensor"].update_val_size(next_val)
+    out.node_tensor(node + 1).update_val_size(next_val)
 
     for node, data in core_list[1:-1]:
         value = data["tensor"].value
@@ -1583,9 +1749,9 @@ def tt_svd_round(
         new_core = np.reshape(trunc_svd.u, (r1, n, r2))
         data["tensor"].update_val_size(new_core)
 
-        val_old = out.network.nodes[node + 1]["tensor"].value
+        val_old = out.node_tensor(node + 1).value
         next_val = np.einsum("ij,jk...->ik...", v, val_old)
-        out.network.nodes[node + 1]["tensor"].update_val_size(next_val)
+        out.node_tensor(node + 1).update_val_size(next_val)
 
     return out
 
@@ -1766,11 +1932,11 @@ def tt_sum_gramsvd_round(
         np.concatenate([f.value(dim - 1) for f in factors_list], axis=0)
     ]
 
-    ttsum.network.nodes[dim - 1]["tensor"].update_val_size(gr_list[-1])
+    ttsum.node_tensor(dim - 1).update_val_size(gr_list[-1])
     gr_list = [gr_list[-1] @ gr_list[-1].T]
 
     gl = np.concatenate([f.value(0) for f in factors_list], axis=1)
-    ttsum.network.nodes[0]["tensor"].update_val_size(gl)
+    ttsum.node_tensor(0).update_val_size(gl)
 
     # Collect gram matrices from right to left
     for i in range(dim - 2, 0, -1):
@@ -1811,8 +1977,8 @@ def tt_sum_gramsvd_round(
         curr_val = curr_val.reshape(sh)
         next_val = next_val.reshape(shp1)
 
-        ttsum.network.nodes[i]["tensor"].update_val_size(curr_val)
-        ttsum.network.nodes[i + 1]["tensor"].update_val_size(next_val)
+        ttsum.node_tensor(i).update_val_size(curr_val)
+        ttsum.node_tensor(i + 1).update_val_size(next_val)
 
     return ttsum
 
@@ -1910,13 +2076,13 @@ class TTRandRound:
                 yn = zn @ w[i]
                 q, _ = np.linalg.qr(yn)
                 x_approx = q.reshape(sx[:-1] + [q.shape[-1]])
-                res.network.nodes[i]["tensor"].update_val_size(x_approx)
+                res.node_tensor(i).update_val_size(x_approx)
                 sy = list(self.y.value(i + 1).shape)
                 x_approx = (
                     q.T @ zn @ self.y.value(i + 1).reshape((sy[0], -1))
                 ).reshape([q.shape[-1]] + sy[1:])
 
-            res.network.nodes[self.d - 1]["tensor"].update_val_size(x_approx)
+            res.node_tensor(self.d - 1).update_val_size(x_approx)
             return res
 
         raise ValueError(
@@ -1964,7 +2130,7 @@ class TTRandRound:
                 self.target_ranks[i] = min(self.target_ranks[i], q.shape[-1])
                 mn = q.T @ zn
                 x_approx = q.reshape((sx[:-1] + [self.target_ranks[i]]))
-                res.network.nodes[i]["tensor"].update_val_size(x_approx)
+                res.node_tensor(i).update_val_size(x_approx)
                 xnp1 = []
                 for j in range(self.ns):
                     shp1 = self.y[j].value(i + 1).shape
@@ -1981,9 +2147,7 @@ class TTRandRound:
                     x_approx = np.sum(xnp1, axis=0).reshape(
                         (self.target_ranks[i], shp1[1])
                     )
-                    res.network.nodes[self.d - 1]["tensor"].update_val_size(
-                        x_approx
-                    )
+                    res.node_tensor(self.d - 1).update_val_size(x_approx)
 
             return res
 
@@ -2061,8 +2225,8 @@ def tt_rand_precond_svd_round(
                 trunc_svd.u * trunc_svd.s[np.newaxis, :],
             )
 
-        res.network.nodes[i]["tensor"].update_val_size(tens_curr)
-        res.network.nodes[i - 1]["tensor"].update_val_size(tens_next)
+        res.node_tensor(i).update_val_size(tens_curr)
+        res.node_tensor(i - 1).update_val_size(tens_next)
 
     return res
 
@@ -2227,7 +2391,7 @@ def tt_sum(
     tt_out = TensorNetwork()
     dim = tt_in[0].dim()
     for ii, node in enumerate(tt_in[0].network.nodes):
-        inds = tt_in[0].network.nodes[node]["tensor"].indices
+        inds = tt_in[0].node_tensor(node).indices
         core_values = [tt.value(node) for tt in tt_in]
 
         if ii == 0:
@@ -2356,8 +2520,8 @@ def ttop_apply(ttop: TensorNetwork, tt_in: TensorNetwork) -> TensorNetwork:
     for ii, (node_op, node_tt) in enumerate(
         zip(ttop.network.nodes(), tt.network.nodes())
     ):
-        op = ttop.network.nodes[node_op]["tensor"].value
-        v = tt.network.nodes[node_tt]["tensor"].value
+        op = ttop.value(node_op)
+        v = tt.value(node_tt)
         # print(f"op shape: {node_op}", op.shape)
         # print(f"v shape: {node_tt}", v.shape)
         if ii == 0:
@@ -2375,9 +2539,9 @@ def ttop_apply(ttop: TensorNetwork, tt_in: TensorNetwork) -> TensorNetwork:
             shape = new_core.shape
             new_core = np.reshape(new_core, (shape[0] * shape[1], -1))
 
-        tt.network.nodes[node_tt]["tensor"] = tt.network.nodes[node_tt][
-            "tensor"
-        ].update_val_size(new_core)
+        tt.set_node_tensor(
+            node_tt, tt.node_tensor(node_tt).update_val_size(new_core)
+        )
 
     # print("After op = ")
     # print(tt)
