@@ -295,7 +295,7 @@ class SearchState:
         self.is_noop = False
         self.links = []
 
-    def count_actions_of_size(self, k:int = 2):
+    def count_actions_of_size(self, k: int = 2):
         """Count the number of actions of the given size in the history."""
         cnt = 0
         for ac in self.past_actions:

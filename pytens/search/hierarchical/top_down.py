@@ -535,7 +535,7 @@ class DisjointSet:
 
         return len(all_elmts)
 
-    def groups(self, root = None):
+    def groups(self, root=None):
         results = {}
         if root is not None:
             expect_root = self.root(root)
@@ -679,7 +679,13 @@ class TopDownSearch:
                     split_target=split_target,
                 )
 
-    def merge_by_correlation(self, net: TensorNetwork, search_engine: PartitionSearch, delta: float, threshold: int = 4):
+    def merge_by_correlation(
+        self,
+        net: TensorNetwork,
+        search_engine: PartitionSearch,
+        delta: float,
+        threshold: int = 4,
+    ):
         """Consider all possible combinations of indices.
 
         For each combination, we calculate the correlation matrix of the reshaped tensor.
@@ -695,7 +701,6 @@ class TopDownSearch:
 
         shape = [ind.size for ind in indices]
 
-        
         # single_effranks = {}
         # single_corrs = {}
         # for i in range(len(indices)):
@@ -705,9 +710,9 @@ class TopDownSearch:
 
         #     if self.config.topdown.search_algo == "svd":
         #         # we can use these svd options to search for structure and see which operations are selected by the solver
-                
+
         #         s = np.linalg.svdvals(value_reshape)
-        #         # p = s / np.sum(s) 
+        #         # p = s / np.sum(s)
         #         # # Calculate entropy
         #         # entropy = -np.sum(p * np.log(p+1e-16))
         #         # # Compute effective rank
@@ -745,18 +750,22 @@ class TopDownSearch:
                 # config.rank_search.k = 1
                 # engine = PartitionSearch(config)
                 # collect all actions up to size 2
-                
+
                 # for ind in comb:
                 #     actions.append(OSplit([ind]))
                 actions.append(OSplit(comb))
 
             # print([str(ac) for ac in actions])
-            for res in search_engine.search(net, delta=delta, actions=actions, budget=len(actions)):
+            for res in search_engine.search(
+                net, delta=delta, actions=actions, budget=len(actions)
+            ):
                 print([str(ac) for ac in res.best_actions])
 
                 for ac in res.best_actions:
                     inds = [indices.index(ind) for ind in ac.indices]
-                    index_costs[tuple(inds)] = min(-ac.target_size, comb_corr.get(tuple(inds), 0))
+                    index_costs[tuple(inds)] = min(
+                        -ac.target_size, comb_corr.get(tuple(inds), 0)
+                    )
 
             # for ac in actions:
             #     inds = [indices.index(ind) for ind in ac.indices]
@@ -765,38 +774,42 @@ class TopDownSearch:
 
             # print(tuple(inds), comb_corr[tuple(inds)])
             search_engine.reset()
-                # used_indices = [indices.index(x) for ac in res.best_actions for x in ac.indices]
-                # if res.best_actions is None:
-                #     # we cannot get better compression with these ops only
-                #     # default to correlation
-                #     comb_corr = None
+            # used_indices = [indices.index(x) for ac in res.best_actions for x in ac.indices]
+            # if res.best_actions is None:
+            #     # we cannot get better compression with these ops only
+            #     # default to correlation
+            #     comb_corr = None
 
-                # else:
-                #     for ac in res.best_actions:
-                #         if len(ac.indices) == 2:
-                #             k = tuple(indices.index(x) for x in ac.indices)
-                #             comb_corr[k] = ac.target_size
-                #     print([str(ac) for ac in res.best_actions])
-                #     for ac in actions:
-                #         k = tuple(indices.index(x) for x in ac.indices)
-                #         if ac in res.best_actions:
-                #             comb_corr[k] = min(res.best_solver_cost, comb_corr.get(k, res.best_solver_cost)) #min(ac.target_size, comb_corr.get(k, BAD_SCORE)) #
-                #         else:
-                #             comb_corr[k] = BAD_SCORE
+            # else:
+            #     for ac in res.best_actions:
+            #         if len(ac.indices) == 2:
+            #             k = tuple(indices.index(x) for x in ac.indices)
+            #             comb_corr[k] = ac.target_size
+            #     print([str(ac) for ac in res.best_actions])
+            #     for ac in actions:
+            #         k = tuple(indices.index(x) for x in ac.indices)
+            #         if ac in res.best_actions:
+            #             comb_corr[k] = min(res.best_solver_cost, comb_corr.get(k, res.best_solver_cost)) #min(ac.target_size, comb_corr.get(k, BAD_SCORE)) #
+            #         else:
+            #             comb_corr[k] = BAD_SCORE
 
         print(index_costs)
-        if self.config.topdown.search_algo == "correlation" or len(comb_corr) == 0:
+        if (
+            self.config.topdown.search_algo == "correlation"
+            or len(comb_corr) == 0
+        ):
             for comb in itertools.combinations(range(len(indices)), 2):
                 # if comb[0] in index_costs or comb[1] in index_costs:
                 #     continue
                 if comb in index_costs:
-                    comb_corr[comb] = index_costs[comb] #- net.cost()
+                    comb_corr[comb] = index_costs[comb]  # - net.cost()
                     continue
 
-                if comb[0] in itertools.chain(*index_costs.keys()) or comb[1] in itertools.chain(*index_costs.keys()):
+                if comb[0] in itertools.chain(*index_costs.keys()) or comb[
+                    1
+                ] in itertools.chain(*index_costs.keys()):
                     # impossible to choose these
                     continue
-
 
                 perm = list(comb) + [
                     x for x in range(len(indices)) if x not in comb
@@ -808,58 +821,66 @@ class TopDownSearch:
                 # chunk the data into groups
                 # if corr_data.shape[0] < corr_data.shape[1]:
                 #     corr_data = corr_data.transpose()
-                    # s = np.linalg.svdvals(corr_data)
-                    # # comb_corr[comb] = np.mean(-np.diff(s) / s[:-1])
-                    # # print(s)
-                    # # print(np.diff(np.diff(s)))
-                    # # Calculate probabilities
-                    # p = s / np.sum(s)
-                    # # Calculate entropy
-                    # entropy = -np.sum(p * np.log(p + 1e-16))
-                    # # Compute effective rank
-                    # # eff_rank = np.exp(entropy)
-                    # # if we can reduce the effective rank, then that's great
-                    # # if we cannot, then we should prefer smaller increase of effective ranks
-                    # comb_corr[comb] = entropy / (single_effranks[comb[0]] * single_effranks[comb[1]])
-                    # print(comb, comb_corr[comb])
-                    # print("effective rank difference", )
-                    # corr = np.corrcoef(corr_data)
-                    # print(comb, "correlation", np.mean(np.abs(corr)))
-                    # # Count singular values above the threshold
-                    # print (eff_rank, np.sum(s > 0.1 * s[0]))
-                    # Calculate cumulative variance
-                    # cumulative_variance = np.cumsum(np.flip(s) ** 2)
-                    
-                    # # Determine the effective rank
-                    # rank = np.searchsorted(cumulative_variance, delta ** 2)
-                    # cost = rank * (corr_data.shape[0] + corr_data.shape[1])
-                    # comb_corr[comb] = cost
-                # elif self.config.topdown.search_algo == "random correlation":
-                    # mask = np.zeros(corr_data.shape[0], dtype=bool)
-                    # mask[np.random.choice(corr_data.shape[0], size=min(50000, corr_data.shape[0]), replace=False)] = True
-                    # sample_data = corr_data[mask]
-                    # comb_corr[comb] = np.mean(np.abs(np.corrcoef(sample_data)))
-                    # if np.isnan(comb_corr[comb]):
-                    #     comb_corr[comb] = 0
-                    # print(comb, comb_corr[comb])
+                # s = np.linalg.svdvals(corr_data)
+                # # comb_corr[comb] = np.mean(-np.diff(s) / s[:-1])
+                # # print(s)
+                # # print(np.diff(np.diff(s)))
+                # # Calculate probabilities
+                # p = s / np.sum(s)
+                # # Calculate entropy
+                # entropy = -np.sum(p * np.log(p + 1e-16))
+                # # Compute effective rank
+                # # eff_rank = np.exp(entropy)
+                # # if we can reduce the effective rank, then that's great
+                # # if we cannot, then we should prefer smaller increase of effective ranks
+                # comb_corr[comb] = entropy / (single_effranks[comb[0]] * single_effranks[comb[1]])
+                # print(comb, comb_corr[comb])
+                # print("effective rank difference", )
+                # corr = np.corrcoef(corr_data)
+                # print(comb, "correlation", np.mean(np.abs(corr)))
+                # # Count singular values above the threshold
+                # print (eff_rank, np.sum(s > 0.1 * s[0]))
+                # Calculate cumulative variance
+                # cumulative_variance = np.cumsum(np.flip(s) ** 2)
 
-                    # corr_data = corr_data.transpose()
-                    # mask = np.zeros(corr_data.shape[0], dtype=bool)
-                    # mask[np.random.choice(corr_data.shape[0], size=min(50000, corr_data.shape[0]), replace=False)] = True
-                    # sample_data = corr_data[mask]
-                    # comb_corr[comb] = np.mean(np.abs(np.corrcoef(sample_data)))
-                    # if np.isnan(comb_corr[comb]):
-                    #     comb_corr[comb] = 0
-                    # corr = np.corrcoef(corr_data)
-                    # comb_corr[comb] = np.mean((corr))
-                    # if np.isnan(comb_corr[comb]):
-                    #     comb_corr[comb] = 0
-                    # print(comb, comb_corr[comb])
-                
+                # # Determine the effective rank
+                # rank = np.searchsorted(cumulative_variance, delta ** 2)
+                # cost = rank * (corr_data.shape[0] + corr_data.shape[1])
+                # comb_corr[comb] = cost
+                # elif self.config.topdown.search_algo == "random correlation":
+                # mask = np.zeros(corr_data.shape[0], dtype=bool)
+                # mask[np.random.choice(corr_data.shape[0], size=min(50000, corr_data.shape[0]), replace=False)] = True
+                # sample_data = corr_data[mask]
+                # comb_corr[comb] = np.mean(np.abs(np.corrcoef(sample_data)))
+                # if np.isnan(comb_corr[comb]):
+                #     comb_corr[comb] = 0
+                # print(comb, comb_corr[comb])
+
+                # corr_data = corr_data.transpose()
+                # mask = np.zeros(corr_data.shape[0], dtype=bool)
+                # mask[np.random.choice(corr_data.shape[0], size=min(50000, corr_data.shape[0]), replace=False)] = True
+                # sample_data = corr_data[mask]
+                # comb_corr[comb] = np.mean(np.abs(np.corrcoef(sample_data)))
+                # if np.isnan(comb_corr[comb]):
+                #     comb_corr[comb] = 0
+                # corr = np.corrcoef(corr_data)
+                # comb_corr[comb] = np.mean((corr))
+                # if np.isnan(comb_corr[comb]):
+                #     comb_corr[comb] = 0
+                # print(comb, comb_corr[comb])
+
                 mask = np.zeros(corr_data.shape[0], dtype=bool)
-                mask[np.random.choice(corr_data.shape[0], size=min(50000, corr_data.shape[0]), replace=False)] = True
+                mask[
+                    np.random.choice(
+                        corr_data.shape[0],
+                        size=min(50000, corr_data.shape[0]),
+                        replace=False,
+                    )
+                ] = True
                 sample_data = corr_data[mask]
-                corr_res = np.corrcoef(sample_data + np.random.random(sample_data.shape) * 1e-13)
+                corr_res = np.corrcoef(
+                    sample_data + np.random.random(sample_data.shape) * 1e-13
+                )
                 # comb_cost = index_costs.get(comb[0], 0) + index_costs.get(comb[1], 0)
                 # print(np.linalg.matrix_rank(corr_res))
                 if self.config.topdown.aggregation == "mean":
@@ -883,6 +904,7 @@ class TopDownSearch:
                 # comb_corr[comb] = total_sum / total_cnt
                 print(comb, comb_corr[comb])
                 import sys
+
                 sys.stdout.flush()
 
         # vals = list(comb_corr.values())
@@ -897,7 +919,11 @@ class TopDownSearch:
         groups = 0
         for comb, score in comb_corr:
             print(comb, score)
-            if len(comb) < 2 or comb[0] in merged_indices or comb[1] in merged_indices:
+            if (
+                len(comb) < 2
+                or comb[0] in merged_indices
+                or comb[1] in merged_indices
+            ):
                 continue
 
             print("adding", comb)
@@ -905,7 +931,10 @@ class TopDownSearch:
             merged_indices.add(comb[1])
             merged_groups.append(comb)
             # merged_indices.union(comb[0], comb[1])
-            if len(indices) - len(merged_indices) + len(merged_groups) <= threshold:
+            if (
+                len(indices) - len(merged_indices) + len(merged_groups)
+                <= threshold
+            ):
                 break
 
         # merged_indices = DisjointSet()
@@ -942,8 +971,11 @@ class TopDownSearch:
             )
             split_ops.append(split_op)
 
-        print(len(merge_ops), "remaining order is", len(indices) - len(merge_ops))
+        print(
+            len(merge_ops), "remaining order is", len(indices) - len(merge_ops)
+        )
         import sys
+
         sys.stdout.flush()
         return merge_ops, split_ops
 
@@ -1243,7 +1275,9 @@ class TopDownSearch:
         ):
             # merge indices by correlation
             begin_corr = time.time()
-            merge_ops, split_ops = self.merge_by_correlation(st.network, search_engine, delta=delta)
+            merge_ops, split_ops = self.merge_by_correlation(
+                st.network, search_engine, delta=delta
+            )
             print("correlation time:", time.time() - begin_corr)
 
             for merge_op in merge_ops:

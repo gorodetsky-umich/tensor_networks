@@ -140,13 +140,13 @@ class PartitionSearch:
                     best_cost = self.get_cost(
                         st, new_st, best_cost, result_queue
                     )
-                    print("cost for new action", action, "is", best_cost)
-                    print(
-                        "cost for new action",
-                        action,
-                        "is",
-                        self.best_network.cost(),
-                    )
+                    # print("cost for new action", action, "is", best_cost)
+                    # print(
+                    #     "cost for new action",
+                    #     action,
+                    #     "is",
+                    #     self.best_network.cost(),
+                    # )
                     next_sts.append(new_st)
 
             sts = next_sts

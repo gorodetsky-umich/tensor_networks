@@ -16,6 +16,7 @@ IndexName = IntOrStr
 IndexChain = Union[List[int], Tuple[int]]
 NodeName = IntOrStr
 
+
 @dataclass(frozen=True, eq=True)
 class Index:
     """Class for denoting an index."""
@@ -59,7 +60,8 @@ class Index:
 
     def __lt__(self, other: Self) -> bool:
         return str(self.name) < str(other.name)
-    
+
+
 @dataclass
 class SVDConfig:
     """Configuration fields for SVD in tensor networks."""
@@ -324,6 +326,7 @@ class DimTreeNode:
         return False
 class IndexMerge(pydantic.BaseModel):
     """An index merge request and response."""
+
     merging_indices: Sequence[Index]
     merging_positions: Optional[Sequence[int]] = None
     merge_result: Optional[Index] = None
@@ -331,8 +334,10 @@ class IndexMerge(pydantic.BaseModel):
     def __hash__(self):
         return hash((type(self),) + tuple(self.__dict__.values()))
 
+
 class IndexSplit(pydantic.BaseModel):
     """An index split request and response."""
+
     splitting_index: Index
     split_target: Sequence[int]
     split_result: Optional[Sequence[Index]] = None
