@@ -26,6 +26,7 @@ class SearchStats(pydantic.BaseModel):
     cr_start: float = 0
     re: float = 0
 
+
 class SearchResult:
     stats: SearchStats
     unused_delta: Optional[float] = 0.0
@@ -33,7 +34,13 @@ class SearchResult:
     best_actions: Optional[Sequence[Action]] = None
     best_solver_cost: Optional[int] = -1
 
-    def __init__(self, stats = SearchStats(), best_network = None, best_actions = None, unused_delta = 0.0):
+    def __init__(
+        self,
+        stats=SearchStats(),
+        best_network=None,
+        best_actions=None,
+        unused_delta=0.0,
+    ):
         self.stats = stats
         self.best_network = best_network
         self.best_actions = best_actions
@@ -86,6 +93,7 @@ def remove_temp_dir(temp_dir, temp_files):
     except FileNotFoundError:
         pass
 
+
 def reshape_indices(reshape_ops, indices, data):
     """Get corresponding indices after splitting"""
     indices = [[ind] for ind in indices]
@@ -109,15 +117,32 @@ def reshape_indices(reshape_ops, indices, data):
                 new_ind_group = []
                 for ind in ind_group:
                     if ind in reshape_op.merging_indices:
-                        unchanged = [ind for ind in ind_group if ind not in reshape_op.merging_indices]
+                        unchanged = [
+                            ind
+                            for ind in ind_group
+                            if ind not in reshape_op.merging_indices
+                        ]
                         new_ind_group = [reshape_op.merge_result] + unchanged
                         # we want to permute these indices before comparison
                         cnt_before = sum(len(g) for g in indices[:group_idx])
-                        cnt_after = sum(len(g) for g in indices[group_idx+1:])
-                        curr_perm = [ind_group.index(ind) + cnt_before for ind in reshape_op.merging_indices] + [ind_group.index(ind) + cnt_before for ind in unchanged]
+                        cnt_after = sum(
+                            len(g) for g in indices[group_idx + 1 :]
+                        )
+                        curr_perm = [
+                            ind_group.index(ind) + cnt_before
+                            for ind in reshape_op.merging_indices
+                        ] + [
+                            ind_group.index(ind) + cnt_before
+                            for ind in unchanged
+                        ]
                         prev_perm = list(range(cnt_before))
-                        next_perm = [cnt_before + len(curr_perm) + i for i in range(cnt_after)]
-                        data = data.transpose(*(prev_perm + curr_perm + next_perm))
+                        next_perm = [
+                            cnt_before + len(curr_perm) + i
+                            for i in range(cnt_after)
+                        ]
+                        data = data.transpose(
+                            *(prev_perm + curr_perm + next_perm)
+                        )
                         break
                     else:
                         new_ind_group.append(ind)

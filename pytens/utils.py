@@ -1,8 +1,7 @@
 """Some utility functions."""
 
-from typing import Optional, Callable, Sequence, Tuple, Set, List
+from typing import Optional, Callable, Sequence, Tuple, Set
 from dataclasses import dataclass
-import itertools
 
 import numpy as np
 
@@ -103,20 +102,25 @@ def delta_svd(
 
 
 class TensorFunc:
+    """A function that is represented as a tensor."""
+
     def __init__(self, f: Callable, dims: Sequence[int]):
         self.f = f
         self.dims = dims
 
-    def __call__(self, *args) -> np.ndarray:
-        res = []
-        for a in itertools.product(*args):
-            # print(a)
-            res.append(self.f(*a))
+    def __call__(self, args) -> np.ndarray:
+        if isinstance(args[0], np.ndarray):
+            res = []
+            for a in args:
+                res.append(self.f(*a))
 
-        return np.array(res)
+            return np.array(res)
+
+        return self.f(*args)
 
     @property
     def shape(self):
+        """A tuple of integers describing the dimensions for each argument."""
         return self.dims
 
 
@@ -135,12 +139,12 @@ def check_convergence(
     ij = 0, 0
     max_diff = 0
     while len(points) < p + q:
-        point = (np.random.randint(0, p), np.random.randint(0, q))
+        point = (np.random.randint(p), np.random.randint(q))
         if point in points:
             continue
 
         points.append(point)
-        v = tensor_func(*index_to_args(point))
+        v = tensor_func(index_to_args(point))
         err = v - tensor_approx[*point]
         err_sq += err**2
         nrm_sq += v**2
@@ -149,17 +153,23 @@ def check_convergence(
             max_diff = np.abs(err)
             ij = point
 
-    print(np.sqrt(err_sq), np.sqrt(nrm_sq))
+    # print(
+    #     np.sqrt(err_sq),
+    #     np.sqrt(nrm_sq),
+    #     np.sqrt(err_sq) / np.sqrt(nrm_sq),
+    #     eps,
+    # )
     if np.sqrt(err_sq) <= eps * np.sqrt(nrm_sq):
-        print("convergence check pass")
+        # print("convergence check pass")
         return True, ij
 
-    print("convergence check fail")
+    # print("convergence check fail")
     return False, ij
 
 
 def cross_approx(
     tensor_func: TensorFunc,
+    tensor_approx: np.ndarray,
     index_to_args: Callable,
     shape: Tuple[int, int],
     eps: float,
@@ -168,18 +178,20 @@ def cross_approx(
     Implementation of 2D cross approximation from [TODO: insert the paper link]
     """
     k = 0
-    tensor_approx = np.zeros(shape)
     p, q = shape
     u = np.zeros((p, 1))
     v = np.zeros((q, 1))
-    j = 0  # np.random.randint(q)
+    j = 0 #np.random.randint(q)
     rows, cols = set(), set()
     nrm = 0
 
     while True:
-        uk = tensor_func(*index_to_args((None, j))) - tensor_approx[:, j]
+        uk = (
+            tensor_func(index_to_args((None, j))).reshape(-1, 1)
+            - u @ v[j : j + 1].T
+        )
         uk = uk.reshape(p, 1)
-        print("uk", uk)
+        # print("uk", uk.shape)
         i = np.argmax(np.abs(uk))
         if uk[i] == 0:
             print("zero, checking convergence")
@@ -187,44 +199,49 @@ def cross_approx(
                 tensor_func, index_to_args, tensor_approx, shape, eps
             )
             if ok:
-                return u, v.T, rows, cols
+                return rows, cols
 
             i, j = ij
             continue
 
-        print("choosing i =", i)
+        # print("choosing i =", i)
         rows.add(i)
         cols.add(j)
 
-        vk = tensor_func(*index_to_args((i, None))) - tensor_approx[i, :]
+        vk = (
+            tensor_func(index_to_args((i, None))).reshape(1, -1)
+            - u[i : i + 1, :] @ v.T
+        )
+        # print("vk", (u[i:i+1, :]@v.T).shape)
+        if vk[0, j] == 0:
+            print("zero, checking convergence")
+            ok, ij = check_convergence(
+                tensor_func, index_to_args, tensor_approx, shape, eps
+            )
+            if ok:
+                return rows, cols
+
+            i, j = ij
+            k += 1
+            continue
+
+        gamma = vk[0, j]
+        # print("gamma", gamma.shape)
+        uk = uk / gamma
         # print("vk", vk)
-        # if vk[j] == 0:
-        #     print("zero, checking convergence")
-        #     ok, ij = check_convergence(
-        #         tensor_func, index_to_args, tensor_approx, shape, eps
-        #     )
-        #     if ok:
-        #         return u, v, rows, cols
-
-        #     i, j = ij
-        #     k += 1
-        #     continue
-
-        gamma = vk[j]
-        vk = vk / gamma
-        print("vk", vk)
-        for x in np.flip(np.argsort(np.abs(vk))):
-            print("choice", x)
+        for x in np.flip(np.argsort(np.abs(vk.reshape(-1)))):
+            # print("choice", x)
             if x != j:
                 j = x
                 break
 
-        print("choosing j =", j)
+        # print("choosing j =", j)
         vk = vk.reshape(q, 1)
 
         err_sq = np.linalg.norm(uk) ** 2 * np.linalg.norm(vk) ** 2
-        err = np.sqrt((min(p, q) - k) * err_sq)
-        print(u.shape, uk.shape, v.shape, vk.shape)
+        # err = np.sqrt((min(p, q) - k) * err_sq)
+        err = np.sqrt(err_sq)
+        # print(u.shape, uk.shape, v.shape, vk.shape)
         nrm = np.sqrt(nrm**2 + 2 * (u.T @ uk).T @ (v.T @ vk) + err_sq)
         if k == 0:
             u = uk
@@ -234,13 +251,14 @@ def cross_approx(
             v = np.concat([v, vk], axis=1)
 
         tensor_approx += uk @ vk.T
-        print(gamma, err, nrm)
-        if abs(gamma) <= eps:
+        # print(gamma, err, nrm)
+        # if abs(gamma) <= eps:
+        if err <= eps * nrm:
             ok, ij = check_convergence(
                 tensor_func, index_to_args, tensor_approx, shape, eps
             )
             if ok:
-                return u, v.T, rows, cols
+                return rows, cols
 
             i, j = ij
 
@@ -251,6 +269,13 @@ def flatten_lists(xss):
     """Flatten nested lists."""
 
     if isinstance(xss, list):
-        return [x for xs in xss for x in flatten_lists(xs)]
+        result = []
+        for xs in xss:
+            if isinstance(xs, list):
+                result.extend(flatten_lists(xs))
+            else:
+                result.append(xs)
+
+        return result
 
     return xss

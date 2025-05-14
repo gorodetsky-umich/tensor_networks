@@ -115,6 +115,7 @@ class PreprocessConfig(pydantic.BaseModel):
         description="Enable recomputation and ignore the stored SVD results",
     )
 
+
 class TopDownConfig(pydantic.BaseModel):
     """Configuration for the top down structure search"""
 
@@ -126,9 +127,11 @@ class TopDownConfig(pydantic.BaseModel):
         default="not_first",
         description="Configure whether to merge indices at the first level",
     )
-    search_algo: Literal["random", "enumerate", "correlation", "svd"] = pydantic.Field(
-        default="enumerate",
-        description="Configure whether to use random algorithms",
+    search_algo: Literal["random", "enumerate", "correlation", "svd"] = (
+        pydantic.Field(
+            default="enumerate",
+            description="Configure whether to use random algorithms",
+        )
     )
     aggregation: Literal["mean", "det", "norm", "sval"] = pydantic.Field(
         default="mean",
@@ -156,8 +159,9 @@ class TopDownConfig(pydantic.BaseModel):
     )
     alpha: float = pydantic.Field(
         default=0.01,
-        description="Configure the error distribution between steps"
+        description="Configure the error distribution between steps",
     )
+
 
 class SearchConfig(pydantic.BaseModel):
     """Configuration for the entire search process"""

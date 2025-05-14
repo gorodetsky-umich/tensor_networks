@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from collections import Counter
 from dataclasses import dataclass
 import typing
-from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Any
+from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Set, Any
 import itertools
 import math
 
@@ -266,6 +266,88 @@ class Tensor:
 
         return q_tensor, r_tensor
 
+    def _create_index_to_args(
+        self,
+        tensor_func: TensorFunc,
+        lefts: Sequence[int],
+        rights: Sequence[int],
+        index_map: Dict[Index, Sequence[Index]],
+        restrictions: Dict[Index, Sequence[int]],
+    ):
+        # print(restrictions)
+        perms = lefts + rights
+        left_sizes = [self.indices[i].size for i in lefts]
+        right_sizes = [self.indices[i].size for i in rights]
+
+        def index_to_args(indices: Sequence[int]) -> np.ndarray[int]:
+            assert len(indices) == 2, "only works for matrices"
+
+            left_sz = np.prod(left_sizes)
+            right_sz = np.prod(right_sizes)
+            linds = np.arange(left_sz) if indices[0] is None else indices[0]
+            rinds = np.arange(right_sz) if indices[1] is None else indices[1]
+
+            # expand the flatten index to local indices
+            left_args = np.unravel_index(linds, left_sizes)
+            right_args = np.unravel_index(rinds, right_sizes)
+            # print(rinds, right_sizes, right_args)
+            if isinstance(left_args[0], np.ndarray):
+                left_args = list(zip(*left_args))
+            else:
+                left_args = [left_args]
+
+            if isinstance(right_args[0], np.ndarray):
+                right_args = list(zip(*right_args))
+            else:
+                right_args = [right_args]
+
+            # print(left_args, right_args)
+            args_list = []
+            for args in itertools.product(left_args, right_args):
+                args_list.append(np.array(args[0] + args[1]))
+
+            results = []
+            for args in args_list:
+                order = []
+                global_args = []
+                for i, arg in enumerate(args):
+                    # for i, ind in enumerate(self.indices):
+                    ind = self.indices[perms[i]]
+                    global_indices = index_map.get(ind, [ind])
+                    # print(index_map, order, global_indices)
+                    order.extend(global_indices)
+
+                    # restrict choices of indices if they have been chosen
+                    if ind in restrictions:
+                        # print(
+                        #     "looking for restrictions of",
+                        #     arg,
+                        #     "inside",
+                        #     restrictions[ind],
+                        # )
+                        restricted_args = restrictions[ind][arg]
+                        # print("expanding", arg, "into", restricted_args)
+                        assert len(global_indices) == len(restricted_args), (
+                            f"expected {global_indices}, but get {restricted_args}"
+                        )
+                        global_args.extend(restricted_args)
+                    else:
+                        # map internal indices to global indices
+                        global_sizes = [idx.size for idx in global_indices]
+                        global_args.extend(np.unravel_index(arg, global_sizes))
+
+                assert len(global_args) == len(tensor_func.shape), (
+                    f"expect {tensor_func.shape}, but get {global_args}"
+                )
+                # reorder so that they match the order of function arguments
+                order = np.argsort(order)
+                results.append(np.array(global_args)[order])
+
+            # print(results)
+            return results
+
+        return index_to_args
+
     def cross_approx(
         self,
         tensor_func: TensorFunc,
@@ -275,6 +357,7 @@ class Tensor:
         eps: float,
     ) -> Tuple["Tensor", "Tensor", Sequence[np.ndarray]]:
         """Compute the cross approximation of the tensor functions for the given reshaping."""
+        print("current approximation size", self.value.shape)
         # create the mapping between row, col, and function arguments
         left_sizes, right_sizes = [], []
         rights = []
@@ -285,43 +368,43 @@ class Tensor:
                 right_sizes.append(ind.size)
                 rights.append(i)
 
-        def index_to_args(indices: Sequence[int]) -> np.ndarray[int]:
-            assert len(indices) == 2, "only works for matrices"
-            # expand the flatten index to local indices
-            left_args = np.unravel_index(indices[0], left_sizes)
-            right_args = np.unravel_index(indices[1], right_sizes)
-            args = np.array(left_args + right_args)
+        left_sz = int(np.prod(left_sizes))
+        right_sz = int(np.prod(right_sizes))
 
-            order = []
-            global_args = []
-            for i, ind in enumerate(self.indices):
-                global_indices = index_map.get(ind, [ind])
-                order.extend(global_indices)
-
-                # restrict choices of indices if they have been chosen
-                if ind in restrictions:
-                    restricted_args = restrictions[ind][args[i]]
-                    assert len(global_indices) == len(restricted_args)
-                    global_args.extend(restricted_args)
-                else:
-                    # map internal indices to global indices
-                    global_sizes = [idx.size for idx in global_indices]
-                    global_args.extend(np.unravel_index(args[i], global_sizes))
-
-            assert len(global_args) == len(tensor_func.shape)
-            # reorder so that they match the order of function arguments
-            order = np.argsort(order)
-            return np.array(global_args).transpose(*order)
-
-        left_sz = np.prod(left_sizes)
-        right_sz = np.prod(right_sizes)
-        u, v, rows, cols = cross_approx(
-            tensor_func, index_to_args, (left_sz, right_sz), eps
+        index_to_args = self._create_index_to_args(
+            tensor_func, lefts, rights, index_map, restrictions
         )
+
+        rows, cols = cross_approx(
+            tensor_func,
+            np.zeros((left_sz, right_sz)),
+            index_to_args,
+            (left_sz, right_sz),
+            eps,
+        )
+        rows = np.array(list(rows))
+        cols = np.array(list(cols))
+
+        k = len(rows)
+        u = tensor_func(index_to_args((None, cols))).reshape(-1, k)
+        s = np.linalg.pinv(
+            tensor_func(index_to_args((rows, cols))).reshape(k, k)
+        )
+        u = u @ s
+        v = tensor_func(index_to_args((rows, None))).reshape(k, -1)
+        # v = s@v
+
         # remember the selection of arguments for further splits
         rc_args = []
         for rc in itertools.product(rows, cols):
-            rc_args.append(index_to_args(rc))
+            rc_args.append(index_to_args(rc)[0])
+
+        # print("choosing", rc_args)
+
+        # normalize
+        # uq, ur = np.linalg.qr(u)
+        # v = ur @ v
+        # u = uq
 
         u = u.reshape([self.indices[i].size for i in lefts] + [-1])
         u_indices = [self.indices[i] for i in lefts]
@@ -1016,13 +1099,27 @@ class TensorNetwork:  # pylint: disable=R0904
 
         return _postorder(None, name)
 
-    def leaf_indices(self, node_name: NodeName) -> Sequence:
+    def leaf_indices(
+        self, visited: Set[NodeName], node_name: NodeName
+    ) -> Sequence:
         """Get all leaf indices for the subtree rooted at the given node."""
-        leaves = []
         indices = self.node_tensor(node_name).indices
         perm = []
+        leaves = []
+        visited.add(node_name)
+
+        # free indices are added first
+        if len(visited) != 1:
+            for i, ind in enumerate(indices):
+                if ind in self.free_indices():
+                    leaves.append([ind])
+                    perm.append(i)
+
         for n in self.network.neighbors(node_name):
-            leaves.append(self.leaf_indices(n))
+            if n in visited:
+                continue
+
+            leaves.append(self.leaf_indices(visited, n))
             common_index = self.get_contraction_index(n, node_name)
             assert len(common_index) == 1
             perm.append(indices.index(common_index[0]))
@@ -1039,24 +1136,34 @@ class TensorNetwork:  # pylint: disable=R0904
         delta: float,
     ) -> Tuple[NodeName, NodeName]:
         """Split a node by cross approximation."""
-        free_indices = self.free_indices()
+        free_indices = sorted(self.free_indices())
         tensor = self.node_tensor(node_name)
 
         # create the index map by DFS
         # the result is in the order of its indices
-        leaves = self.leaf_indices(node_name)
-        assert len(leaves) == len(tensor.indices)
+        leaves = self.leaf_indices(set(), node_name)
+
         index_map = {}
         local_restrictions = {}
         for ind, lvs in zip(tensor.indices, leaves):
+            # print(lvs, flatten_lists(lvs))
             index_map[ind] = flatten_lists(lvs)
 
             # create a restriction for each internal index
             if ind not in free_indices:
                 # extract the restrictions at the corresponding positions of index map
-                local_restrictions[ind] = [
-                    restrictions[ind][i] for i in index_map[ind]
-                ]
+                local_args = []
+                for args in restrictions[ind]:
+                    arg_list = []
+                    for i in index_map[ind]:
+                        arg_list.append(args[free_indices.index(i)])
+
+                    if arg_list not in local_args:
+                        # print("adding local arg restriction", arg_list)
+                        local_args.append(arg_list)
+
+                local_restrictions[ind] = sorted(local_args)
+                # print(local_restrictions[ind])
 
         u, v, rcs = tensor.cross_approx(
             tensor_func, index_map, local_restrictions, lefts, delta
