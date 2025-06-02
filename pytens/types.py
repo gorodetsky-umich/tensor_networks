@@ -1,6 +1,6 @@
 """Type definitions."""
 
-from typing import Union, Sequence, Self, Optional
+from typing import Union, Sequence, Self, Optional, Any
 from dataclasses import dataclass
 
 import pydantic
@@ -15,7 +15,7 @@ class Index:
     """Class for denoting an index."""
 
     name: Union[str, int]
-    size: int
+    size: Any
 
     def with_new_size(self, new_size: int) -> "Index":
         """Create a new index with same name but new size"""

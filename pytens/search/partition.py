@@ -1,17 +1,17 @@
 """Structure search with output-directed splits."""
 
-from typing import List, Optional, Generator
+from typing import List, Optional, Generator, Sequence
 import time
 import copy
-import multiprocessing
 import pickle
 import atexit
 
 import numpy as np
 
 from pytens.algs import TensorNetwork, SVDConfig
+from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
-from pytens.search.state import SearchState, Action, OSplit
+from pytens.search.state import SearchState, Action, OSplit, ISplit
 from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 from pytens.search.utils import remove_temp_dir, SearchStats, SearchResult
 
@@ -33,6 +33,7 @@ class PartitionSearch:
         self._tic = 0
 
     def reset(self):
+        """Reset the search states."""
         self.best_network = None
         self.best_acs = []
         self._costs = {}
@@ -45,11 +46,13 @@ class PartitionSearch:
         init_st: SearchState,
         new_st: SearchState,
         best_cost: List[int],
-        result_queue: multiprocessing.Queue,
+        tensor_func: Optional[TensorFunc] = None,
     ) -> List[int]:
         """Call a constraint solver to estimate the cost of a given network."""
         if self.config.rank_search.fit_mode == "topk":
             rank, cost = self.constraint_engine.get_cost(new_st, best_cost[-1])
+            # print(new_st.network)
+            # print(cost)
             if cost != BAD_SCORE:
                 best_cost.append(cost)
                 best_cost = sorted(best_cost)
@@ -68,7 +71,7 @@ class PartitionSearch:
                 index_ac = ac
                 index_ac.delta = delta
 
-            self.replay(init_st, new_st.past_actions, result_queue, True)
+            self.replay(init_st, new_st.past_actions, True, tensor_func)
             return best_cost
 
         return best_cost
@@ -77,8 +80,12 @@ class PartitionSearch:
         """Perform a split without actual data computation."""
         if isinstance(action, OSplit):
             split_ac = action.to_isplit(curr_st.network)
-        else:
+        elif isinstance(action, ISplit):
             split_ac = action
+        else:
+            raise ValueError(
+                f"unknown type for {action}with type {type(action)}"
+            )
 
         new_net = copy.deepcopy(curr_st.network)
 
@@ -99,9 +106,9 @@ class PartitionSearch:
     def fill_holes(
         self,
         st: SearchState,
-        result_queue: multiprocessing.Queue,
-        actions: Optional[List[Action]] = None,
+        actions: Optional[Sequence[Action]] = None,
         budget: int = 2,
+        tensor_func: Optional[TensorFunc] = None,
     ) -> Generator[SearchResult, None, None]:
         """Enumerate all possible splits up to the maximum number of ops."""
         sts = [st]
@@ -138,7 +145,7 @@ class PartitionSearch:
                     new_st = self.pseudo_action_execution(curr_st, action)
                     self.search_stats.count += 1
                     best_cost = self.get_cost(
-                        st, new_st, best_cost, result_queue
+                        st, new_st, best_cost, tensor_func
                     )
                     # print("cost for new action", action, "is", best_cost)
                     # print(
@@ -161,13 +168,16 @@ class PartitionSearch:
                 if c == BAD_SCORE:
                     acs = []
 
-                # print("best actions", [str(ac) for ac in acs])
+                # print("best actions")
                 for k, ac in enumerate(acs):
                     ac.target_size = self._ranks[acs][k]
+                    # print(ac, ac.target_size)
 
                 self.best_acs = acs
                 if actions is None:
-                    self.replay(st, acs, result_queue, True)
+                    self.replay(
+                        st, acs, first_iter=True, tensor_func=tensor_func
+                    )
 
                 result = SearchResult(
                     stats=self.search_stats,
@@ -184,73 +194,88 @@ class PartitionSearch:
                 best_actions=self.best_acs,
             )
 
+    def _round(
+        self, st: SearchState, tensor_func: Optional[TensorFunc] = None
+    ):
+        if tensor_func is not None:
+            # st.curr_delta = self.config.engine.eps * st.network.norm()
+            self.best_network = st.network
+            return
+
+        assert self.best_network is not None
+
+        for n in st.network.network.nodes:
+            net = copy.deepcopy(st.network)
+            _, unused_delta = net.round(n, st.curr_delta)
+            # print("round",n)
+            # net.draw()
+            # plt.show()
+            # plt.savefig(f"debug_{n}.png")
+            # plt.close()
+            if net.cost() < self.best_network.cost():
+                self.best_network = net
+                self.unused_delta = unused_delta
+
     def replay(
         self,
         st: SearchState,
         actions: List[Action],
-        result_queue: multiprocessing.Queue,
-        first_iter=False,
+        first_iter: bool = False,
+        tensor_func: Optional[TensorFunc] = None,
     ):
         """Apply the given actions around the given ranks."""
         if not actions:
             # st.network.draw()
             # plt.show()
-            for n in st.network.network.nodes:
-                net = copy.deepcopy(st.network)
-                _, unused_delta = net.round(n, st.curr_delta)
-                # print("round",n)
-                # net.draw()
-                # plt.show()
-                # plt.savefig(f"debug_{n}.png")
-                # plt.close()
-                if net.cost() < self.best_network.cost():
-                    self.best_network = net
-                    self.unused_delta = unused_delta
-
+            self._round(st, tensor_func)
             return
 
         # print("replaying actions:", [str(ac) for ac in actions])
         ac = actions[0]
         if first_iter and self.config.rank_search.fit_mode == "all":
             svd_file = self.constraint_engine.first_steps.get(ac, None)
+            if svd_file is None:
+                raise ValueError("get no svd file in the mode 'all'")
+
             svd_data = np.load(svd_file)
             svd = (svd_data["u"], svd_data["s"], svd_data["v"])
         else:
             svd = None
         # print("new action", new_ac)
-        for new_st in st.take_action(ac, svd=svd, config=self.config):
-            self.search_stats.costs.append(
-                (
-                    time.time() - self._tic,
-                    new_st.network.cost(),
-                )
-            )
+
+        # in cross approximation, we need to get the error bound
+        for new_st in st.take_action(
+            ac,
+            svd=svd,
+            config=self.config,
+            tensor_func=tensor_func,
+        ):
+            timestamp = time.time() - self._tic
+            self.search_stats.costs.append((timestamp, new_st.network.cost()))
             ukey = new_st.network.canonical_structure()
-            self.search_stats.unique[ukey] = (
-                self.search_stats.unique.get(ukey, 0) + 1
-            )
-            self.replay(new_st, actions[1:], result_queue)
+            self.search_stats.incr_unique(ukey)
+            self.replay(new_st, actions[1:], tensor_func=tensor_func)
             # print(new_st.network)
 
     def rank_search_and_replay(
         self,
         net: TensorNetwork,
         acs: List[Action],
-        delta: float = None,
+        delta: Optional[float] = None,
     ) -> SearchResult:
         """Replay actions on the given tensor network."""
         preprocess_end = time.time()
         if delta is None:
             delta = net.norm() * self.config.engine.eps
         self._delta = delta
+
         init_st = SearchState(net, delta)
-        free_indices = net.free_indices()
         new_st = init_st
         for ac in acs:
             ac.target_size = None
             new_st = self.pseudo_action_execution(new_st, ac)
 
-        _ = self.get_cost(init_st, new_st, net.cost(), None)
+        _ = self.get_cost(init_st, new_st, [net.cost()], None)
 
         self.best_network = net
         # get the smallest
@@ -260,28 +285,25 @@ class PartitionSearch:
                 ac.target_size = self._ranks[actions][k]
 
             self.best_acs = actions
-            self.replay(init_st, actions, None, True)
+            self.replay(init_st, actions, True)
 
-        self.search_stats.time = time.time() - self._tic
-        self.search_stats.preprocess_time = preprocess_end - self._tic
-        self.search_stats.cr_core = (
-            float(np.prod([i.size for i in free_indices]))
-            / self.best_network.cost()
+        result = SearchResult(
+            stats=self.search_stats,
+            best_network=self.best_network,
+            best_actions=self.best_acs,
         )
-        self.search_stats.cr_start = net.cost() / self.best_network.cost()
-        net_val = net.contract().value
-        self.search_stats.re = float(
-            np.linalg.norm(self.best_network.contract().value - net_val)
-            / np.linalg.norm(net_val)
-        )
-        return self.search_stats
+        result.stats.time = time.time() - self._tic
+        result.stats.preprocess_time = preprocess_end - self._tic
+        result.unused_delta = self.unused_delta
+        return result
 
     def search(
         self,
         net: TensorNetwork,
         delta: Optional[float] = None,
-        actions: Optional[List[Action]] = None,
+        actions: Optional[List[OSplit]] = None,
         budget: int = 2,
+        tensor_func: Optional[TensorFunc] = None,
     ) -> Generator[SearchResult, None, None]:
         """Start the search from a given network.
         Only support single core now.
@@ -293,17 +315,23 @@ class PartitionSearch:
                 acs = pickle.load(ac_file)
 
             # preprocess only for the given actions
-            self.constraint_engine.preprocess(net.contract(), acs)
+            self.constraint_engine.preprocess(
+                net.contract(), acs, cross_func=tensor_func
+            )
             if self.config.output.remove_temp_after_run:
                 atexit.register(
                     remove_temp_dir,
                     self.config.output.output_dir,
                     self.constraint_engine.temp_files,
                 )
-            return self.rank_search_and_replay(net, acs, delta)
+            yield self.rank_search_and_replay(net, acs, delta)
+            return
 
         if self.best_network is None:
             self.best_network = net
+
+        if tensor_func is not None:
+            delta = self.config.engine.eps
 
         if delta is None:
             delta = net.norm() * self.config.engine.eps
@@ -319,6 +347,7 @@ class PartitionSearch:
             compute_uv=self.config.rank_search.fit_mode == "all",
             acs=actions,
             delta=delta,
+            cross_func=tensor_func,
         )
         if self.config.output.remove_temp_after_run:
             atexit.register(
@@ -329,20 +358,9 @@ class PartitionSearch:
         toc1 = time.time()
 
         self._tic = time.time()
-        q = multiprocessing.Queue()
-        for result in self.fill_holes(init_st, q, actions, budget):
-            # q = multiprocessing.Queue()
-            # p = multiprocessing.Process(target=self.fill_holes, args=(init_st, q))
-            # p.start()
-            # result = SearchResult()
-            # try:
-            #     result = q.get(timeout=self.config.engine.timeout)
-            #     p.join(timeout=self.config.engine.timeout)
-            # except (multiprocessing.TimeoutError, queue.Empty):
-            #     pass
-            # finally:
-            #     if p.is_alive():
-            #         p.kill()
+        for result in self.fill_holes(
+            init_st, actions, budget, tensor_func=tensor_func
+        ):
             toc2 = time.time()
 
             result.stats.time = toc2 - start

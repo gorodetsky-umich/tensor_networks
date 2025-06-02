@@ -28,7 +28,8 @@ from pytens.algs import (
     ttop_rank2,
     ttop_sum_apply,
 )
-from pytens.utils import TensorFunc, cross_approx
+from pytens.cross.cross import TensorFunc
+from pytens.cross.cache import np_cache
 from tests.search_test import (
     TestConfig,  # noqa: F401
     TestAction,  # noqa: F401
@@ -748,7 +749,7 @@ class TestCross(unittest.TestCase):
         net_val = net.contract().value
         all_args = np.mgrid[0:p,0:q,0:r].reshape(3, -1).T
         real_val = tensor_func(all_args).reshape(p, q, r)
-        self.assertLessEqual(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val), 0.1)
+        self.assertLessEqual(float(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)), 0.1)
 
     def test_cross_network_two_step(self):
         p, q, r = 25, 25, 25
@@ -760,42 +761,173 @@ class TestCross(unittest.TestCase):
         net = TensorNetwork()
         net.add_node("G", Tensor(np.zeros((p, q, r)), [Index("i", p), Index("j", q), Index("k", r)]))
         restrictions = {}
-        net.cross(tensor_func, restrictions, "G", [0], delta=1e-1* 2 ** -0.5)
+        net.cross(tensor_func, restrictions, "G", [0], delta=1e-1* (2 ** -0.5))
         print(net)
         net_val = net.contract().value
         # print(net_val)
         print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
 
         # print(restrictions)
-        net.cross(tensor_func, restrictions, "n0", [0,1], delta=1e-1 * 2 ** -0.5)
+        net.cross(tensor_func, restrictions, "n0", [0,1], delta=1e-1 * (2 ** -0.5))
         print(net)
         net_val = net.contract().value
-        print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
 
-    def test_cross_network_three_step(self):
-        p, q, r = 25, 25, 25
-        tensor_func = TensorFunc(lambda i, j, k: ((i + 1) ** 2 + (j+1)**2 + (k+1) ** 2) ** -0.5, (p, q, r))
-        all_args = np.mgrid[0:p,0:q,0:r].reshape(3, -1).T
-        real_val = tensor_func(all_args).reshape(p, q, r)
+    def test_cross_network_four_step(self):
+        p, q, r, s = 200, 200, 200, 200
+
+        def f1(x):
+            return 1. / np.sqrt(np.sum((x+1) ** 2, axis=1))
+
+        tensor_func = TensorFunc(f1, [
+            np.arange(0, p) for _ in range(4)
+        ])
+        # tensor_func = TensorFunc(lambda i, j, k, l: 1 / (i+j+k+l+4), (p, q, r,s))
+        # p, q, r, s = 30, 12, 120, 120
+        # data = np.load("../data/BigEarthNet/bigearthnet_stack_30_0/data.npy")
+        # data = data / np.linalg.norm(data)
+        # data = data / np.linalg.norm(data)
+        # p, q, r, s = 21, 64, 64, 64
+        # data = np.load("../data/PDEBench/3D_CFD_0/data.npy")
+        # data = data[0,3].reshape(-1, 64, 64, 64)
+        # tensor_func = TensorFunc(lambda i,j,k,l: data[i,j,k,l], data.shape)
+        # print(real_val.shape)
+
+        net = TensorNetwork()
+        net.add_node("G", Tensor(np.zeros((p, q, r,s)), [Index("i", p), Index("j", q), Index("k", r), Index("l", s)]))
+        restrictions = {}
+        # net.cross(tensor_func, restrictions, "G", [0], max_k=2)
+        # print(net)
+        # net_val = net.contract().value
+        # # print(net_val)
+        # print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        # print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+        # # print(restrictions)
+        # net.cross(tensor_func, restrictions, "n0", [1], max_k=2)
+        # print(net)
+        # net_val = net.contract().value
+        # print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        # print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+        # net.cross(tensor_func, restrictions, "n1", [2], max_k=2)
+        # print(net)
+        # net_val = net.contract().value
+        # print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        # print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+        import time
+
+        start = time.time()
+        net.cross(tensor_func, restrictions, "G", [0,1], delta=1e-1)
+        print("cross time:", time.time() - start)
+        print(net)
+        # net_val = net.contract().value
+        # all_args = np.mgrid[0:p,0:q,0:r,0:s].reshape(4, -1).T
+        # real_val = tensor_func.function(*all_args).reshape(p, q, r,s)
+        # print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        # print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+        # start = time.time()
+        # u, s, v = np.linalg.svd(real_val.reshape(p*q, -1), full_matrices=False)
+        # print("SVD time:", time.time() - start)
+
+    def test_cross_network_five_step(self):
+        p, q, r, s = 25, 25, 25, 25
+        tensor_func = TensorFunc(lambda i,j,k,l: ((i + 1) ** 2 + (j+1)**2 + (k+1) ** 2+ (l+1) ** 2) ** -0.5, (p, q, r,s))
+        # tensor_func = TensorFunc(lambda i, j, k, l: 1 / (i+j+k+l+4), (p, q, r,s))
+        all_args = np.mgrid[0:p,0:q,0:r,0:s].reshape(4, -1).T
+        real_val = tensor_func(all_args).reshape(p, q, r,s)
         # print(real_val)
 
         net = TensorNetwork()
-        net.add_node("G", Tensor(np.zeros((p, q, r)), [Index("i", p), Index("j", q), Index("k", r)]))
+        net.add_node("G", Tensor(np.zeros((p, q, r,s)), [Index("i", p), Index("j", q), Index("k", r), Index("l", s)]))
         restrictions = {}
-        net.cross(tensor_func, restrictions, "G", [0], delta=1e-1 * 3 ** -0.5)
+        net.cross(tensor_func, restrictions, "G", [0], delta=1e-1 * 5 ** -0.5)
         print(net)
         net_val = net.contract().value
         # print(net_val)
         print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
 
         # print(restrictions)
-        net.cross(tensor_func, restrictions, "n0", [1], delta=1e-1 * 3 ** -0.5)
-        print(net)
-
-        net.cross(tensor_func, restrictions, "n1", [2], delta=1e-1 * 3 ** -0.5)
+        net.cross(tensor_func, restrictions, "n0", [1], delta=1e-1 * 5 ** -0.5)
         print(net)
         net_val = net.contract().value
-        print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+        net.cross(tensor_func, restrictions, "n1", [2], delta=1e-1 * 5 ** -0.5)
+        print(net)
+        net_val = net.contract().value
+        print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+        net.cross(tensor_func, restrictions, "n2", [3], delta=1e-1 * 5 ** -0.5)
+        print(net)
+        net_val = net.contract().value
+        print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+        net.cross(tensor_func, restrictions, "n3", [0,1], delta=1e-1 * 5 ** -0.5)
+        print(net)
+        net_val = net.contract().value
+        print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+        print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+
+    def test_cross_network_four_dim(self):
+        p, q, r, s = 25, 25, 25, 25
+        tensor_func = TensorFunc(lambda i,j,k,l: ((i + 1) ** 2 + (j+1)**2 + (k+1) ** 2+ (l+1) ** 2) ** -0.5, (p, q, r,s))
+        # tensor_func = TensorFunc(lambda i, j, k, l: 1 / (i+j+k+l+4), (p, q, r,s))
+        all_args = np.mgrid[0:p,0:q,0:r,0:s].reshape(4, -1).T
+        real_val = tensor_func(all_args).reshape(p, q, r,s)
+        # print(real_val)
+        import time
+        start = time.time()
+        u, _, _ = np.linalg.svd(real_val)
+        print("svd time:", time.time() - start)
+
+        for i in range(-1, -10, -1):
+            np.random.seed(42)
+            net = TensorNetwork()
+            net.add_node("G", Tensor(np.zeros((p, q, r, s)), [Index("i", p), Index("j", q), Index("k", r), Index("l", s)]))
+            restrictions = {}
+            
+            start = time.time()
+            u, v, _ = net.cross(tensor_func, restrictions, "G", [0], delta=10**i)
+            print("cross time:", time.time() - start)
+            net_val = net.contract().value
+            print(net.value(u).shape[-1], net.cost())
+            print("F norm error", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+            print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
+
+    def test_cross_network_four_dim_diff_errors(self):
+        p, q, r, s = 25, 25, 25, 25
+        tensor_func = TensorFunc(lambda i,j,k,l: ((i + 1) ** 2 + (j+1)**2 + (k+1) ** 2+ (l+1) ** 2) ** -0.5, (p, q, r,s))
+        # tensor_func = TensorFunc(lambda i, j, k, l: 1 / (i+j+k+l+4), (p, q, r,s))
+        all_args = np.mgrid[0:p,0:q,0:r,0:s].reshape(4, -1).T
+        real_val = tensor_func(all_args).reshape(p, q, r,s)
+        # print(real_val)
+        import time
+        start = time.time()
+        u, _, _ = np.linalg.svd(real_val)
+        print("svd time:", time.time() - start)
+
+        for i in range(1, 10):
+            np.random.seed(42)
+            net = TensorNetwork()
+            net.add_node("G", Tensor(np.zeros((p, q, r, s)), [Index("i", p), Index("j", q), Index("k", r), Index("l", s)]))
+            restrictions = {}
+            
+            start = time.time()
+            u, v, _ = net.cross(tensor_func, restrictions, "G", [3], delta=0.01 * i)
+            print("cross time:", time.time() - start)
+            net_val = net.contract().value
+            print(net.value(u).shape[-1], net.cost())
+            print("F norm error", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
+            print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
 
 if __name__ == "__main__":
     unittest.main()

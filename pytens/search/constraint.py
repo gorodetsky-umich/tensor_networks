@@ -1,6 +1,6 @@
 """Linear constraints for finding best rank assignment."""
 
-from typing import List, Sequence
+from typing import List, Sequence, Optional, Tuple, Dict
 import itertools
 import os
 
@@ -8,9 +8,10 @@ import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
 
-from pytens.algs import Tensor, Index
+from pytens.algs import Tensor, Index, TensorNetwork
 from pytens.search.configuration import SearchConfig
-from pytens.search.state import OSplit, SearchState, Action
+from pytens.search.state import OSplit, SearchState
+from pytens.cross.cross import TensorFunc
 
 BAD_SCORE = 9999999999999
 
@@ -58,6 +59,7 @@ class ILPSolver:
             for sz, p in zip(ind.size, pfsums[ind.name]):
                 coeff[(ind.name, sz)] = p
 
+        # print(self.vars, delta ** 2)
         self.model.addConstr(self.vars.prod(coeff) <= delta**2)
 
     def set_objective(
@@ -65,7 +67,7 @@ class ILPSolver:
     ):
         """Set the objective for the solver."""
         # max_cost = np.prod([i.size for i in free_indices])
-        cost = 0
+        cost = gp.LinExpr()
         for node in nodes:
             var_inds = []
 
@@ -154,18 +156,62 @@ class ConstraintSearch:
         # print(list(zip(final_sizes, s_sums)))
         return s_sums, final_sizes
 
+    def _preprocess_cross(
+        self,
+        target_tensor: Tensor,
+        positions: Sequence[int],
+        comb: Sequence[Index],
+        cross_func: TensorFunc,
+    ):
+        # print(comb)
+        net = TensorNetwork()
+        net.add_node("G", target_tensor)
+        bin_size = self.config.synthesizer.bin_size
+        err = self.config.engine.eps * bin_size
+        _, _, st = net.cross(cross_func, {}, "G", positions[: len(comb)], err)
+        sizes, sums = zip(*st.ranks_and_errors)
+        # print(st.ranks_and_errors)
+
+        # for each error, find the smallest rank when there are several close
+
+        # pick 10 according to the error change
+        sizes = np.array(sizes)
+        sums = np.array(sums)
+        bin_num = int(1 / bin_size)
+        final_sums, final_sizes = [], []
+        for bin_idx in range(1, bin_num + 1):
+            eps = err * bin_idx
+            deviation = eps - sums
+            # print(eps, deviation)
+            # find the indices where after it the deviation are mostly positive
+            cnts = np.convolve(deviation >= 0, np.ones(3, dtype=int), "same")
+            pos_cnt = cnts >= 0
+            within_range = np.logical_and(deviation >= 0, deviation <= err)
+            valid_errors = np.where(np.logical_and(within_range, pos_cnt))[0]
+            # print(eps, sums[valid_errors], sizes[valid_errors])
+            if len(valid_errors) > 0:
+                min_idx = np.argmin(sizes[valid_errors])
+                final_sums.append(sums[valid_errors][min_idx] ** 2)
+                final_sizes.append(sizes[valid_errors][min_idx])
+                # print(final_sums, final_sizes)
+
+        # print(comb, final_sums, final_sizes)
+        self.split_actions[OSplit(comb)] = (final_sums, final_sizes)
+
     def preprocess_comb(
         self,
         target_tensor: Tensor,
         comb: Sequence[Index],
         compute_uv: bool = False,
+        cross_func: Optional[TensorFunc] = None,
     ):
         """Precompute the singluar values for a given index combination."""
         free_indices = target_tensor.indices
         right_indices = [i for i in free_indices if i not in comb]
-        positions = [
-            target_tensor.indices.index(i) for i in list(comb) + right_indices
-        ]
+        positions = []
+        for i in list(comb) + right_indices:
+            positions.append(target_tensor.indices.index(i))
+
         tensor_val = target_tensor.value.transpose(positions)
         left_size = np.prod([x.size for x in comb])
         file_name = (
@@ -176,6 +222,10 @@ class ConstraintSearch:
         #     return
         # else:
         #     print("not skipping", [str(ac) for ac in comb])
+
+        if cross_func is not None:
+            self._preprocess_cross(target_tensor, positions, comb, cross_func)
+            return
 
         if compute_uv:
             u, s, v = np.linalg.svd(
@@ -205,9 +255,10 @@ class ConstraintSearch:
     def preprocess(
         self,
         target_tensor: Tensor,
-        acs: Sequence[Action] = None,
+        acs: Optional[Sequence[OSplit]] = None,
         compute_uv: bool = False,
-        delta: float = None,
+        delta: Optional[float] = None,
+        cross_func: Optional[TensorFunc] = None,
     ):
         """Compute the mapping between splits and singular values.
 
@@ -216,26 +267,35 @@ class ConstraintSearch:
         free_indices = target_tensor.indices
         if delta is not None:
             self.delta = delta
+        elif cross_func is not None:
+            self.delta = self.config.engine.eps
         else:
             x_norm = np.linalg.norm(target_tensor.value)
-            self.delta = self.config.engine.eps * x_norm
+            self.delta = float(self.config.engine.eps * x_norm)
 
         if acs is not None:
             for ac in acs:
                 comb = ac.indices
-                self.preprocess_comb(target_tensor, comb)
+                self.preprocess_comb(
+                    target_tensor, comb, cross_func=cross_func
+                )
         else:
             for comb in SearchState.all_index_combs(free_indices):
                 self.preprocess_comb(
-                    target_tensor, comb, compute_uv=compute_uv
+                    target_tensor,
+                    comb,
+                    compute_uv=compute_uv,
+                    cross_func=cross_func,
                 )
                 # self.first_steps[OSplit(comb)] = (u, s, v)
 
     # we can integrate this with A*, beam search, or other things
     # let's try A* first
-    def get_cost(self, st: SearchState, upper: int):
+    def get_cost(
+        self, st: SearchState, upper: int
+    ) -> Tuple[Dict[int, int], int]:
         """Compute cost for a given set of splits."""
-        solver = ILPSolver({})
+        solver = ILPSolver(self.config)
 
         pfsums = {}
         # extract nodes from the current network
@@ -249,6 +309,7 @@ class ConstraintSearch:
 
             # print(index_ac)
             ac_sums, ac_sizes = self.split_actions[index_ac]
+            # print(index_ac, ac_sums, ac_sizes, st.links[idx])
             pfsums[st.links[idx]] = ac_sums
             # we need to substitute the links to all
             relabel_map[st.links[idx]] = tuple(ac_sizes)
@@ -259,6 +320,7 @@ class ConstraintSearch:
         var_indices = []
         # st.network.draw()
         # plt.show()
+        # print(st.network.all_indices())
         for ind in indices:
             if ind not in free_indices:
                 var_indices.append(ind)
@@ -271,26 +333,27 @@ class ConstraintSearch:
         solver.set_objective(free_indices, nodes, upper)
         solver.model.optimize()
 
-        try:
-            relabel_map = {}
-            for ind in var_indices:
-                for j in ind.size:
-                    if solver.vars[(ind.name, j)].x == 1:
-                        relabel_map[ind.name] = j
-
-            st.network.relabel_indices(relabel_map)
-            # st.network.compress()
-            result = {}
-            for ind, ind_size in relabel_map.items():
-                for k, v in enumerate(st.links):
-                    if v == ind:
-                        result[k] = ind_size
-                        break
-
-            solver.model.dispose()
-            solver.env.dispose()
-            return result, st.network.cost()
-        except AttributeError:
+        if solver.model.Status == GRB.INFEASIBLE:
             solver.model.dispose()
             solver.env.dispose()
             return {}, BAD_SCORE
+
+        relabel_map, error_map = {}, {}
+        for ind in var_indices:
+            for jj, j in enumerate(ind.size):
+                if solver.vars[(ind.name, j)].x == 1:
+                    relabel_map[ind.name] = j
+                    error_map[ind.name] = jj
+
+        st.network.relabel_indices(relabel_map)
+        # st.network.compress()
+        result = {}
+        for ind, ind_size in relabel_map.items():
+            for k, v in enumerate(st.links):
+                if v == ind:
+                    result[k] = ind_size
+                    break
+
+        solver.model.dispose()
+        solver.env.dispose()
+        return result, st.network.cost()

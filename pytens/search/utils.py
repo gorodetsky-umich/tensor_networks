@@ -26,6 +26,9 @@ class SearchStats(pydantic.BaseModel):
     cr_start: float = 0
     re: float = 0
 
+    def incr_unique(self, key: int):
+        self.unique[key] = self.unique.get(key, 0) + 1
+
 
 class SearchResult:
     stats: SearchStats
