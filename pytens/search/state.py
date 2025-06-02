@@ -8,11 +8,16 @@ import numpy as np
 import networkx as nx
 
 from pytens.algs import NodeName, TensorNetwork, Index, SVDConfig
+from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
 
 
 class Action:
     """Base action."""
+
+    def __init__(self):
+        self.delta = None
+        self.target_size = None
 
     def __lt__(self, other) -> bool:
         return str(self) < str(other)
@@ -20,7 +25,7 @@ class Action:
     def __hash__(self) -> int:
         return hash(self.__str__())
 
-    def is_valid(self, _: Sequence["Action"]) -> bool:
+    def is_valid(self, past_actions: Sequence["Action"]) -> bool:
         """Check whether the current action is valid against the history."""
         return True
 
@@ -64,7 +69,7 @@ class OSplit(Action):
 
         return sorted(self.indices) < sorted(other.indices)
 
-    def is_valid(self, past_actions) -> bool:
+    def is_valid(self, past_actions: Sequence[Action]) -> bool:
         """Check whether this action is valid given its execution history."""
         if self in past_actions:
             return False
@@ -148,9 +153,18 @@ class OSplit(Action):
         # plt.show()
         left_indices = [node_indices.index(i) for i in lca_indices]
 
-        return ISplit(lca_node, left_indices)
+        return ISplit(
+            lca_node,
+            left_indices,
+            target_size=self.target_size,
+            delta=self.delta,
+        )
 
-    def execute(self, net: TensorNetwork, svd: Tuple[np.ndarray] = None):
+    def execute(
+        self,
+        net: TensorNetwork,
+        svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+    ):
         """Execute the split index action on the given tensor network"""
         # find the nodes that include @indices@,
         # if there are multiple such nodes, go to the common ancestor
@@ -194,7 +208,9 @@ class ISplit(Action):
         return True
 
     def execute(
-        self, net: TensorNetwork, svd: Tuple[np.ndarray] = None
+        self,
+        net: TensorNetwork,
+        svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
     ) -> Tuple[Tuple[NodeName, NodeName, NodeName], int]:
         """Execute a split action."""
         node_indices = net.network.nodes[self.node]["tensor"].indices
@@ -202,9 +218,9 @@ class ISplit(Action):
         r_indices = [i for i in range(len(node_indices)) if i not in l_indices]
 
         left_szs = [node_indices[i].size for i in l_indices]
-        left_sz = np.prod(left_szs)
+        left_sz = int(np.prod(left_szs))
         right_szs = [node_indices[i].size for i in r_indices]
-        right_sz = np.prod(right_szs)
+        right_sz = int(np.prod(right_szs))
         max_sz = min(left_sz, right_sz)
 
         if svd is None:
@@ -258,6 +274,7 @@ class ISplit(Action):
             ):
                 curr_indices = indices
 
+        assert curr_indices is not None
         return OSplit(curr_indices)
 
 
@@ -294,6 +311,7 @@ class SearchState:
         self.threshold = threshold
         self.is_noop = False
         self.links = []
+        self.restrictions = {}
 
     def count_actions_of_size(self, k: int = 2):
         """Count the number of actions of the given size in the history."""
@@ -364,7 +382,7 @@ class SearchState:
         new_net: TensorNetwork,
         usv: Tuple[Tuple[NodeName, NodeName, NodeName], int],
         config: SearchConfig,
-        target_size: int = None,
+        target_size: Optional[int] = None,
     ) -> Generator["SearchState", None, None]:
         """Truncate the node u, s, v in the specified tensor network."""
         [u, s, v], max_sz = usv
@@ -449,7 +467,8 @@ class SearchState:
         self,
         action: Action,
         config: SearchConfig,
-        svd: Tuple[np.ndarray] = None,
+        svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+        tensor_func: Optional[TensorFunc] = None,
     ) -> Generator["SearchState", None, None]:
         """Return a new GameState after taking the specified action."""
         if isinstance(action, (ISplit, OSplit)):
@@ -461,6 +480,32 @@ class SearchState:
 
             if action.delta is not None:
                 self.curr_delta = action.delta
+
+            if tensor_func is not None:
+                if isinstance(action, OSplit):
+                    ac = action.to_isplit(new_net)
+                else:
+                    ac = action
+
+                new_state = SearchState(
+                    new_net,
+                    self.curr_delta,
+                    max_ops=self.max_ops,
+                    threshold=self.threshold,
+                )
+                new_state.restrictions = copy.deepcopy(self.restrictions)
+                # print("running cross for", ac)
+                _, _, cross_st = new_net.cross(
+                    tensor_func,
+                    new_state.restrictions,
+                    ac.node,
+                    ac.left_indices,
+                    max_k=ac.target_size,
+                )
+                new_err = cross_st.ranks_and_errors[-1][1]
+                # new_state.curr_delta = np.sqrt(self.curr_delta ** 2 - new_err ** 2)
+                yield new_state
+                return
 
             try:
                 # we allow specify the node values
@@ -503,8 +548,9 @@ class SearchState:
                 root = n
                 break
 
+        assert root is not None
         root = self.network.orthonormalize(root)
-        _, self.curr_delta = self.network.optimize(root, self.curr_delta)
+        _, self.curr_delta = self.network.round(root, self.curr_delta)
 
     def is_terminal(self) -> bool:
         """Whether the current state is a terminal state."""

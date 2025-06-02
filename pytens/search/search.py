@@ -1,16 +1,18 @@
 """Search algorithsm for tensor networks."""
 
+from typing import Optional
 import time
 import itertools
 
 import numpy as np
 
 from pytens.algs import TensorNetwork
+from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
 from pytens.search.exhaustive import DFSSearch, BFSSearch
 from pytens.search.partition import PartitionSearch
 from pytens.search.hierarchical.top_down import TopDownSearch
-from pytens.search.hierarchical.error_dist import BaseErrorDist, AlphaErrorDist
+from pytens.search.hierarchical.error_dist import AlphaErrorDist
 from pytens.search.utils import approx_error, SearchResult, reshape_indices
 
 
@@ -20,23 +22,25 @@ class SearchEngine:
     def __init__(self, config: SearchConfig):
         self.config = config
 
-    def partition_search(self, net: TensorNetwork):
+    def partition_search(
+        self, net: TensorNetwork, tensor_func: Optional[TensorFunc] = None
+    ):
         """Perform an search with output-directed splits + constraint solve."""
 
         engine = PartitionSearch(self.config)
-        for result in engine.search(net):
+        for result in engine.search(net, tensor_func=tensor_func):
+            assert result.best_network is not None
+
             free_indices = net.free_indices()
-            result.stats.cr_core = (
-                float(np.prod([i.size for i in free_indices]))
-                / result.best_network.cost()
-            )
-            result.stats.cr_start = net.cost() / result.best_network.cost()
-            result.stats.re = float(
-                np.linalg.norm(
-                    result.best_network.contract().value - net.contract().value
-                )
-                / np.linalg.norm(net.contract().value)
-            )
+            unopt_size = float(np.prod([i.size for i in free_indices]))
+            best_size = result.best_network.cost()
+            best_val = result.best_network.contract().value
+            net_val = net.contract().value
+            net_norm = np.linalg.norm(net_val)
+            result.stats.cr_core = unopt_size / best_size
+            result.stats.cr_start = net.cost() / best_size
+            if net_norm != 0:
+                result.stats.re = np.linalg.norm(best_val) / net_norm
             return result
 
     def dfs(
@@ -47,14 +51,13 @@ class SearchEngine:
 
         dfs_runner = DFSSearch(self.config)
         result = dfs_runner.run(net)
+        assert result.best_network is not None
         end = time.time()
 
         result.stats.time = end - dfs_runner.start - dfs_runner.logging_time
         # result.best_network = dfs_runner.best_network
-        result.stats.cr_core = (
-            np.prod([i.size for i in net.free_indices()])
-            / result.best_network.cost()
-        )
+        unopt_size = float(np.prod([i.size for i in net.free_indices()]))
+        result.stats.cr_core = unopt_size / result.best_network.cost()
         result.stats.cr_start = net.cost() / dfs_runner.best_network.cost()
         err = approx_error(dfs_runner.target_tensor, dfs_runner.best_network)
         result.stats.re = err
@@ -66,12 +69,12 @@ class SearchEngine:
 
         bfs_runner = BFSSearch(self.config)
         result = bfs_runner.run(net)
-
         best_network = result.best_network
+        assert best_network is not None
+
         # search_stats["best_network"] = best_network
-        result.stats.cr_core = (
-            np.prod([i.size for i in net.free_indices()]) / best_network.cost()
-        )
+        unopt_size = np.prod([i.size for i in net.free_indices()])
+        result.stats.cr_core = float(unopt_size) / best_network.cost()
         result.stats.cr_start = net.cost() / best_network.cost()
         err = approx_error(bfs_runner.target_tensor, best_network)
         result.stats.re = err
@@ -95,9 +98,8 @@ class SearchEngine:
         result.best_network = best_network
         result.stats.time = end - start
         result.stats.cr_start = net.cost() / best_network.cost()
-        result.stats.cr_core = (
-            np.prod([i.size for i in net.free_indices()]) / best_network.cost()
-        )
+        unopt_size = float(np.prod([i.size for i in net.free_indices()]))
+        result.stats.cr_core = unopt_size / best_network.cost()
         approx_tensor = best_network.contract()
         data_val = net.contract().value
         # print(best_st.network)
@@ -105,7 +107,7 @@ class SearchEngine:
         reordered_indices, data_val = reshape_indices(
             best_st.reshape_history, net.free_indices(), data_val
         )
-        print(best_st.reshape_history)
+        # print(best_st.reshape_history)
         # free_indices_name = [ind.name for ind in net.free_indices()]
         # approx_net = undo_reshape(top_down_runner.reshape_info, best_network)
 

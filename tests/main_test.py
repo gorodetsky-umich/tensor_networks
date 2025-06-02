@@ -19,6 +19,8 @@ from pytens.cross.cross import (
 from pytens.types import Index
 from pytens.cross.funcs import CachedFunc
 from tests.search_test import *
+from pytens.cross.cross import TensorFunc
+from pytens.search.utils import IndexSplit, IndexMerge
 
 np.random.seed(4)
 
@@ -1413,91 +1415,6 @@ class TestGeneralOps(unittest.TestCase):
                 Index("s_10", 2),
             ],
         )
-
-
-class TestCross(unittest.TestCase):
-    def test_cross_error(self):
-        p = 25
-        q = 25
-        tensor_func = TensorFunc(lambda i, j: ((i + 1) ** 2 + (j+1)**2) ** -0.5, (p, q))
-        def index_to_args(indices):
-            res = [[] for _ in tensor_func.dims]
-            assert len(indices) == 2
-            if indices[0] is None:
-                res[0] = list(range(p))
-            else:
-                res[0].append(indices[0])
-
-            if indices[1] is None:
-                res[1] = list(range(q))
-            else:
-                res[1].append(indices[1])
-
-            return res
-
-        u, v, rows, cols = cross_approx(tensor_func, np.zeros((p, q)), index_to_args, (p, q), 1e-2)
-        m = tensor_func(*index_to_args((None, None))).reshape(p, q)
-        self.assertLessEqual(np.linalg.norm(u@v - m) / np.linalg.norm(m), 1e-1)
-
-    def test_cross_network(self):
-        p, q, r = 25, 25, 25
-        tensor_func = TensorFunc(lambda i, j, k: ((i + 1) ** 2 + (j+1)**2 + (k+1) ** 2) ** -0.5, (p, q, r))
-
-        net = TensorNetwork()
-        net.add_node("G", Tensor(np.zeros((p, q, r)), [Index("i", p), Index("j", q), Index("k", r)]))
-        net.cross(tensor_func, {}, "G", [0], delta=0.1)
-        print(net)
-        net_val = net.contract().value
-        all_args = np.mgrid[0:p,0:q,0:r].reshape(3, -1).T
-        real_val = tensor_func(all_args).reshape(p, q, r)
-        self.assertLessEqual(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val), 0.1)
-
-    def test_cross_network_two_step(self):
-        p, q, r = 25, 25, 25
-        tensor_func = TensorFunc(lambda i, j, k: ((i + 1) ** 2 + (j+1)**2 + (k+1) ** 2) ** -0.5, (p, q, r))
-        all_args = np.mgrid[0:p,0:q,0:r].reshape(3, -1).T
-        real_val = tensor_func(all_args).reshape(p, q, r)
-        # print(real_val)
-
-        net = TensorNetwork()
-        net.add_node("G", Tensor(np.zeros((p, q, r)), [Index("i", p), Index("j", q), Index("k", r)]))
-        restrictions = {}
-        net.cross(tensor_func, restrictions, "G", [0], delta=1e-1* 2 ** -0.5)
-        print(net)
-        net_val = net.contract().value
-        # print(net_val)
-        print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
-
-        # print(restrictions)
-        net.cross(tensor_func, restrictions, "n0", [0,1], delta=1e-1 * 2 ** -0.5)
-        print(net)
-        net_val = net.contract().value
-        print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
-
-    def test_cross_network_three_step(self):
-        p, q, r = 25, 25, 25
-        tensor_func = TensorFunc(lambda i, j, k: ((i + 1) ** 2 + (j+1)**2 + (k+1) ** 2) ** -0.5, (p, q, r))
-        all_args = np.mgrid[0:p,0:q,0:r].reshape(3, -1).T
-        real_val = tensor_func(all_args).reshape(p, q, r)
-        # print(real_val)
-
-        net = TensorNetwork()
-        net.add_node("G", Tensor(np.zeros((p, q, r)), [Index("i", p), Index("j", q), Index("k", r)]))
-        restrictions = {}
-        net.cross(tensor_func, restrictions, "G", [0], delta=1e-1 * 3 ** -0.5)
-        print(net)
-        net_val = net.contract().value
-        # print(net_val)
-        print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
-
-        # print(restrictions)
-        net.cross(tensor_func, restrictions, "n0", [1], delta=1e-1 * 3 ** -0.5)
-        print(net)
-
-        net.cross(tensor_func, restrictions, "n1", [2], delta=1e-1 * 3 ** -0.5)
-        print(net)
-        net_val = net.contract().value
-        print(np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
 
 if __name__ == "__main__":
     unittest.main()

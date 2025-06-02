@@ -37,7 +37,8 @@ from .types import (
     SVDConfig,
     DimTreeNode,
     NodeInfo,
-    IndexMerge, IndexSplit,
+    IndexMerge,
+    IndexSplit,
 )
 
 
@@ -298,157 +299,50 @@ class Tensor:
 
         return q_tensor, r_tensor
 
-    def _create_index_to_args(
+    def _index_to_args(
         self,
-        tensor_func: TensorFunc,
-        lefts: Sequence[int],
-        rights: Sequence[int],
+        selected_indices: Sequence[int],
         index_map: Dict[Index, Sequence[Index]],
-        restrictions: Dict[Index, Sequence[int]],
-    ):
-        # print(restrictions)
-        perms = lefts + rights
-        left_sizes = [self.indices[i].size for i in lefts]
-        right_sizes = [self.indices[i].size for i in rights]
+        restrictions: Dict[Index, np.ndarray],
+    ) -> Tuple[np.ndarray, List[Index]]:
+        """
+        index_map: the map from local indices to global free indices
+        restrictions: the map from local indices to their restricted global choices
+        """
+        sizes = [self.indices[i].size for i in selected_indices]
+        # print(sizes, restrictions)
+        local_indices = np.arange(np.prod(sizes))
+        args = np.unravel_index(local_indices, sizes)
+        assert len(args) == len(sizes), (
+            f"unraveled index does not match the given dimensions, "
+            f"expected {len(sizes)}, but get {len(args)}"
+        )
+        global_args, order = [], []
 
-        def index_to_args(indices: Sequence[int]) -> np.ndarray[int]:
-            assert len(indices) == 2, "only works for matrices"
+        for iarg, arg in enumerate(args):
+            # print(arg.shape)
+            ind = self.indices[selected_indices[iarg]]
+            global_indices = index_map.get(ind, [ind])
+            order.extend(global_indices)
 
-            left_sz = np.prod(left_sizes)
-            right_sz = np.prod(right_sizes)
-            linds = np.arange(left_sz) if indices[0] is None else indices[0]
-            rinds = np.arange(right_sz) if indices[1] is None else indices[1]
-
-            # expand the flatten index to local indices
-            left_args = np.unravel_index(linds, left_sizes)
-            right_args = np.unravel_index(rinds, right_sizes)
-            # print(rinds, right_sizes, right_args)
-            if isinstance(left_args[0], np.ndarray):
-                left_args = list(zip(*left_args))
-            else:
-                left_args = [left_args]
-
-            if isinstance(right_args[0], np.ndarray):
-                right_args = list(zip(*right_args))
-            else:
-                right_args = [right_args]
-
-            # print(left_args, right_args)
-            args_list = []
-            for args in itertools.product(left_args, right_args):
-                args_list.append(np.array(args[0] + args[1]))
-
-            results = []
-            for args in args_list:
-                order = []
-                global_args = []
-                for i, arg in enumerate(args):
-                    # for i, ind in enumerate(self.indices):
-                    ind = self.indices[perms[i]]
-                    global_indices = index_map.get(ind, [ind])
-                    # print(index_map, order, global_indices)
-                    order.extend(global_indices)
-
-                    # restrict choices of indices if they have been chosen
-                    if ind in restrictions:
-                        # print(
-                        #     "looking for restrictions of",
-                        #     arg,
-                        #     "inside",
-                        #     restrictions[ind],
-                        # )
-                        restricted_args = restrictions[ind][arg]
-                        # print("expanding", arg, "into", restricted_args)
-                        assert len(global_indices) == len(restricted_args), (
-                            f"expected {global_indices}, but get {restricted_args}"
-                        )
-                        global_args.extend(restricted_args)
-                    else:
-                        # map internal indices to global indices
-                        global_sizes = [idx.size for idx in global_indices]
-                        global_args.extend(np.unravel_index(arg, global_sizes))
-
-                assert len(global_args) == len(tensor_func.shape), (
-                    f"expect {tensor_func.shape}, but get {global_args}"
+            # restrict choices of indices if they have been chosen
+            if ind in restrictions:
+                # print("looking for restrictions inside", restrictions[ind])
+                restricted_args = restrictions[ind][arg]
+                # print("expanding", arg, "into", restricted_args)
+                assert len(global_indices) == restricted_args.shape[1], (
+                    f"expected {global_indices}, "
+                    f"but get {restricted_args.shape}"
                 )
-                # reorder so that they match the order of function arguments
-                order = np.argsort(order)
-                results.append(np.array(global_args)[order])
-
-            # print(results)
-            return results
-
-        return index_to_args
-
-    def cross_approx(
-        self,
-        tensor_func: TensorFunc,
-        index_map: Dict[Index, Sequence[Index]],
-        restrictions: Dict[Index, Sequence[int]],
-        lefts: Sequence[int],
-        eps: float,
-    ) -> Tuple["Tensor", "Tensor", Sequence[np.ndarray]]:
-        """Compute the cross approximation of the tensor functions for the given reshaping."""
-        print("current approximation size", self.value.shape)
-        # create the mapping between row, col, and function arguments
-        left_sizes, right_sizes = [], []
-        rights = []
-        for i, ind in enumerate(self.indices):
-            if i in lefts:
-                left_sizes.append(ind.size)
+                global_args.append(restricted_args.squeeze())
             else:
-                right_sizes.append(ind.size)
-                rights.append(i)
+                # map internal indices to global indices
+                global_sizes = [idx.size for idx in global_indices]
+                unravel_arg = np.unravel_index(arg, global_sizes)
+                global_args.extend(unravel_arg)
 
-        left_sz = int(np.prod(left_sizes))
-        right_sz = int(np.prod(right_sizes))
-
-        index_to_args = self._create_index_to_args(
-            tensor_func, lefts, rights, index_map, restrictions
-        )
-
-        rows, cols = cross_approx(
-            tensor_func,
-            np.zeros((left_sz, right_sz)),
-            index_to_args,
-            (left_sz, right_sz),
-            eps,
-        )
-        rows = np.array(list(rows))
-        cols = np.array(list(cols))
-
-        k = len(rows)
-        u = tensor_func(index_to_args((None, cols))).reshape(-1, k)
-        s = np.linalg.pinv(
-            tensor_func(index_to_args((rows, cols))).reshape(k, k)
-        )
-        u = u @ s
-        v = tensor_func(index_to_args((rows, None))).reshape(k, -1)
-        # v = s@v
-
-        # remember the selection of arguments for further splits
-        rc_args = []
-        for rc in itertools.product(rows, cols):
-            rc_args.append(index_to_args(rc)[0])
-
-        # print("choosing", rc_args)
-
-        # normalize
-        # uq, ur = np.linalg.qr(u)
-        # v = ur @ v
-        # u = uq
-
-        u = u.reshape([self.indices[i].size for i in lefts] + [-1])
-        u_indices = [self.indices[i] for i in lefts]
-        u_indices.append(Index("r_split", u.shape[-1]))
-        u_tensor = Tensor(u, u_indices)
-
-        v = v.reshape([-1] + [self.indices[j].size for j in rights])
-        v_indices = [self.indices[j] for j in rights]
-        v_indices = [Index("r_split", v.shape[0])] + v_indices
-        v_tensor = Tensor(v, v_indices)
-
-        return u_tensor, v_tensor, rc_args
+        # print([args.shape for args in global_args])
+        return np.stack(global_args, axis=-1), order
 
     def permute(self, target_indices: Sequence[int]) -> "Tensor":
         """Return a new tensor with indices permuted by the specified order."""
@@ -516,7 +410,7 @@ class Tensor:
                     unmerged_names.append(ind.name)
                     unmerged_sizes.append(ind.size)
 
-            perm_names = itertools.chain(merged_names, unmerged_names)
+            perm_names = list(itertools.chain(merged_names, unmerged_names))
             new_tensor = self.permute_by_name(perm_names)
             new_data = new_tensor.value.reshape(-1, *unmerged_sizes)
 
@@ -805,8 +699,10 @@ class TensorNetwork:  # pylint: disable=R0904
         for weight, index in zip(weights, indices):
             if isinstance(weight, float):
                 v = np.ones(index.size) * weight
-            else:
+            elif isinstance(weight, np.ndarray):
                 v = weight
+            else:
+                raise TypeError(f"unexpected type: {type(weights)}")
             tens = vector(f"w_{index.name}", index, v)
             out = out.attach(tens, rename=("", ""))
 
@@ -991,7 +887,7 @@ class TensorNetwork:  # pylint: disable=R0904
                 continue
 
             shared_index = None
-            nbr = None
+            nbr = node_name
             for nbr in self.network.neighbors(node_name):
                 nbr_indices = self.node_tensor(nbr).indices
                 if idx in nbr_indices:
@@ -1196,70 +1092,6 @@ class TensorNetwork:  # pylint: disable=R0904
         # reorder the leaves according to the order of the indices
         return [leaves[i] for i in np.argsort(perm)]
 
-    def cross(
-        self,
-        tensor_func: TensorFunc,
-        restrictions: Dict[Index, Sequence[int]],
-        node_name: NodeName,
-        lefts: Sequence[int],
-        delta: float,
-    ) -> Tuple[NodeName, NodeName]:
-        """Split a node by cross approximation."""
-        free_indices = sorted(self.free_indices())
-        tensor = self.node_tensor(node_name)
-
-        # create the index map by DFS
-        # the result is in the order of its indices
-        leaves = self.leaf_indices(set(), node_name)
-
-        index_map = {}
-        local_restrictions = {}
-        for ind, lvs in zip(tensor.indices, leaves):
-            # print(lvs, flatten_lists(lvs))
-            index_map[ind] = flatten_lists(lvs)
-
-            # create a restriction for each internal index
-            if ind not in free_indices:
-                # extract the restrictions at the corresponding positions of index map
-                local_args = []
-                for args in restrictions[ind]:
-                    arg_list = []
-                    for i in index_map[ind]:
-                        arg_list.append(args[free_indices.index(i)])
-
-                    if arg_list not in local_args:
-                        # print("adding local arg restriction", arg_list)
-                        local_args.append(arg_list)
-
-                local_restrictions[ind] = sorted(local_args)
-                # print(local_restrictions[ind])
-
-        u, v, rcs = tensor.cross_approx(
-            tensor_func, index_map, local_restrictions, lefts, delta
-        )
-
-        new_index = self.fresh_index()
-        x_nbrs = list(self.network.neighbors(node_name))
-        self.network.remove_node(node_name)
-
-        u_name = node_name
-        self.add_node(u_name, u.rename_indices({"r_split": new_index}))
-        v_name = self.fresh_node()
-        self.add_node(v_name, v.rename_indices({"r_split": new_index}))
-
-        for y in x_nbrs:
-            y_inds = self.node_tensor(y).indices
-            if any(i in y_inds for i in u.indices):
-                self.add_edge(u_name, y)
-            if any(i in y_inds for i in v.indices):
-                self.add_edge(v_name, y)
-
-        self.add_edge(u_name, v_name)
-
-        restrictions[u.indices[-1]] = rcs
-
-        return u_name, v_name
-
     def cost(self) -> int:
         """Compute the cost for the tensor network.
 
@@ -1268,6 +1100,7 @@ class TensorNetwork:  # pylint: disable=R0904
         cost = 0
         for n in self.network.nodes:
             indices = self.node_tensor(n).indices
+            # print(indices)
             n_cost = np.prod([i.size for i in indices])
             cost += n_cost
 
@@ -1638,7 +1471,8 @@ class TensorNetwork:  # pylint: disable=R0904
         for c1, c2 in zip(tree1.down_info.nodes, tree2.down_info.nodes):
             self._binary_op(other, op, (c1, c2), result_net)
             # result_net.add_edge(tree1.node, c1.node)
-    def split_index(self, split_op: IndexSplit) -> NodeName:
+
+    def split_index(self, split_op: IndexSplit) -> Optional[NodeName]:
         """Split free indices into smaller parts"""
         for n in self.network.nodes:
             tensor = self.node_tensor(n)
@@ -1683,7 +1517,7 @@ class TensorNetwork:  # pylint: disable=R0904
         self,
         name: NodeName,
         subnet: "TensorNetwork",
-        split_info: List[Union[IndexSplit, IndexMerge]] = None,
+        split_info: Optional[List[Union[IndexSplit, IndexMerge]]] = None,
     ):
         """Replace a node with a sub-tensor network."""
         if name not in self.network.nodes:
@@ -1731,7 +1565,8 @@ class TensorNetwork:  # pylint: disable=R0904
                         ):
                             split_ind_names = split_op.split_result
                             if (
-                                len(
+                                split_ind_names is not None
+                                and len(
                                     set(split_ind_names).intersection(
                                         m_inds_set
                                     )
@@ -2691,6 +2526,7 @@ class TTRandRound:
                 x_approx = q.reshape((sx[:-1] + [self.target_ranks[i]]))
                 res.node_tensor(i).update_val_size(x_approx)
                 xnp1 = []
+                shp1 = []
                 for j in range(self.ns):
                     shp1 = self.y[j].value(i + 1).shape
                     tmp = mn[:, rkcumsum[j] : rkcumsum[j + 1]] @ self.y[
