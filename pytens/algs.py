@@ -354,6 +354,8 @@ class Tensor:
             perm_order=perm_order,
             lefts=lefts,
             rights=rights,
+            rows=[],
+            cols=[],
             selected_rows=np.empty((0,), dtype=int),
             selected_cols=np.empty((0,), dtype=int),
             ranks_and_errors=[],
@@ -373,19 +375,14 @@ class Tensor:
         )
 
         k = len(rows)
-        u_args = product_args(largs, rargs, cols=cols)
-        # print(u_args)
-        u = tensor_func(u_args[:,perm_order]).reshape(k, -1).T
-        # print(u)
+        u = np.array(approx_state.cols).T
 
         s_args = product_args(largs, rargs, rows=rows, cols=cols)
         s = tensor_func(s_args[:,perm_order]).reshape(k, k).T
 
         u = u @ np.linalg.pinv(s)
 
-        v_args = product_args(largs, rargs, rows=rows)
-        v = tensor_func(v_args[:,perm_order]).reshape(-1, k).T
-        # v = s@v
+        v = np.array(approx_state.rows)
 
         u = u.reshape([self.indices[i].size for i in lefts] + [-1])
         u_indices = [self.indices[i] for i in lefts]
@@ -1347,48 +1344,6 @@ class TensorNetwork:  # pylint: disable=R0904
     def __lt__(self, other: Self) -> bool:
         return self.cost() < other.cost()
 
-    def __add__(self, other: Self) -> Self:
-        """Add two tensor trains.
-
-        New tensor has same names as self
-        """
-        assert nx.is_isomorphic(self.network, other.network)
-
-        new_tens = copy.deepcopy(self)
-        free_indices = self.free_indices()
-        for _, (node1, node2) in enumerate(
-            zip(self.network.nodes, other.network.nodes)
-        ):
-            logger.debug("Adding: Node %r and Node %r", node1, node2)
-
-            tens1 = self.node_tensor(node1)
-            tens2 = other.node_tensor(node2)
-            new_tens.set_node_tensor(
-                node1, tens1.concat_fill(tens2, free_indices)
-            )
-
-        return new_tens
-
-    def __mul__(self, other: Self) -> Self:
-        """Multiply two tensor trains.
-
-        New tensor has same names as self
-        """
-        assert nx.is_isomorphic(self.network, other.network)
-
-        new_tens = copy.deepcopy(self)
-        free_indices = self.free_indices()
-        for _, (node1, node2) in enumerate(
-            zip(self.network.nodes, other.network.nodes)
-        ):
-            logger.debug("Multiplying: Node %r and Node %r", node1, node2)
-
-            tens1 = self.node_tensor(node1)
-            tens2 = other.node_tensor(node2)
-            new_tens.set_node_tensor(node1, tens1.mult(tens2, free_indices))
-
-        return new_tens
-
     def __str__(self) -> str:
         """Convert to string."""
         out = "Nodes:\n"
@@ -1494,6 +1449,52 @@ class TensorNetwork:  # pylint: disable=R0904
             new_graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
         )
 
+class TensorTrain(TensorNetwork):
+    """"""
+    def __init__(self):
+        super().__init__()
+
+    def __add__(self, other: Self) -> Self:
+        """Add two tensor trains.
+
+        New tensor has same names as self
+        """
+        assert nx.is_isomorphic(self.network, other.network)
+
+        new_tens = copy.deepcopy(self)
+        free_indices = self.free_indices()
+        for _, (node1, node2) in enumerate(
+            zip(self.network.nodes, other.network.nodes)
+        ):
+            logger.debug("Adding: Node %r and Node %r", node1, node2)
+
+            tens1 = self.node_tensor(node1)
+            tens2 = other.node_tensor(node2)
+            new_tens.set_node_tensor(
+                node1, tens1.concat_fill(tens2, free_indices)
+            )
+
+        return new_tens
+
+    def __mul__(self, other: Self) -> Self:
+        """Multiply two tensor trains.
+
+        New tensor has same names as self
+        """
+        assert nx.is_isomorphic(self.network, other.network)
+
+        new_tens = copy.deepcopy(self)
+        free_indices = self.free_indices()
+        for _, (node1, node2) in enumerate(
+            zip(self.network.nodes, other.network.nodes)
+        ):
+            logger.debug("Multiplying: Node %r and Node %r", node1, node2)
+
+            tens1 = self.node_tensor(node1)
+            tens2 = other.node_tensor(node2)
+            new_tens.set_node_tensor(node1, tens1.mult(tens2, free_indices))
+
+        return new_tens
 
 def vector(
     name: Union[str, int], index: Index, value: np.ndarray
@@ -1504,13 +1505,13 @@ def vector(
     return vec
 
 
-def rand_tt(indices: List[Index], ranks: List[int]) -> TensorNetwork:
+def rand_tt(indices: List[Index], ranks: List[int]) -> TensorTrain:
     """Return a random tt."""
 
     dim = len(indices)
     assert len(ranks) + 1 == len(indices)
 
-    tt = TensorNetwork()
+    tt = TensorTrain()
 
     r = [Index("r1", ranks[0])]
     tt.add_node(
@@ -1542,12 +1543,12 @@ def rand_tt(indices: List[Index], ranks: List[int]) -> TensorNetwork:
     return tt
 
 
-def tt_rank1(indices: List[Index], vals: List[np.ndarray]) -> TensorNetwork:
+def tt_rank1(indices: List[Index], vals: List[np.ndarray]) -> TensorTrain:
     """Return a random rank 1 TT tensor."""
 
     dim = len(indices)
 
-    tt = TensorNetwork()
+    tt = TensorTrain()
 
     r = [Index("r1", 1)]
     # print("vals[0] ", vals[0][:, np.newaxis])
@@ -1573,12 +1574,12 @@ def tt_rank1(indices: List[Index], vals: List[np.ndarray]) -> TensorNetwork:
 
 def tt_separable(
     indices: List[Index], funcs: List[np.ndarray]
-) -> TensorNetwork:
+) -> TensorTrain:
     """Rank 2 function formed by sums of functions of individual dimensions."""
 
     dim = len(indices)
 
-    tt = TensorNetwork()
+    tt = TensorTrain()
     ranks = []
     for ii, index in enumerate(indices):
         ranks.append(Index(f"r_{ii + 1}", 2))
@@ -1604,7 +1605,7 @@ def tt_separable(
     return tt
 
 
-def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
+def tt_right_orth(tn: TensorTrain, node: int) -> TensorTrain:
     """Right orthogonalize all but first core.
 
     Tree tensor network as a TT and right orthogonalize
@@ -1714,7 +1715,7 @@ def gram_eig_and_svd(
     return curr_val, next_val
 
 
-def tt_gramsvd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
+def tt_gramsvd_round(tn: TensorTrain, eps: float) -> TensorTrain:
     """
     Description: Modifies the input tensor network and returns the
     rounded version by implementing the Gram-SVD based rounding
@@ -1790,9 +1791,9 @@ def tt_gramsvd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
 
 
 def tt_svd_round(
-    tn: TensorNetwork,
-    eps: float,
-) -> TensorNetwork:
+    tn: TensorTrain,
+    eps: float
+) -> TensorTrain:
     """Round a tensor train.
 
     Nodes should be integers 0,1,2,...,dim-1

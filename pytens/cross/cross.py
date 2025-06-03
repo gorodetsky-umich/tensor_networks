@@ -15,13 +15,15 @@ class CrossApproxState:
     """Static and dynamic states for cross approximation."""
 
     # static states
-    lefts: List[int]
-    rights: List[int]
+    lefts: Sequence[int]
+    rights: Sequence[int]
     row_arg_space: np.ndarray
     col_arg_space: np.ndarray
     perm_order: np.ndarray
 
     # dynamic states
+    rows: List[np.ndarray]
+    cols: List[np.ndarray]
     selected_rows: np.ndarray
     selected_cols: np.ndarray
     ranks_and_errors: List[Tuple[int, float]]
@@ -126,7 +128,7 @@ def cross(
     approx_state: CrossApproxState,
     eps: Optional[float] = None,
     max_k: Optional[int] = None,
-) -> float:
+):
     """
     Implementation of 2D cross approximation from [TODO: insert the paper link]
 
@@ -165,15 +167,22 @@ def cross(
     v_args = np.insert(col_args, 0, np.zeros((row_arg_num,1)), axis=1)
     v_args = v_args[:, reorder]
 
+    eval_cache = {}
+
     while max_k is None or k < max_k:
         # print("iter time:", time.time() - start)
         # start = time.time()
         for _ in range(3):
-            for ii, jj in enumerate(reorder):
-                if jj >= row_arg_num:
-                    u_args[:, ii] = col_args[j][jj - row_arg_num]
+            if (-1, j) in eval_cache:
+                col_vals = eval_cache[(-1, j)]
+            else:
+                for ii, jj in enumerate(reorder):
+                    if jj >= row_arg_num:
+                        u_args[:, ii] = col_args[j][jj - row_arg_num]
 
-            col_vals = function(u_args)
+                col_vals = function(u_args)
+                eval_cache[(-1, j)] = col_vals
+
             approx_col_vals = approx_tensor[:, j]
             uk = col_vals - approx_col_vals
             # uk = uk.reshape(p, 1)
@@ -191,15 +200,21 @@ def cross(
             # if i == old_i:
             #     break
 
-            for ii, jj in enumerate(reorder):
-                if jj < row_arg_num:
-                    v_args[:, ii] = row_args[i][jj]
+            if (i, -1) in eval_cache:
+                row_vals = eval_cache[(i, -1)]
+            else:
+                for ii, jj in enumerate(reorder):
+                    if jj < row_arg_num:
+                        v_args[:, ii] = row_args[i][jj]
 
 
 
-            # print(v_args.shape)
-            # print((p, q))
-            vk = function(v_args) - approx_tensor[i, :]
+                # print(v_args.shape)
+                # print((p, q))
+                row_vals = function(v_args)
+                eval_cache[(i, -1)] = row_vals
+        
+            vk = row_vals - approx_tensor[i, :]
 
             # print("vk", (u[i:i+1, :]@v.T).shape)
             if vk[j] == 0:
@@ -257,14 +272,15 @@ def cross(
         # v[k] = vk
         # u = np.concat([u, uk[:, None]], axis=1)
         # v = np.concat([v, vk[:, None]], axis=1)
-        print(k, gamma)
+        # print(k, gamma)
         # remember all ranks and errors in the state
-
         eeps, valid_errs = validation(approx_tensor, valid_pts, valid_vals)
         # penalty = (min(p, q) - k) ** 0.5
         approx_state.ranks_and_errors.append((k, eeps))
         approx_state.selected_rows = np.append(masked_rows, i)
         approx_state.selected_cols = np.append(masked_cols, j)
+        approx_state.rows.append(row_vals)
+        approx_state.cols.append(col_vals)
         k += 1
 
         print(eeps, k)
