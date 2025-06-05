@@ -1591,6 +1591,45 @@ class TreeNetwork(TensorNetwork):
         result_net.round(self_root, delta=1e-6)
 
         return result_net
+    
+    def __mul__(self, other: "TreeNetwork") -> "TreeNetwork":
+        """Elementwise multiplication of two tree networks."""
+
+        assert nx.is_isomorphic(self.network, other.network)
+
+        # assign the root at the same index name
+        root_ind = self.free_indices()[0]
+        self_root = self.node_by_free_index(root_ind.name)
+        self_tree = self.dimension_tree(self_root)
+        other_root = other.node_by_free_index(root_ind.name)
+        other_tree = other.dimension_tree(other_root)
+
+        result_net = TreeNetwork()
+        
+        def mul(tree1: TreeNetwork.DimTreeNode, tree2: TreeNetwork.DimTreeNode):
+            tensor1 = self.node_tensor(tree1.node)
+            tensor2 = other.node_tensor(tree2.node)
+            assert len(tensor1.indices) == len(tensor2.indices)
+            # permute the indices to follow the canonical order
+            # free indices, children indices, parent indices
+            free_cnt, perm = tree1.sorted_indices(self)
+            tensor1 = tensor1.permute(perm)
+            _, perm = tree2.sorted_indices(other)
+            tensor2 = tensor2.permute(perm)
+            mul_res = tensor1.mult(tensor2, self.free_indices())
+            result_net.add_node(tree1.node, mul_res)
+
+            children1 = sorted(tree1.children, key=lambda x: x.indices)
+            children2 = sorted(tree2.children, key=lambda x: x.indices)
+            for c1, c2 in zip(children1, children2):
+                mul(c1, c2)
+                result_net.add_edge(tree1.node, c1.node)
+
+        mul(self_tree, other_tree)
+        # round the result to compress the ranks
+        result_net.round(self_root, delta=1e-6)
+
+        return result_net
 
 class TensorTrain(TensorNetwork):
     """Class for tensor trains"""
