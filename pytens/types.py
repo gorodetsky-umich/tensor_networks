@@ -28,13 +28,14 @@ class Index:
     def __lt__(self, other: Self) -> bool:
         return str(self.name) < str(other.name)
 
+    def __gt__(self, other: Self) -> bool:
+        return str(self.name) > str(other.name)
 
 @dataclass
 class SVDConfig:
     """Configuration fields for SVD in tensor networks."""
 
     delta: float = 1e-5
-    with_orthonormal: bool = True
     compute_data: bool = True
 
 

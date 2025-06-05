@@ -8,7 +8,7 @@ import atexit
 
 import numpy as np
 
-from pytens.algs import TensorNetwork, SVDConfig
+from pytens.algs import TreeNetwork, SVDConfig
 from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import SearchState, Action, OSplit, ISplit
@@ -259,7 +259,7 @@ class PartitionSearch:
 
     def rank_search_and_replay(
         self,
-        net: TensorNetwork,
+        net: TreeNetwork,
         acs: List[Action],
         delta: Optional[float] = None,
     ) -> SearchResult:
@@ -299,7 +299,7 @@ class PartitionSearch:
 
     def search(
         self,
-        net: TensorNetwork,
+        net: TreeNetwork,
         delta: Optional[float] = None,
         actions: Optional[List[OSplit]] = None,
         budget: int = 2,
