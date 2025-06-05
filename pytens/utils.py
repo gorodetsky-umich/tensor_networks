@@ -1,6 +1,6 @@
 """Some utility functions."""
 
-from typing import Optional
+from typing import Optional, Sequence
 from dataclasses import dataclass
 
 import numpy as np

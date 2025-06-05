@@ -14,7 +14,7 @@ import numpy as np
 
 from pytens.search.configuration import SearchConfig
 from pytens.search.partition import PartitionSearch, BAD_SCORE
-from pytens.algs import TensorNetwork, NodeName, Tensor
+from pytens.algs import TreeNetwork, NodeName, Tensor
 from pytens.types import IndexSplit, IndexMerge, Index
 from pytens.search.hierarchical.error_dist import BaseErrorDist
 from pytens.search.state import OSplit
@@ -140,7 +140,7 @@ class SearchState:
         self,
         free_indices: List[Index],
         reshape_history: List[Union[IndexMerge, IndexSplit]],
-        network: TensorNetwork,
+        network: TreeNetwork,
         unused_delta: float,
     ):
         self.free_indices = free_indices
@@ -464,7 +464,7 @@ def align_shapes(shape1, shape2):
 
 # we sort the index_splits in the order of total correlations
 def score_split(
-    net: TensorNetwork, node: NodeName, index_split: List[IndexSplit]
+    net: TreeNetwork, node: NodeName, index_split: List[IndexSplit]
 ):
     start = time.time()
     # print(index_split)
@@ -563,7 +563,7 @@ class TopDownSearch:
         """Return type for the _split_indices method."""
 
         def __init__(
-            self, refactored: bool, split_info: dict, network: TensorNetwork
+            self, refactored: bool, split_info: dict, network: TreeNetwork
         ):
             self.ok = refactored
             self.split_info = split_info
@@ -578,9 +578,9 @@ class TopDownSearch:
 
     def search(
         self,
-        net: TensorNetwork,
+        net: TreeNetwork,
         error_dist: BaseErrorDist,
-    ) -> Tuple[TensorNetwork, SearchState]:
+    ) -> Tuple[TreeNetwork, SearchState]:
         """Perform the topdown search starting from the given net"""
         remaining_delta = net.norm() * self.config.engine.eps
         best_network = net
@@ -681,7 +681,7 @@ class TopDownSearch:
 
     def merge_by_correlation(
         self,
-        net: TensorNetwork,
+        net: TreeNetwork,
         search_engine: PartitionSearch,
         delta: float,
         threshold: int = 4,
@@ -1105,7 +1105,7 @@ class TopDownSearch:
         level: int,
         error_dist: BaseErrorDist,
         remaining_delta: float,
-        curr_best: TensorNetwork,
+        curr_best: TreeNetwork,
     ):
         """Optimize the children nodes in a given network"""
         # if len(nodes) == 0:
@@ -1132,7 +1132,7 @@ class TopDownSearch:
             #     self._merge_indices(bn, n)
 
             split_result.network.orthonormalize(node)
-            new_sn = TensorNetwork()
+            new_sn = TreeNetwork()
             new_sn.add_node(
                 node, split_result.network.network.nodes[node]["tensor"]
             )
@@ -1203,7 +1203,7 @@ class TopDownSearch:
             #     self._merge_indices(bn, n)
 
             split_result.network.orthonormalize(node)
-            new_sn = TensorNetwork()
+            new_sn = TreeNetwork()
             new_sn.add_node(
                 node, split_result.network.network.nodes[node]["tensor"]
             )
@@ -1253,7 +1253,7 @@ class TopDownSearch:
         remaining_delta: float,
         error_dist: BaseErrorDist,
         parent_indices,
-        curr_best: Optional[TensorNetwork] = None,
+        curr_best: Optional[TreeNetwork] = None,
     ) -> Generator[SearchState, None, None]:
         # print("Optimizing")
         # print(st.network)

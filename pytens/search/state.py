@@ -7,7 +7,7 @@ import copy
 import numpy as np
 import networkx as nx
 
-from pytens.algs import NodeName, TensorNetwork, Index, SVDConfig
+from pytens.algs import NodeName, TreeNetwork, Index, SVDConfig
 from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
 
@@ -85,7 +85,7 @@ class OSplit(Action):
 
         return True
 
-    def to_isplit(self, net: TensorNetwork):
+    def to_isplit(self, net: TreeNetwork):
         """Convert an output-directed split to an input-directed one."""
         lca_node = None
         lca_indices = []
@@ -162,7 +162,7 @@ class OSplit(Action):
 
     def execute(
         self,
-        net: TensorNetwork,
+        net: TreeNetwork,
         svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
     ):
         """Execute the split index action on the given tensor network"""
@@ -209,7 +209,7 @@ class ISplit(Action):
 
     def execute(
         self,
-        net: TensorNetwork,
+        net: TreeNetwork,
         svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
     ) -> Tuple[Tuple[NodeName, NodeName, NodeName], int]:
         """Execute a split action."""
@@ -224,8 +224,9 @@ class ISplit(Action):
         max_sz = min(left_sz, right_sz)
 
         if svd is None:
+            net.orthonormalize(self.node)
             (u, s, v), _ = net.svd(
-                self.node, l_indices, SVDConfig(with_orthonormal=True)
+                self.node, l_indices, SVDConfig()
             )
         else:
             # print("read preprocessing result")
@@ -259,7 +260,7 @@ class ISplit(Action):
         tmp_net.remove_edge(connect_nodes[0], connect_nodes[1])
         curr_indices = None
         for subgraph in nx.connected_components(tmp_net):
-            tn = TensorNetwork()
+            tn = TreeNetwork()
             tn.network = st.network.network.subgraph(subgraph)
             indices = [
                 ind for ind in tn.free_indices() if ind in all_free_indices
@@ -288,7 +289,7 @@ class Merge(Action):
     def __str__(self) -> str:
         return f"Merge({self.node1}, {self.node2})"
 
-    def execute(self, network: TensorNetwork):
+    def execute(self, network: TreeNetwork):
         """Execute a merge action."""
         network.merge(self.node1, self.node2)
         return network
@@ -299,7 +300,7 @@ class SearchState:
 
     def __init__(
         self,
-        net: TensorNetwork,
+        net: TreeNetwork,
         delta: float,
         threshold: float = 0.1,
         max_ops: int = 5,
@@ -379,7 +380,7 @@ class SearchState:
 
     def truncate(
         self,
-        new_net: TensorNetwork,
+        new_net: TreeNetwork,
         usv: Tuple[Tuple[NodeName, NodeName, NodeName], int],
         config: SearchConfig,
         target_size: Optional[int] = None,

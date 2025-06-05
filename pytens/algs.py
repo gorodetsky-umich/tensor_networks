@@ -436,6 +436,38 @@ class Tensor:
         new_data = self.value.reshape([ind.size for ind in new_indices])
         return Tensor(new_data, new_indices)
 
+    def block_diagonal(self, other: "Tensor", block_start: int) -> "Tensor":
+        """
+        Concat tensors along contract indices diagonally but keep free indices.
+        When there is only one contract index, concat them directly.
+        """
+        sz = []
+        for i, ind in enumerate(self.indices):
+            if i < block_start:
+                assert ind.size == other.indices[i].size
+                sz.append(ind.size)
+            else:
+                sz.append(ind.size + other.indices[i].size)
+
+        large_array = np.zeros(sz, dtype=self.value.dtype)
+        start = np.zeros(len(sz) - block_start, dtype=int)
+        slice_prefix = tuple([slice(None)] * block_start)
+
+        for arr in [self.value, other.value]:
+            end = start + arr.shape[block_start:]
+            # Create a slice object for each dimension
+            slice_suffix = tuple(slice(start[i], end[i]) for i in range(len(end)))
+            slices = slice_prefix + slice_suffix
+            # Place the current array on the diagonal
+            large_array[slices] = arr
+            # Update start positions
+            start = end
+
+        large_indices: List[Index] = []
+        for i, ind in enumerate(self.indices):
+            large_indices.append(Index(ind.name, large_array.shape[i]))
+
+        return Tensor(large_array, large_indices)
 
 # @dataclass(frozen=True, eq=True)
 @dataclass(eq=True)
@@ -761,9 +793,6 @@ class TensorNetwork:  # pylint: disable=R0904
             )
             d = config.delta
         else:
-            if config.with_orthonormal:
-                node_name = self.orthonormalize(node_name)
-
             x = self.node_tensor(node_name)
             # svd decompose the data into specified index partition
             [u, s, v], d = x.svd(lefts, delta=config.delta)
@@ -864,234 +893,6 @@ class TensorNetwork:  # pylint: disable=R0904
 
         return name1
 
-    def round(
-        self, node_name: NodeName, delta: float, visited: Optional[set] = None
-    ) -> Tuple[NodeName, float]:
-        """Optimize the tree rooted at the given node."""
-        # print("optimize", node_name)
-        # import matplotlib.pyplot as plt
-        if visited is None:
-            initial_optimize = True
-            visited = set()
-            self.orthonormalize(node_name)
-        else:
-            initial_optimize = False
-
-        node_indices = self.node_tensor(node_name).indices
-        kept_indices = []
-        free_indices = []
-        r = node_name
-        for idx in node_indices:
-            if idx in visited:
-                kept_indices.append(idx)
-                continue
-
-            shared_index = None
-            nbr = node_name
-            for nbr in self.network.neighbors(node_name):
-                nbr_indices = self.node_tensor(nbr).indices
-                if idx in nbr_indices:
-                    shared_index = idx
-                    break
-            assert nbr is not None
-
-            if shared_index is None:
-                free_indices.append(idx)
-                continue
-
-            curr_indices = self.node_tensor(node_name).indices
-            left_indices = [
-                curr_indices.index(i) for i in curr_indices if i != idx
-            ]
-            right_indices = [curr_indices.index(idx)]
-            [node_name, s, v], delta = self.svd(
-                node_name,
-                left_indices,
-                SVDConfig(delta=delta, with_orthonormal=False),
-            )
-            self.merge(v, s)
-            self.merge(nbr, v)
-            visited_index = self.get_contraction_index(node_name, nbr)
-            for idx in visited_index:
-                visited.add(idx)
-
-            r, delta = self.round(nbr, delta, visited)
-            self.merge(node_name, r)
-
-        if not initial_optimize:
-            node_indices = self.node_tensor(node_name).indices
-            left_indices, right_indices = [], []
-            for i, idx in enumerate(node_indices):
-                if idx in free_indices or idx not in kept_indices:
-                    left_indices.append(i)
-                else:
-                    right_indices.append(i)
-            _, r = self.qr(node_name, left_indices)
-
-        return r, delta
-
-    def compress(self) -> None:
-        """Compress the network by removing nodes
-        where one index equals to the product of other indices.
-        """
-        for n, nd in list(self.network.nodes(data=True)):
-            indices = nd["tensor"].indices
-            deleted = False
-            for ind in indices:
-                if ind.size == np.prod([j.size for j in indices if j != ind]):
-                    # we can merge the nodes on the two ends of ind
-                    nbrs = list(self.network.neighbors(n))
-                    for nbr in nbrs:
-                        nbr_indices = self.node_tensor(nbr).indices
-                        if ind in nbr_indices:
-                            self.merge(nbr, n)
-                            deleted = True
-                            break
-
-                    if deleted:
-                        break
-
-    def orthonormalize(self, name: NodeName) -> NodeName:
-        """Orthonormalize the environment network for the specified node.
-
-        Note that this method changes all node names in the network.
-        It returns the new name for the given node after orthonormalization.
-        """
-        # traverse the tree rooted at the given node in the post order
-        # 1 for visited and 2 for processed
-        visited = {}
-
-        def _postorder(pname: Optional[NodeName], name: NodeName) -> NodeName:
-            """Postorder traversal the network from a given node name."""
-            visited[name] = 1
-            nbrs = list(self.network.neighbors(name))
-            permute_indices = []
-            merged = name
-            for n in nbrs:
-                if n not in visited:
-                    # Process children before the current node.
-                    c = _postorder(name, n)
-
-                    # Since split relying on ordered indices,
-                    # we should restore the index order here.
-                    indices = self.node_tensor(merged).indices
-                    permute_index = indices.index(
-                        self.get_contraction_index(merged, c)[0]
-                    )
-                    permute_indices = list(range(permute_index))
-                    permute_indices.append(len(indices) - 1)
-                    permute_indices.extend(
-                        list(range(permute_index, len(indices) - 1))
-                    )
-
-                    merged = self.merge(merged, c)
-
-                    # restore the last index into the permute_index position
-                    self.set_node_tensor(
-                        merged,
-                        self.node_tensor(merged).permute(permute_indices),
-                    )
-
-            if pname is None:
-                return merged
-
-            left_indices, right_indices = [], []
-            merged_indices = self.node_tensor(merged).indices
-            # print(merged_indices)
-            # print(visited)
-            for i, index in enumerate(merged_indices):
-                common_index = None
-                for n in self.network.neighbors(merged):
-                    n_indices = self.node_tensor(n).indices
-                    # print(n, merged, n not in visited, visited[n], index, n_indices)
-                    if index in n_indices:
-                        common_index = i
-
-                        # The edge direction is determined by
-                        # whether a neighbor node has been processed.
-                        # In post-order traversal, if a neighbor has been
-                        # processed before the current node, it is view as
-                        # a child of the current node.
-                        # Otherwise, it is viewed as the parent.
-                        # The edge direction matters in orthonormalization
-                        # because the q part should include indices
-                        # shared with its children and the r part should
-                        # include indices shared with its parent.
-                        # We use the left_indices to keep track of indices
-                        # shared with children, and right_indices to keep
-                        # track of indices shared with the parent.
-                        if n not in visited or visited[n] == 2:
-                            left_indices.append(common_index)
-                        else:
-                            right_indices.append(common_index)
-
-                        break
-                    # print(left_indices, right_indices)
-
-                if common_index is None:
-                    left_indices.append(i)
-
-            # if len(right_indices) == 0:
-            #     print(self)
-            visited[name] = 2
-            visited[merged] = 2
-
-            right_sz = np.prod([merged_indices[i].size for i in right_indices])
-            # optimization: this step creates redundant nodes,
-            # so to avoid them we directly eliminate the node with a merge.
-            if (
-                len(left_indices) == 1
-                and merged_indices[left_indices[0]].size <= right_sz
-            ):
-                return merged
-
-            q, r = self.qr(merged, left_indices)
-            # this split changes the index orders,
-            # which affects the outer split result.
-            # q has the indices r_split x right_indices
-            # but we want r_split to replace the original left_indices
-            # so we need to permute this tensor
-            permute_indices = list(range(right_indices[0]))
-            permute_indices.append(len(left_indices))
-            permute_indices.extend(
-                list(range(right_indices[0], len(left_indices)))
-            )
-            self.set_node_tensor(
-                q, self.node_tensor(q).permute(permute_indices)
-            )
-
-            return r
-
-        return _postorder(None, name)
-
-    def leaf_indices(
-        self, visited: Set[NodeName], node_name: NodeName
-    ) -> Sequence:
-        """Get all leaf indices for the subtree rooted at the given node."""
-        indices = self.node_tensor(node_name).indices
-        perm = []
-        leaves = []
-        visited.add(node_name)
-
-        # free indices are added first
-        if len(visited) != 1:
-            for i, ind in enumerate(indices):
-                if ind in self.free_indices():
-                    leaves.append([ind])
-                    perm.append(i)
-
-        for n in self.network.neighbors(node_name):
-            if n in visited:
-                continue
-
-            leaves.append(self.leaf_indices(visited, n))
-            common_index = self.get_contraction_index(n, node_name)
-            assert len(common_index) == 1
-            perm.append(indices.index(common_index[0]))
-
-        # reorder the leaves according to the order of the indices
-        return [leaves[i] for i in np.argsort(perm)]
-
     def cost(self) -> int:
         """Compute the cost for the tensor network.
 
@@ -1105,372 +906,6 @@ class TensorNetwork:  # pylint: disable=R0904
             cost += n_cost
 
         return int(cost)
-
-    def canonical_structure(self, consider_ranks: bool = False) -> int:
-        """Compute the canonical structure of the tensor network.
-
-        This method ignores all values, keeps all free indices and edge labels.
-        If the resulted topology is the same, we consider
-        """
-        # find the node with first free index and use it as the tree root
-        free_indices = sorted(self.free_indices())
-        root = ""
-        for n, d in self.network.nodes(data=True):
-            if free_indices[0] in d["tensor"].indices:
-                root = n
-                break
-
-        visited = {}
-
-        def _postorder(name: NodeName) -> int:
-            """Hash the nodes by their postorder"""
-            visited[name] = 1
-            children_rs = []
-            nbrs = sorted(list(self.network.neighbors(name)))
-            for n in nbrs:
-                if n not in visited:
-                    # Process children before the current node.
-                    children_rs.append(_postorder(n))
-
-            sorted_children_rs = tuple(sorted(children_rs))
-            indices = self.node_tensor(name).indices
-            all_free_indices = self.free_indices()
-            ranks = tuple(sorted([i.size for i in indices]))
-            self_free_indices = tuple(
-                sorted([i for i in indices if i in all_free_indices])
-            )
-
-            visited[name] = 2
-            if consider_ranks:
-                return hash((self_free_indices, ranks, sorted_children_rs))
-
-            return hash((self_free_indices, sorted_children_rs))
-
-        return _postorder(root)
-
-    def canonicalize_indices(self, tree: DimTreeNode) -> None:
-        """sort the children by free indices
-        and get the corresponding children nodes
-        """
-        indices: List[Index] = []
-        node_indices = self.node_tensor(tree.node).indices
-        for ind in tree.free_indices:
-            indices.append(ind)
-
-        # children indices
-        for n in tree.down_info.nodes:
-            self.canonicalize_indices(n)
-            ind = self.get_contraction_index(n.node, tree.node)[0]
-            indices.append(ind)
-
-        # parent indices, should be one
-        p_indices = [ind for ind in node_indices if ind not in indices]
-        assert len(p_indices) <= 1, (
-            f"should have at most one parent index, but get {p_indices}"
-        )
-
-        indices.extend(p_indices)
-        perm = [node_indices.index(ind) for ind in indices]
-        # we remember the permutation in the dim tree
-        tree.perm = perm
-
-    def dimension_tree(self, root: NodeName) -> DimTreeNode:
-        """Create a mapping from set of indices to node names.
-        Assume that the tree is rooted at the give node.
-        """
-        free_indices = self.free_indices()
-
-        # do the dfs traversal starting from the root
-        def construct(visited: Set[NodeName], node: NodeName) -> DimTreeNode:
-            visited.add(node)
-
-            children: List[DimTreeNode] = []
-            for nbr in self.network.neighbors(node):
-                if nbr not in visited:
-                    nbr_tree = construct(visited, nbr)
-                    children.append(nbr_tree)
-
-            indices, node_free_indices = [], []
-            up_indices = []
-            for ind in self.node_tensor(node).indices:
-                if ind in free_indices:
-                    indices.append(ind)
-                    node_free_indices.append(ind)
-                    up_indices.append(ind)
-
-            sorted_children = sorted(children, key=lambda x: x.indices)
-            for c in sorted_children:
-                up_indices.extend(c.indices)
-                indices.extend(c.indices)
-
-            res = DimTreeNode(
-                node=node,
-                indices=indices,
-                free_indices=sorted(node_free_indices),
-                down_info=NodeInfo(sorted_children, [], np.empty(0)),
-                up_info=NodeInfo(
-                    [], up_indices, np.empty((0, len(up_indices)))
-                ),
-            )
-
-            for c in sorted_children:
-                c.up_info.nodes = [res]
-
-            return res
-
-        def assign_indices(tree: DimTreeNode) -> None:
-            if len(tree.up_info.nodes) > 0:
-                p = tree.up_info.nodes[0]
-                tree.down_info.indices = p.free_indices[:]
-                tree.down_info.indices.extend(p.down_info.indices)
-                for c in p.down_info.nodes:
-                    if c.node != tree.node:
-                        tree.down_info.indices.extend(c.up_info.indices)
-
-                tree.down_info.vals = np.empty(
-                    (0, len(tree.down_info.indices))
-                )
-
-            for c in tree.down_info.nodes:
-                assign_indices(c)
-
-        tree = construct(set(), root)
-        assign_indices(tree)
-        self.canonicalize_indices(tree)
-        return tree
-
-    def evaluate(
-        self, indices: Sequence[Index], values: np.ndarray
-    ) -> np.ndarray:
-        """
-        Evaluate the tensor network at the given indices.
-
-        Assumes indices are provided in the order retrieved by
-        TensorNetwork.free_indices()
-        """
-        free_indices = self.free_indices()
-        assert values.shape[1] == len(indices), (
-            f"Expected {len(free_indices)} indices, got {values.shape[1]}"
-        )
-
-        results = np.empty(values.shape[0])
-        chunk_size = 50000
-        chunk_start = 0
-        while chunk_start < values.shape[0]:
-            batch_size = min(chunk_size, values.shape[0] - chunk_start)
-            batch_ind = Index("_batch", batch_size)
-            ind_mapping = {batch_ind: "a"}
-            node_vals = []
-            node_strs = []
-            for node in self.network.nodes:
-                tensor = self.node_tensor(node)
-                tslices = []
-                node_str = ""
-
-                for ii, ind in enumerate(tensor.indices):
-                    ind_letter = chr(97 + len(ind_mapping))
-                    if ind in indices:
-                        tslices.append(
-                            (
-                                ii,
-                                values[
-                                    chunk_start : chunk_start + batch_size,
-                                    indices.index(ind),
-                                ],
-                            )
-                        )
-                    else:
-                        if ind not in ind_mapping:
-                            ind_mapping[ind] = ind_letter
-                        node_str += ind_mapping[ind]
-
-                    # print(ind, node_str)
-
-                # swap batch to the front
-                if len(tslices) > 0:
-                    perm, pslices = zip(*tslices)
-                    perm = list(perm)
-                    # add other indices to the end of perm
-                    for i in range(len(tensor.indices)):
-                        if i not in perm:
-                            perm.append(i)
-                    node_str = ind_mapping[batch_ind] + node_str
-                    batch_val = tensor.value.transpose(perm)[tuple(pslices)]
-                else:
-                    batch_val = tensor.value
-
-                node_vals.append(batch_val)
-                node_strs.append(node_str)
-
-            estr = ",".join(node_strs) + "->" + ind_mapping[batch_ind]
-            logger.debug(
-                "contraction args: %s, shapes: %s",
-                estr,
-                [n.shape for n in node_vals],
-            )
-            results[chunk_start : chunk_start + batch_size] = oe.contract(
-                estr, *node_vals, optimize="random-greedy"
-            )
-            chunk_start += batch_size
-
-        return results
-
-    @staticmethod
-    def rand_tt(indices: List[Index], ranks: List[int]) -> "TensorNetwork":
-        """Return a random tt."""
-
-        dim = len(indices)
-        assert len(ranks) + 1 == len(indices)
-
-        tt = TensorNetwork()
-
-        r = [Index("r1", ranks[0])]
-        tt.add_node(
-            0,
-            Tensor(
-                np.random.randn(indices[0].size, ranks[0]), [indices[0], r[0]]
-            ),
-        )
-
-        core = 1
-        for ii, index in enumerate(indices[1:-1]):
-            r.append(Index(f"r{ii + 2}", ranks[ii + 1]))
-            tt.add_node(
-                core,
-                Tensor(
-                    np.random.randn(ranks[ii], index.size, ranks[ii + 1]),
-                    [r[ii], index, r[ii + 1]],
-                ),
-            )
-            core += 1
-            tt.add_edge(ii, ii + 1)
-
-        tt.add_node(
-            dim - 1,
-            Tensor(
-                np.random.randn(ranks[-1], indices[-1].size),
-                [r[-1], indices[-1]],
-            ),
-        )
-        tt.add_edge(dim - 2, dim - 1)
-
-        return tt
-
-    @staticmethod
-    def rand_ht(
-        indices: List[Index], rank: int, child_each_level: int = 2
-    ) -> "TensorNetwork":
-        """Return a random hierarchical tucker."""
-        ht = TensorNetwork()
-
-        def build_child(
-            pid: int, node_id: int, sub_indices: List[Index], rank: int = 1
-        ) -> int:
-            # print(node_id, sub_indices)
-            if len(sub_indices) == 1:
-                ind = sub_indices[0]
-                val = np.random.random((rank, ind.size))
-                node = Tensor(
-                    val,
-                    [
-                        Index(f"R_{pid}_{node_id}", rank),
-                        ind,
-                    ],
-                )
-                ht.add_node(f"G{node_id}", node)
-                return node_id + 1
-
-            # partition the indices into groups hierarchically,
-            # the leftovers are always in the last group
-            ind_group_num = child_each_level
-            ind_group_size = len(sub_indices) // ind_group_num
-            last_group_size = (
-                len(sub_indices) - (ind_group_num - 1) * ind_group_size
-            )
-            next_node_id = node_id + 1
-
-            if pid == -1:
-                val = np.random.random([rank] * child_each_level)
-                indices = []
-            else:
-                val = np.random.random([rank] * (child_each_level + 1))
-                indices = [Index(f"R_{pid}_{node_id}", rank)]
-
-            for i in range(ind_group_num - 1):
-                child_id = next_node_id
-                indices.append(Index(f"R_{node_id}_{child_id}", rank))
-                next_node_id = build_child(
-                    node_id,
-                    next_node_id,
-                    sub_indices[i * ind_group_size : (i + 1) * ind_group_size],
-                    rank,
-                )
-                ht.add_edge(f"G{child_id}", f"G{node_id}")
-
-            child_id = next_node_id
-            indices.append(Index(f"R_{node_id}_{child_id}", rank))
-            next_node_id = build_child(
-                node_id, next_node_id, sub_indices[-last_group_size:], rank
-            )
-            ht.add_edge(f"G{child_id}", f"G{node_id}")
-
-            ht.set_node_tensor(f"G{node_id}", Tensor(val, indices))
-
-            return next_node_id
-
-        build_child(-1, 0, indices, rank)
-        return ht
-
-    @staticmethod
-    def rand_tucker(indices: List[Index], rank: int = 1) -> "TensorNetwork":
-        """Return a random tucker with the given indices."""
-
-        tucker = TensorNetwork()
-        root_val = np.random.random([rank] * len(indices))
-        root_inds = [Index(f"s_{i}", rank) for i in range(len(indices))]
-        tucker.add_node("root", Tensor(root_val, root_inds))
-        for i, ind in enumerate(indices):
-            tensor_val = np.random.random((ind.size, rank))
-            tensor_inds = [ind, root_inds[i]]
-            tucker.add_node(f"G{i}", Tensor(tensor_val, tensor_inds))
-            tucker.add_edge(f"G{i}", "root")
-
-        return tucker
-
-    def node_by_free_index(self, index: IndexName) -> NodeName:
-        """Identify the node in the network containing the given free index"""
-        for n in cast(Iterable[NodeName], self.network.nodes):
-            tensor = self.node_tensor(n)
-            if index in [ind.name for ind in tensor.indices]:
-                return n
-
-        raise KeyError(f"Cannot find index {index} in the network")
-
-    def _binary_op(
-        self,
-        other: "TensorNetwork",
-        op: Literal["add", "mul"],
-        trees: Tuple[DimTreeNode, DimTreeNode],
-        result_net: Self,
-    ) -> None:
-        tree1, tree2 = trees
-        tensor1 = self.node_tensor(tree1.node)
-        tensor2 = other.node_tensor(tree2.node)
-        assert len(tensor1.indices) == len(tensor2.indices)
-
-        if op == "add":
-            res = tensor1.block_diagonal(tensor2, tree1.free_indices)
-        elif op == "mul":
-            res = tensor1.mult(tensor2, self.free_indices())
-        else:
-            raise ValueError(f"Unknown operation {op}")
-
-        # result_net.add_node(tree1.node, res)
-        result_net.set_node_tensor(tree1.node, res)
-
-        for c1, c2 in zip(tree1.down_info.nodes, tree2.down_info.nodes):
-            self._binary_op(other, op, (c1, c2), result_net)
-            # result_net.add_edge(tree1.node, c1.node)
 
     def split_index(self, split_op: IndexSplit) -> Optional[NodeName]:
         """Split free indices into smaller parts"""
@@ -1582,49 +1017,6 @@ class TensorNetwork:  # pylint: disable=R0904
 
     def __lt__(self, other: Self) -> bool:
         return self.cost() < other.cost()
-
-    def __add__(self, other: "TensorNetwork") -> Self:
-        """Add two tree networks."""
-        assert nx.is_isomorphic(self.network, other.network)
-
-        # assign the root at the same index name
-        root_ind = self.free_indices()[0]
-        self_root = self.node_by_free_index(root_ind.name)
-        self_tree = self.dimension_tree(self_root)
-        other_root = other.node_by_free_index(root_ind.name)
-        other_tree = other.dimension_tree(other_root)
-
-        result_net = copy.deepcopy(self)
-        self._binary_op(other, "add", (self_tree, other_tree), result_net)
-
-        return result_net
-
-    def __sub__(self, other: "TensorNetwork") -> Self:
-        """Subtract two tree networks."""
-        assert nx.is_isomorphic(self.network, other.network)
-
-        neg_net = copy.deepcopy(other)
-        a_node = list(neg_net.network.nodes)[0]
-        a_tensor = neg_net.node_tensor(a_node)
-        neg_net.set_node_tensor(
-            a_node, a_tensor.update_val_size(a_tensor.value * -1)
-        )
-        return self + neg_net
-
-    def __mul__(self, other: "TensorNetwork") -> Self:
-        """Elementwise multiplication of two tree networks."""
-        assert nx.is_isomorphic(self.network, other.network)
-
-        # assign the root at the same index name
-        root_ind = self.free_indices()[0]
-        self_root = self.node_by_free_index(root_ind.name)
-        self_tree = self.dimension_tree(self_root)
-        other_root = other.node_by_free_index(root_ind.name)
-        other_tree = other.dimension_tree(other_root)
-
-        result_net = copy.deepcopy(self)
-        self._binary_op(other, "mul", (self_tree, other_tree), result_net)
-        return result_net
 
     def __str__(self) -> str:
         """Convert to string."""
@@ -1825,9 +1217,392 @@ class TensorNetwork:  # pylint: disable=R0904
                     "indices": node_data.pop("tensor_indices"),
                 }
         return cls.from_dict(metadata)
+class TreeNetwork(TensorNetwork):
+    """Class for arbitrary tree-structured networks"""
+    def round(
+        self, node_name: NodeName, delta: float, visited: Optional[set] = None
+    ) -> Tuple[NodeName, float]:
+        """Optimize the tree rooted at the given node."""
+        # print("optimize", node_name)
+        # import matplotlib.pyplot as plt
+        if visited is None:
+            initial_optimize = True
+            visited = set()
+            self.orthonormalize(node_name)
+        else:
+            initial_optimize = False
+
+        node_indices = self.node_tensor(node_name).indices
+        kept_indices = []
+        free_indices = []
+        r = node_name
+        for idx in node_indices:
+            if idx in visited:
+                kept_indices.append(idx)
+                continue
+
+            shared_index = None
+            nbr = node_name
+            for nbr in self.network.neighbors(node_name):
+                nbr_indices = self.node_tensor(nbr).indices
+                if idx in nbr_indices:
+                    shared_index = idx
+                    break
+
+            if shared_index is None:
+                free_indices.append(idx)
+                continue
+
+            curr_indices = self.node_tensor(node_name).indices
+            left_indices = [
+                curr_indices.index(i) for i in curr_indices if i != idx
+            ]
+            right_indices = [curr_indices.index(idx)]
+            [node_name, s, v], delta = self.svd(
+                node_name,
+                left_indices,
+                SVDConfig(delta=delta),
+            )
+            self.merge(v, s)
+            self.merge(nbr, v)
+            visited_index = self.get_contraction_index(node_name, nbr)
+            for idx in visited_index:
+                visited.add(idx)
+
+            r, delta = self.round(nbr, delta, visited)
+            self.merge(node_name, r)
+
+        if not initial_optimize:
+            node_indices = self.node_tensor(node_name).indices
+            left_indices, right_indices = [], []
+            for i, idx in enumerate(node_indices):
+                if idx in free_indices or idx not in kept_indices:
+                    left_indices.append(i)
+                else:
+                    right_indices.append(i)
+            _, r = self.qr(node_name, left_indices)
+
+        return r, delta
+
+    def compress(self) -> None:
+        """Compress the network by removing nodes
+        where one index equals to the product of other indices.
+        """
+        for n, nd in list(self.network.nodes(data=True)):
+            indices = nd["tensor"].indices
+            deleted = False
+            for ind in indices:
+                if ind.size == np.prod([j.size for j in indices if j != ind]):
+                    # we can merge the nodes on the two ends of ind
+                    nbrs = list(self.network.neighbors(n))
+                    for nbr in nbrs:
+                        nbr_indices = self.node_tensor(nbr).indices
+                        if ind in nbr_indices:
+                            self.merge(nbr, n)
+                            deleted = True
+                            break
+
+                    if deleted:
+                        break
+
+    def orthonormalize(self, name: NodeName) -> NodeName:
+        """Orthonormalize the environment network for the specified node.
+
+        Note that this method changes all node names in the network.
+        It returns the new name for the given node after orthonormalization.
+        """
+        # traverse the tree rooted at the given node in the post order
+        # 1 for visited and 2 for processed
+        visited = {}
+
+        def _postorder(pname: Optional[NodeName], name: NodeName) -> NodeName:
+            """Postorder traversal the network from a given node name."""
+            visited[name] = 1
+            nbrs = list(self.network.neighbors(name))
+            permute_indices = []
+            merged = name
+            for n in nbrs:
+                if n not in visited:
+                    # Process children before the current node.
+                    c = _postorder(name, n)
+
+                    # Since split relying on ordered indices,
+                    # we should restore the index order here.
+                    indices = self.node_tensor(merged).indices
+                    permute_index = indices.index(
+                        self.get_contraction_index(merged, c)[0]
+                    )
+                    permute_indices = list(range(permute_index))
+                    permute_indices.append(len(indices) - 1)
+                    permute_indices.extend(
+                        list(range(permute_index, len(indices) - 1))
+                    )
+
+                    merged = self.merge(merged, c)
+
+                    # restore the last index into the permute_index position
+                    self.set_node_tensor(
+                        merged,
+                        self.node_tensor(merged).permute(permute_indices),
+                    )
+
+            if pname is None:
+                return merged
+
+            left_indices, right_indices = [], []
+            merged_indices = self.node_tensor(merged).indices
+            # print(merged_indices)
+            # print(visited)
+            for i, index in enumerate(merged_indices):
+                common_index = None
+                for n in self.network.neighbors(merged):
+                    n_indices = self.node_tensor(n).indices
+                    # print(n, merged, n not in visited, visited[n], index, n_indices)
+                    if index in n_indices:
+                        common_index = i
+
+                        # The edge direction is determined by
+                        # whether a neighbor node has been processed.
+                        # In post-order traversal, if a neighbor has been
+                        # processed before the current node, it is view as
+                        # a child of the current node.
+                        # Otherwise, it is viewed as the parent.
+                        # The edge direction matters in orthonormalization
+                        # because the q part should include indices
+                        # shared with its children and the r part should
+                        # include indices shared with its parent.
+                        # We use the left_indices to keep track of indices
+                        # shared with children, and right_indices to keep
+                        # track of indices shared with the parent.
+                        if n not in visited or visited[n] == 2:
+                            left_indices.append(common_index)
+                        else:
+                            right_indices.append(common_index)
+
+                        break
+                    # print(left_indices, right_indices)
+
+                if common_index is None:
+                    left_indices.append(i)
+
+            # if len(right_indices) == 0:
+            #     print(self)
+            visited[name] = 2
+            visited[merged] = 2
+
+            right_sz = np.prod([merged_indices[i].size for i in right_indices])
+            # optimization: this step creates redundant nodes,
+            # so to avoid them we directly eliminate the node with a merge.
+            if (
+                len(left_indices) == 1
+                and merged_indices[left_indices[0]].size <= right_sz
+            ):
+                return merged
+
+            q, r = self.qr(merged, left_indices)
+            # this split changes the index orders,
+            # which affects the outer split result.
+            # q has the indices r_split x right_indices
+            # but we want r_split to replace the original left_indices
+            # so we need to permute this tensor
+            permute_indices = list(range(right_indices[0]))
+            permute_indices.append(len(left_indices))
+            permute_indices.extend(
+                list(range(right_indices[0], len(left_indices)))
+            )
+            self.set_node_tensor(
+                q, self.node_tensor(q).permute(permute_indices)
+            )
+
+            return r
+
+        return _postorder(None, name)
+
+    def canonical_structure(self, consider_ranks: bool = False) -> int:
+        """Compute the canonical structure of the tensor network.
+
+        This method ignores all values, keeps all free indices and edge labels.
+        If the resulted topology is the same, we consider
+        """
+        # find the node with first free index and use it as the tree root
+        free_indices = sorted(self.free_indices())
+        root = ""
+        for n, d in self.network.nodes(data=True):
+            if free_indices[0] in d["tensor"].indices:
+                root = n
+                break
+
+        visited = {}
+
+        def _postorder(name: NodeName) -> int:
+            """Hash the nodes by their postorder"""
+            visited[name] = 1
+            children_rs = []
+            nbrs = sorted(list(self.network.neighbors(name)))
+            for n in nbrs:
+                if n not in visited:
+                    # Process children before the current node.
+                    children_rs.append(_postorder(n))
+
+            sorted_children_rs = tuple(sorted(children_rs))
+            indices = self.node_tensor(name).indices
+            all_free_indices = self.free_indices()
+            ranks = tuple(sorted([i.size for i in indices]))
+            self_free_indices = tuple(
+                sorted([i for i in indices if i in all_free_indices])
+            )
+
+            visited[name] = 2
+            if consider_ranks:
+                return hash((self_free_indices, ranks, sorted_children_rs))
+
+            return hash((self_free_indices, sorted_children_rs))
+
+        return _postorder(root)
+    
+
+    def leaf_indices(
+        self, visited: Set[NodeName], node_name: NodeName
+    ) -> Sequence:
+        """Get all leaf indices for the subtree rooted at the given node."""
+        indices = self.node_tensor(node_name).indices
+        perm = []
+        leaves = []
+        visited.add(node_name)
+
+        # free indices are added first
+        if len(visited) != 1:
+            for i, ind in enumerate(indices):
+                if ind in self.free_indices():
+                    leaves.append([ind])
+                    perm.append(i)
+
+        for n in self.network.neighbors(node_name):
+            if n in visited:
+                continue
+
+            leaves.append(self.leaf_indices(visited, n))
+            common_index = self.get_contraction_index(n, node_name)
+            assert len(common_index) == 1
+            perm.append(indices.index(common_index[0]))
+
+        # reorder the leaves according to the order of the indices
+        return [leaves[i] for i in np.argsort(perm)]
+
+    def node_by_free_index(self, index: IndexName) -> NodeName:
+        """Identify the node in the network containing the given free index"""
+        for n in self.network.nodes:
+            tensor = self.node_tensor(n)
+            if index in [ind.name for ind in tensor.indices]:
+                return n
+
+        raise KeyError(f"Cannot find index {index} in the network")
+
+    @dataclass
+    class DimTreeNode:
+        """Class for a dimension tree node"""
+        indices: List[Index]
+        children: Sequence["TreeNetwork.DimTreeNode"]
+        node: NodeName
+
+        def __lt__(self, other: Self) -> bool:
+            return sorted(self.indices) < sorted(other.indices)
+
+        def sorted_indices(self, net: TensorNetwork) -> Tuple[int, Sequence[int]]:
+            """sort the children by free indices
+            and get the corresponding children nodes
+            """
+            indices: List[Index] = []
+            free_indices = net.free_indices()
+            node_indices = net.node_tensor(self.node).indices
+            for ind in node_indices:
+                if ind in free_indices:
+                    indices.append(ind)
+
+            # sort free indices in the order of names
+            indices = sorted(indices)
+            free_cnt = len(indices)
+
+            # children indices
+            for n in sorted(self.children):
+                ind = net.get_contraction_index(n.node, self.node)[0]
+                indices.append(ind)
+
+            # parent indices, should be one
+            p_indices = [ind for ind in node_indices if ind not in indices]
+            assert len(p_indices) <= 1, (
+                f"should have at most one parent index, but get {p_indices}"
+            )
+
+            indices.extend(p_indices)
+
+            return free_cnt, [node_indices.index(ind) for ind in indices]
+
+    def dimension_tree(self, root: NodeName) -> "TreeNetwork.DimTreeNode":
+        """Create a mapping from set of indices to node names.
+        Assume that the tree is rooted at the give node.
+        """
+        free_indices = self.free_indices()
+        # do the dfs traversal starting from the root
+        def dfs(visited: Set[NodeName], node: NodeName) -> TreeNetwork.DimTreeNode:
+            visited.add(node)
+            children: Sequence[TreeNetwork.DimTreeNode] = []
+            for nbr in self.network.neighbors(node):
+                if nbr not in visited:
+                    nbr_tree = dfs(visited, nbr)
+                    children.append(nbr_tree)
+
+            indices = set(ind for c in children for ind in c.indices)
+            for ind in self.node_tensor(node).indices:
+                if ind in free_indices:
+                    indices.add(ind)
+
+            return TreeNetwork.DimTreeNode(list(indices), children, node)
+
+        return dfs(set(), root)
+
+
+    def __add__(self, other: "TreeNetwork") -> "TreeNetwork":
+        """Add two tree networks."""
+
+        assert nx.is_isomorphic(self.network, other.network)
+
+        # assign the root at the same index name
+        root_ind = self.free_indices()[0]
+        self_root = self.node_by_free_index(root_ind.name)
+        self_tree = self.dimension_tree(self_root)
+        other_root = other.node_by_free_index(root_ind.name)
+        other_tree = other.dimension_tree(other_root)
+
+        result_net = TreeNetwork()
+        
+        def add(tree1: TreeNetwork.DimTreeNode, tree2: TreeNetwork.DimTreeNode):
+            tensor1 = self.node_tensor(tree1.node)
+            tensor2 = other.node_tensor(tree2.node)
+            assert len(tensor1.indices) == len(tensor2.indices)
+            # permute the indices to follow the canonical order
+            # free indices, children indices, parent indices
+            free_cnt, perm = tree1.sorted_indices(self)
+            tensor1 = tensor1.permute(perm)
+            _, perm = tree2.sorted_indices(other)
+            tensor2 = tensor2.permute(perm)
+            block = tensor1.block_diagonal(tensor2, block_start=free_cnt)
+            result_net.add_node(tree1.node, block)
+
+            children1 = sorted(tree1.children, key=lambda x: x.indices)
+            children2 = sorted(tree2.children, key=lambda x: x.indices)
+            for c1, c2 in zip(children1, children2):
+                add(c1, c2)
+                result_net.add_edge(tree1.node, c1.node)
+
+        add(self_tree, other_tree)
+        # round the result to compress the ranks
+        result_net.round(self_root, delta=1e-6)
+
+        return result_net
 
 class TensorTrain(TensorNetwork):
-    """"""
+    """Class for tensor trains"""
     def __init__(self):
         super().__init__()
 
@@ -3123,7 +2898,7 @@ def gmres(  # pylint: disable=R0913,R0917
     return x, resid
 
 
-def rand_tree(indices: List[Index], ranks: List[int]) -> TensorNetwork:
+def rand_tree(indices: List[Index], ranks: List[int]) -> TreeNetwork:
     """Return a random tensor tree."""
 
     ndims = len(indices)
@@ -3161,7 +2936,7 @@ def rand_tree(indices: List[Index], ranks: List[int]) -> TensorNetwork:
         # print("finalizing parent of", node, "as", p)
         parent[node] = (p, len(nodes) - 1)
 
-    tree = TensorNetwork()
+    tree = TreeNetwork()
 
     for i in range(num_of_nodes):
         i_ranks = []

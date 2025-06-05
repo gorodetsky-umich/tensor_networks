@@ -6,7 +6,7 @@ import itertools
 
 import numpy as np
 
-from pytens.algs import TensorNetwork
+from pytens.algs import TreeNetwork
 from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
 from pytens.search.exhaustive import DFSSearch, BFSSearch
@@ -23,7 +23,7 @@ class SearchEngine:
         self.config = config
 
     def partition_search(
-        self, net: TensorNetwork, tensor_func: Optional[TensorFunc] = None
+        self, net: TreeNetwork, tensor_func: Optional[TensorFunc] = None
     ):
         """Perform an search with output-directed splits + constraint solve."""
 
@@ -40,12 +40,12 @@ class SearchEngine:
             result.stats.cr_core = unopt_size / best_size
             result.stats.cr_start = net.cost() / best_size
             if net_norm != 0:
-                result.stats.re = np.linalg.norm(best_val) / net_norm
+                result.stats.re = float(np.linalg.norm(best_val) / net_norm)
             return result
 
     def dfs(
         self,
-        net: TensorNetwork,
+        net: TreeNetwork,
     ):
         """Perform an exhaustive enumeration with the DFS algorithm."""
 
@@ -64,7 +64,7 @@ class SearchEngine:
 
         return result
 
-    def bfs(self, net: TensorNetwork):
+    def bfs(self, net: TreeNetwork):
         """Perform an exhaustive enumeration with the BFS algorithm."""
 
         bfs_runner = BFSSearch(self.config)
@@ -81,7 +81,7 @@ class SearchEngine:
 
         return result
 
-    def top_down(self, net: TensorNetwork):
+    def top_down(self, net: TreeNetwork):
         """Start point of a top down hierarchical search."""
 
         top_down_runner = TopDownSearch(self.config)

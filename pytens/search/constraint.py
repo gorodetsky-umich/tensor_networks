@@ -8,7 +8,7 @@ import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
 
-from pytens.algs import Tensor, Index, TensorNetwork
+from pytens.algs import Tensor, Index, TreeNetwork
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import OSplit, SearchState
 from pytens.cross.cross import TensorFunc
@@ -164,7 +164,7 @@ class ConstraintSearch:
         cross_func: TensorFunc,
     ):
         # print(comb)
-        net = TensorNetwork()
+        net = TreeNetwork()
         net.add_node("G", target_tensor)
         bin_size = self.config.synthesizer.bin_size
         err = self.config.engine.eps * bin_size
