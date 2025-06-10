@@ -982,6 +982,8 @@ def gram_eig_and_svd(
     """ Implements eigenvalue decomposition + svd to \
         the gram matrices of a TT-core and returns the \
         low-rank factors """
+    pos_tol = 1e-15
+    
     eigl, vl = np.linalg.eigh(gl)
     eigr, vr = np.linalg.eigh(gr)
     eigl = np.abs(eigl)
@@ -990,9 +992,9 @@ def gram_eig_and_svd(
     eigl12 = np.sqrt(eigl)
     eigr12 = np.sqrt(eigr)
 
-    threshold = np.ceil(np.log10(np.max(eigl12) * 1e-8))
+    threshold = np.ceil(np.log10(np.max(eigl12) * 1e-8 + pos_tol))
     eigl12 = np.round(eigl12, min(-int(threshold), 16))
-    threshold = np.ceil(np.log10(np.max(eigr12) * 1e-8))
+    threshold = np.ceil(np.log10(np.max(eigr12) * 1e-8 + pos_tol))
     eigr12 = np.round(eigr12, min(-int(threshold), 16))
 
     maskl = eigl12 == 0
