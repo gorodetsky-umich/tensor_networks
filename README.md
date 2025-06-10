@@ -42,5 +42,13 @@ this requires pylint, flake8 and flake8-pyproject (note this is different from p
 0. currently edges are not actually used to determine contraction path, just index names. This causes issues when contracting when attaching tensors of edges are the same
 1. benchmarking done but dimension scaling is off (possibly because path is not optimal). Could hardcode optimal TT path, but it should be ok for lower dimensions (lower number of cores) May be a problem if QTT considered in the future
 
-## Author
-Copyright 2024, Alex Gorodetsky, goroda@umich.edu
+## Funding
+AFOSR Computational Mathematics Program under the Award \#FA9550-24-1-0246  
+Schmidt Sciences, LLC.,
+
+## Authors
+Alex Gorodetsky, goroda@umich.edu  
+Zheng Guo, zhgguo@umich.edu  
+Aditya Deshpande, dadity@umich.edu
+
+Copyright 2024-2025, Regents of the University of Michigan

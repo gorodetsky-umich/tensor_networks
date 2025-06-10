@@ -1,8 +1,8 @@
 init-e:
-	python -m pip install -e .
+	python -m pip install -e .[search]
 
 init:
-	python -m pip install .
+	python -m pip install .[search]
 
 check:
 	ruff check 

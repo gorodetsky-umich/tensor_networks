@@ -26,7 +26,8 @@ dependencies = [
   "ruff",
   "pylint",
   "flake8",
-  "flake8-pyproject"
+  "flake8-pyproject",
+  "pydantic", # better dataclasses
 ]
 
 [tool.setuptools]
@@ -38,6 +39,8 @@ Documentation = "https://github.com/unknown/temporary#readme"
 Issues = "https://github.com/unknown/temporary/issues"
 Source = "https://github.com/unknown/temporary"
 
+[project.optional-dependencies]
+search = ["gurobipy"]
 
 [tool.pylint.main]
 analyse-fallback-blocks = false
