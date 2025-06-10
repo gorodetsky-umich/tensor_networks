@@ -1,12 +1,13 @@
 """Test file for the tensor network structure search module."""
 
 import unittest
+import time
+
 
 import numpy as np
 import json
 
-from pytens.algs import TensorNetwork, Index, Tensor
-from pytens.cross.cross import TensorFunc
+from pytens.algs import TreeNetwork, Index, Tensor
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import ISplit, OSplit, SearchState
 from pytens.search.search import SearchEngine
@@ -65,7 +66,7 @@ class TestAction(unittest.TestCase):
         data = np.random.randn(3, 4, 5, 6)
         indices = [Index("i", 3), Index("j", 4), Index("k", 5), Index("l", 6)]
         tensor = Tensor(data, indices)
-        net = TensorNetwork()
+        net = TreeNetwork()
         net.add_node("G", tensor)
 
         ac = ISplit("G", [0, 1])
@@ -86,7 +87,7 @@ class TestAction(unittest.TestCase):
         data = np.random.randn(3, 4, 5, 6)
         indices = [Index("i", 3), Index("j", 4), Index("k", 5), Index("l", 6)]
         tensor = Tensor(data, indices)
-        net = TensorNetwork()
+        net = TreeNetwork()
         net.add_node("G", tensor)
 
         ac = OSplit([Index("i", 3), Index("k", 5)])
@@ -111,7 +112,7 @@ class TestState(unittest.TestCase):
         data = np.random.randn(3, 4, 5)
         indices = [Index("i", 3), Index("j", 4), Index("k", 5)]
         tensor = Tensor(data, indices)
-        net = TensorNetwork()
+        net = TreeNetwork()
         net.add_node("G", tensor)
         init_state = SearchState(net, net.norm() * 0.1)
 
@@ -166,7 +167,7 @@ class TestSearch(unittest.TestCase):
         data = np.random.randn(3, 4, 5)
         indices = [Index("i", 3), Index("j", 4), Index("k", 5)]
         tensor = Tensor(data, indices)
-        self.net = TensorNetwork()
+        self.net = TreeNetwork()
         self.net.add_node("G", tensor)
 
         return super().setUp()
@@ -177,6 +178,7 @@ class TestSearch(unittest.TestCase):
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
         result = search_engine.dfs(self.net)
+        assert result is not None
         self.assertEqual(result.stats.count, 8)
 
         free_indices = self.net.free_indices()
@@ -185,7 +187,11 @@ class TestSearch(unittest.TestCase):
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
         bn_val = bn.contract().permute(perm).value
-        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn_val), 0.5 * self.net.norm())
+        err_norm = float(np.linalg.norm(self.net.contract().value - bn_val))
+        self.assertLessEqual(
+            err_norm,
+            0.5 * self.net.norm()
+        )
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_bfs(self):
@@ -194,6 +200,7 @@ class TestSearch(unittest.TestCase):
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
         result = search_engine.bfs(self.net)
+        assert result is not None
         self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
@@ -202,7 +209,11 @@ class TestSearch(unittest.TestCase):
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
         bn_val = bn.contract().permute(perm).value
-        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn_val), 0.5 * self.net.norm())
+        err_norm = float(np.linalg.norm(self.net.contract().value - bn_val))
+        self.assertLessEqual(
+            err_norm,
+            0.5 * self.net.norm()
+        )
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_partition(self):
@@ -211,6 +222,7 @@ class TestSearch(unittest.TestCase):
         config.engine.verbose = True
         search_engine = SearchEngine(config=config)
         result = search_engine.partition_search(self.net)
+        assert result is not None
         self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
@@ -219,7 +231,11 @@ class TestSearch(unittest.TestCase):
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
         bn_val = bn.contract().permute(perm).value
-        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn_val), 0.5 * self.net.norm())
+        err_norm = float(np.linalg.norm(self.net.contract().value - bn_val))
+        self.assertLessEqual(
+            err_norm,
+            0.5 * self.net.norm(),
+        )
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_partition_all(self):
@@ -229,6 +245,7 @@ class TestSearch(unittest.TestCase):
         config.rank_search.fit_mode = "all"
         search_engine = SearchEngine(config=config)
         result = search_engine.partition_search(self.net)
+        assert result is not None
         self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
@@ -237,7 +254,11 @@ class TestSearch(unittest.TestCase):
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
         bn_val = bn.contract().permute(perm).value
-        self.assertLessEqual(np.linalg.norm(self.net.contract().value - bn_val), 0.5 * self.net.norm())
+        err_norm = float(np.linalg.norm(self.net.contract().value - bn_val))
+        self.assertLessEqual(
+            err_norm,
+            float(0.5 * self.net.norm())
+        )
         self.assertLessEqual(bn.cost(), self.net.cost())
 
 class TestTopDownSearch(unittest.TestCase):

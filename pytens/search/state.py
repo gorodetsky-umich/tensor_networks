@@ -18,6 +18,7 @@ class Action:
     def __init__(self):
         self.delta = None
         self.target_size = None
+        self.indices = None
 
     def __lt__(self, other) -> bool:
         return str(self) < str(other)
@@ -225,9 +226,7 @@ class ISplit(Action):
 
         if svd is None:
             net.orthonormalize(self.node)
-            (u, s, v), _ = net.svd(
-                self.node, l_indices, SVDConfig()
-            )
+            (u, s, v), _ = net.svd(self.node, l_indices, SVDConfig())
         else:
             # print("read preprocessing result")
             (u, s, v), _ = net.svd(
@@ -424,7 +423,8 @@ class SearchState:
             yield new_state
             return
 
-        # print("len of singular values", len(s_val), "target size", target_size)
+        # print("len of singular values", len(s_val),
+        # "target size", target_size)
         # print("remaining truncpost", len(truncpost))
 
         if split_errors == 0:
@@ -503,8 +503,9 @@ class SearchState:
                     ac.left_indices,
                     max_k=ac.target_size,
                 )
-                new_err = cross_st.ranks_and_errors[-1][1]
-                # new_state.curr_delta = np.sqrt(self.curr_delta ** 2 - new_err ** 2)
+                # new_err = cross_st.ranks_and_errors[-1][1]
+                # new_state.curr_delta =
+                # np.sqrt(self.curr_delta ** 2 - new_err ** 2)
                 yield new_state
                 return
 

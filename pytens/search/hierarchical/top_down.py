@@ -5,16 +5,13 @@ import math
 import copy
 from typing import Generator, List, Optional, Union, Tuple, Dict, Sequence
 import itertools
-import time
-import enum
-import pickle
 
 import sympy
 import numpy as np
 
 from pytens.search.configuration import SearchConfig
-from pytens.search.partition import PartitionSearch, BAD_SCORE
-from pytens.algs import TreeNetwork, NodeName, Tensor
+from pytens.search.partition import PartitionSearch
+from pytens.algs import TreeNetwork, NodeName
 from pytens.types import IndexSplit, IndexMerge, Index
 from pytens.search.hierarchical.error_dist import BaseErrorDist
 from pytens.search.state import OSplit
@@ -32,24 +29,6 @@ def _create_split_target(
 
     remaining_size = math.prod(remaining_factors)
     return list(selected_factors) + [remaining_size]
-
-
-# def _get_last_split_info(reshape_history: List[Union[IndexSplit, IndexMerge]]):
-#     last_index = -1
-#     while(len(reshape_history) >= abs(last_index)):
-#         reshape_op = reshape_history[last_index]
-#         if isinstance(reshape_op, IndexSplit):
-#             # split_info = {
-#             #             reshape_op.splitting_index.name: [
-#             #                 ind.name for ind in reshape_op.split_result
-#             #             ]
-#             #         }
-#             # return split_info
-#             return reshape_op
-
-#         last_index -= 1
-
-#     return {}
 
 
 def permute_unique(nums: List[int]) -> Generator[Tuple[int], None, None]:
@@ -95,7 +74,7 @@ def split_into_chunks(lst, n):
 
 def select_factors(
     factors: Dict[int, int], splits_allowed: int
-) -> Generator[List[int], None, None]:
+) -> Generator[Sequence[int], None, None]:
     """Select a suitable number of factors for reshaping"""
     # enumerate all possible choices for each factor
     factors_flat = [x for x, c in factors.items() for _ in range(c)]
@@ -107,30 +86,6 @@ def select_factors(
             if chunk_factors not in seen:
                 seen.add(chunk_factors)
                 yield chunk_factors
-
-    # seen = set()
-    # for counts in itertools.product(*[range(v + 1) for v in factors.values()]):
-    #     if sum(counts) != splits_allowed:
-    #         continue
-
-    #     print("selecting", list(counts), "from", factors)
-    #     selected_factors, remaining_factors = [], []
-    #     for i, (f, c) in enumerate(factors.items()):
-    #         selected_factors.extend([f] * counts[i])
-    #         remaining_factors.extend([f] * (c - counts[i]))
-
-    #     for permuted_selection in permute_unique(selected_factors):
-    #         if len(remaining_factors) == 0:
-    #             shape = tuple(permuted_selection)
-    #         else:
-    #             remaining_size = math.prod(remaining_factors)
-    #             shape = tuple(list(permuted_selection) + [remaining_size])
-
-    #         if shape in seen:
-    #             continue
-
-    #         seen.add(shape)
-    #         yield shape
 
 
 class SearchState:
@@ -210,7 +165,6 @@ def get_temperature(config: SearchConfig, k: int):
 
 
 def entropy(prob_dist):
-    # To avoid issues with log(0), simply work only with positive probabilities.
     prob_nonzero = prob_dist[prob_dist > 0]
     return -np.sum(prob_nonzero * np.log2(prob_nonzero))
 
@@ -238,235 +192,11 @@ def pearson_correlation(x):
     return np.corrcoef(x)
 
 
-class MatchStatus(enum.Enum):
-    NOT_MATCH = 0
-    MATCH_REFINE = 1
-    MATCH_ABSTRACT = 2
-
-
-class Rule:
-    def __init__(self, pattern, interest_points):
-        self.pattern = pattern
-        self.interest_points = interest_points
-
-    def __str__(self):
-        pattern_str = []
-        for i, x in enumerate(self.pattern):
-            if i in self.interest_points:
-                pattern_str.append(f"({x})")
-            else:
-                pattern_str.append(str(x))
-
-        return str(pattern_str)
-
-    def __eq__(self, other):
-        if not isinstance(other, Rule):
-            return False
-
-        return (
-            self.pattern == other.pattern
-            and self.interest_points == other.interest_points
-        )
-
-    def match(self, shape: Sequence[int]) -> MatchStatus:
-        """Check whether this rule can be applied to the given shape.
-
-        There could be three different results:
-        - Match with a refined shape
-        - Match with a abstract shape
-        - Not Match
-        """
-        if len(shape) != len(self.pattern):
-            return MatchStatus.NOT_MATCH
-
-        for k, (i, j) in enumerate(zip(self.pattern, shape)):
-            if k in self.interest_points and i != j:
-                return MatchStatus.NOT_MATCH
-
-            if j % i == 0:
-                return False
-
-        return True
-
-    def subsume(self, other: "Rule") -> bool:
-        """Check whether the current rule subsume the other one."""
-        if len(other.pattern) != len(self.pattern):
-            return False
-
-        # other <= self
-        if not set(self.interest_points).issubset(set(other.interest_points)):
-            return False
-
-        for k, (i, j) in enumerate(zip(self.pattern, other.pattern)):
-            if k in self.interest_points and i != j:
-                return False
-
-            if j % i != 0:
-                return False
-
-        return True
-
-    def join(self, other: "Rule") -> Optional["Rule"]:
-        """Find the lowest upper bound for both rules."""
-        if len(self.pattern) != len(other.pattern):
-            return None
-
-        self_ips = set(self.interest_points)
-        other_ips = set(other.interest_points)
-        if not self_ips.issubset(other_ips) and not self_ips.issuperset(
-            other_ips
-        ):
-            return None
-
-        relax_ips = sorted(list(self_ips.intersection(other_ips)))
-        relax_pattern = []
-        for k, (i, j) in enumerate(zip(self.pattern, other.pattern)):
-            if k in relax_ips:
-                if i != j:
-                    return None
-
-                relax_pattern.append(i)
-            else:
-                relax_pattern.append(sympy.igcd(i, j))
-
-        return Rule(relax_pattern, relax_ips)
-
-    def get_op(
-        self, indices: List[Index]
-    ) -> Optional[Tuple[IndexMerge, IndexSplit]]:
-        """Convert a rule into merge and split operations."""
-        if not self.match([ind.size for ind in indices]):
-            return None
-
-        merge_inds = []
-        for i in self.interest_points:
-            merge_inds.append(indices[i])
-
-        sep_sz = [ind.size for ind in merge_inds]
-        merge_sz = math.prod(sep_sz)
-        merge_result = Index(merge_inds[0].name, merge_sz)
-        merge_op = IndexMerge(
-            merging_indices=merge_inds, merge_result=merge_result
-        )
-        split_op = IndexSplit(
-            splitting_index=merge_result,
-            split_target=sep_sz,
-            split_result=merge_inds,
-        )
-        return merge_op, split_op
-
-
-class Sample:
-    def __init__(self, indices, nodes):
-        self.indices = indices
-        self.nodes = nodes
-        self.shape = [ind.size for ind in indices]
-
-
-def mine_rules(available_rules: Sequence[Rule], new_sample: Sample):
-    """Mine rules from the new sample result"""
-    rules = []
-    for node_indices in new_sample.nodes:
-        pattern = list(new_sample.shape)
-        interest_points = []
-        for ind in node_indices:
-            if ind in new_sample.indices:
-                interest_points.append(new_sample.indices.index(ind))
-
-        if len(interest_points) > 1:
-            rule = Rule(pattern, interest_points)
-
-            # check whether we can relax this rule by relaxing its context
-            relaxed = False
-            # removed = []
-            for other in available_rules:
-                relax_rule = rule.join(other)
-                if (
-                    relax_rule is not None
-                    and relax_rule not in available_rules
-                ):
-                    rules.append(relax_rule)
-                    # removed.append(other)
-                    relaxed = True
-
-            # if not relaxed:
-            if rule not in available_rules:
-                rules.append(rule)
-
-            # for other in removed:
-            #     available_rules.remove(other)
-
-    available_rules.extend(rules)
-
-
-def apply_rules(
-    available_rules: Sequence[Rule], tensor: Tensor
-) -> Sequence[Tuple[IndexMerge, IndexSplit]]:
-    """Check for applicable rules and generate merge/split operations for these rules."""
-    matches = []
-    for rule in available_rules:
-        if not rule.match([ind.size for ind in tensor.indices]):
-            print(rule, "does not match", tensor.indices)
-            continue
-
-        print(rule, "matches", tensor.indices)
-        subsumed = []
-        top_found = False
-        for matched_rule in matches:
-            if matched_rule.subsume(rule):
-                print(matched_rule, "subsumes", rule)
-                # replace matched_rule with rule
-                subsumed.append(matched_rule)
-
-            if rule.subsume(matched_rule):
-                print(rule, "subsumes", matched_rule)
-                top_found = True
-                break
-
-        for matched_rule in subsumed:
-            matches.remove(matched_rule)
-
-        if not top_found:
-            matches.append(rule)
-
-    merge_ops, split_ops = [], []
-    for rule in matches:
-        ops = rule.get_op(tensor.indices)
-        if ops is not None:
-            merge_ops.append(ops[0])
-            split_ops.append(ops[1])
-
-    return merge_ops, split_ops
-
-
-def align_shapes(shape1, shape2):
-    """Align the given shapes. They should have the same length"""
-    j, k = 0, 0
-    accj, acck = 1, 1
-    equal_points = []
-    while j < len(shape1) and k < len(shape2):
-        if accj == acck:
-            equal_points.append((j, k))
-            accj *= shape1[j]
-            j += 1
-            acck *= shape2[k]
-            k += 1
-        elif accj < acck:
-            accj *= shape1[j]
-            j += 1
-        else:
-            acck *= shape2[k]
-            k += 1
-
-    equal_points.append((len(shape1), len(shape2)))
-    return equal_points
-
-
 # we sort the index_splits in the order of total correlations
 def score_split(
     net: TreeNetwork, node: NodeName, index_split: List[IndexSplit]
 ):
-    start = time.time()
+    # start = time.time()
     # print(index_split)
     tensor = net.network.nodes[node]["tensor"]
     reshapes = []
@@ -583,9 +313,9 @@ class TopDownSearch:
     ) -> Tuple[TreeNetwork, SearchState]:
         """Perform the topdown search starting from the given net"""
         remaining_delta = net.norm() * self.config.engine.eps
-        best_network = net
-        best_st = None
         init_st = SearchState(net.free_indices(), [], copy.deepcopy(net), 0)
+        best_network = net
+        best_st = init_st
         # print(net.free_indices())
         for st in self._search_at_level(
             0, init_st, remaining_delta, error_dist, None
@@ -609,8 +339,8 @@ class TopDownSearch:
 
     def _get_merge_op(
         self, indices: List[Index], merge_candidates: List[Index]
-    ) -> Generator[IndexMerge, None, None]:
-        if self.config.topdown.enable_random:
+    ) -> Generator[Optional[IndexMerge], None, None]:
+        if self.config.topdown.random_algorithm == "random":
             # yield one possible result
             merge_indices = sorted(random.sample(merge_candidates, k=2))
             merge_pos = [indices.index(ind) for ind in merge_indices]
@@ -643,8 +373,9 @@ class TopDownSearch:
                     merge_candidates.append(ind)
 
             for merge_op in self._get_merge_op(indices, merge_candidates):
-                new_st = st.merge_index(merge_op)
-                yield from self._merge_indices(new_st, node)
+                if merge_op is not None:
+                    new_st = st.merge_index(merge_op)
+                    yield from self._merge_indices(new_st, node)
         else:
             yield st
 
@@ -671,7 +402,8 @@ class TopDownSearch:
         else:
             # we always try our best to decompose the indices to
             # the maximum number and they subsume higher level reshapes
-            # print("searching for factors of", index, "with quota", splits_allowed)
+            # print("searching for factors of", index,
+            # "with quota", splits_allowed)
             for split_target in select_factors(res, splits_allowed):
                 # for selected in itertools.combinations(factors, r=k):
                 yield IndexSplit(
@@ -688,8 +420,9 @@ class TopDownSearch:
     ):
         """Consider all possible combinations of indices.
 
-        For each combination, we calculate the correlation matrix of the reshaped tensor.
-        If the correlation is high enough, we merge the indices.
+        For each combination, we calculate the correlation matrix of
+        the reshaped tensor. If the correlation is high enough,
+        we merge the indices.
         """
 
         tensor = list(net.network.nodes(data=True))[0][1]["tensor"]
@@ -701,42 +434,9 @@ class TopDownSearch:
 
         shape = [ind.size for ind in indices]
 
-        # single_effranks = {}
-        # single_corrs = {}
-        # for i in range(len(indices)):
-        #     perm = [i] + [x for x in range(len(indices)) if x != i]
-        #     value_perm = value.transpose(perm)
-        #     value_reshape = value_perm.reshape(indices[i].size, -1)
-
-        #     if self.config.topdown.search_algo == "svd":
-        #         # we can use these svd options to search for structure and see which operations are selected by the solver
-
-        #         s = np.linalg.svdvals(value_reshape)
-        #         # p = s / np.sum(s)
-        #         # # Calculate entropy
-        #         # entropy = -np.sum(p * np.log(p+1e-16))
-        #         # # Compute effective rank
-        #         # # eff_rank = np.exp(entropy)
-        #         # single_effranks[i] = entropy
-        #         # print(i, "effective rank", eff_rank)
-        #         # Count singular values above the threshold
-        #         # Calculate cumulative variance
-        #         # cumulative_variance = np.cumsum(np.flip(s) ** 2)
-        #         # rank = len(s) - np.searchsorted(cumulative_variance, delta ** 2)
-        #         # single_ranks[i] = (value_reshape.shape[0] + value_reshape.shape[1]) * rank
-        #         # print(i, "delta cost", single_ranks[i])
-        #         # corr = np.corrcoef(value_reshape)
-        #         # print(i, "correlation", np.mean(np.abs(corr)))
-        #     elif self.config.topdown.search_algo == "correlation":
-        #         mask = np.zeros(value_reshape.shape[0], dtype=bool)
-        #         mask[np.random.choice(value_reshape.shape[0], size=min(50000, value_reshape.shape[0]), replace=False)] = True
-        #         sample_data = value_reshape[mask]
-        #         corr_res = np.corrcoef(sample_data+ np.random.random(sample_data.shape) * 1e-13)
-        #         single_corrs[i] = np.linalg.slogdet(corr_res).logabsdet
-
         comb_corr = {}
         index_costs = {}
-        useless_indices = []
+        # useless_indices = []
         if self.config.topdown.search_algo == "svd":
             k = 1
             combs = list(itertools.combinations(indices, k))
@@ -759,39 +459,17 @@ class TopDownSearch:
             for res in search_engine.search(
                 net, delta=delta, actions=actions, budget=len(actions)
             ):
-                print([str(ac) for ac in res.best_actions])
-
+                # print([str(ac) for ac in res.best_actions])
+                assert res.best_actions is not None
                 for ac in res.best_actions:
+                    assert ac.indices is not None
+                    assert ac.target_size is not None
                     inds = [indices.index(ind) for ind in ac.indices]
                     index_costs[tuple(inds)] = min(
                         -ac.target_size, comb_corr.get(tuple(inds), 0)
                     )
 
-            # for ac in actions:
-            #     inds = [indices.index(ind) for ind in ac.indices]
-            #     if tuple(inds) not in index_costs:
-            #         index_costs[tuple(inds)] = -search_engine.constraint_engine.split_actions[ac][1][-1]
-
-            # print(tuple(inds), comb_corr[tuple(inds)])
             search_engine.reset()
-            # used_indices = [indices.index(x) for ac in res.best_actions for x in ac.indices]
-            # if res.best_actions is None:
-            #     # we cannot get better compression with these ops only
-            #     # default to correlation
-            #     comb_corr = None
-
-            # else:
-            #     for ac in res.best_actions:
-            #         if len(ac.indices) == 2:
-            #             k = tuple(indices.index(x) for x in ac.indices)
-            #             comb_corr[k] = ac.target_size
-            #     print([str(ac) for ac in res.best_actions])
-            #     for ac in actions:
-            #         k = tuple(indices.index(x) for x in ac.indices)
-            #         if ac in res.best_actions:
-            #             comb_corr[k] = min(res.best_solver_cost, comb_corr.get(k, res.best_solver_cost)) #min(ac.target_size, comb_corr.get(k, BAD_SCORE)) #
-            #         else:
-            #             comb_corr[k] = BAD_SCORE
 
         print(index_costs)
         if (
@@ -818,56 +496,6 @@ class TopDownSearch:
                 others = [x for i, x in enumerate(shape) if i not in comb]
                 value_group = value_perm.reshape(-1, *others)
                 corr_data = value_group.reshape(-1, np.prod(others))
-                # chunk the data into groups
-                # if corr_data.shape[0] < corr_data.shape[1]:
-                #     corr_data = corr_data.transpose()
-                # s = np.linalg.svdvals(corr_data)
-                # # comb_corr[comb] = np.mean(-np.diff(s) / s[:-1])
-                # # print(s)
-                # # print(np.diff(np.diff(s)))
-                # # Calculate probabilities
-                # p = s / np.sum(s)
-                # # Calculate entropy
-                # entropy = -np.sum(p * np.log(p + 1e-16))
-                # # Compute effective rank
-                # # eff_rank = np.exp(entropy)
-                # # if we can reduce the effective rank, then that's great
-                # # if we cannot, then we should prefer smaller increase of effective ranks
-                # comb_corr[comb] = entropy / (single_effranks[comb[0]] * single_effranks[comb[1]])
-                # print(comb, comb_corr[comb])
-                # print("effective rank difference", )
-                # corr = np.corrcoef(corr_data)
-                # print(comb, "correlation", np.mean(np.abs(corr)))
-                # # Count singular values above the threshold
-                # print (eff_rank, np.sum(s > 0.1 * s[0]))
-                # Calculate cumulative variance
-                # cumulative_variance = np.cumsum(np.flip(s) ** 2)
-
-                # # Determine the effective rank
-                # rank = np.searchsorted(cumulative_variance, delta ** 2)
-                # cost = rank * (corr_data.shape[0] + corr_data.shape[1])
-                # comb_corr[comb] = cost
-                # elif self.config.topdown.search_algo == "random correlation":
-                # mask = np.zeros(corr_data.shape[0], dtype=bool)
-                # mask[np.random.choice(corr_data.shape[0], size=min(50000, corr_data.shape[0]), replace=False)] = True
-                # sample_data = corr_data[mask]
-                # comb_corr[comb] = np.mean(np.abs(np.corrcoef(sample_data)))
-                # if np.isnan(comb_corr[comb]):
-                #     comb_corr[comb] = 0
-                # print(comb, comb_corr[comb])
-
-                # corr_data = corr_data.transpose()
-                # mask = np.zeros(corr_data.shape[0], dtype=bool)
-                # mask[np.random.choice(corr_data.shape[0], size=min(50000, corr_data.shape[0]), replace=False)] = True
-                # sample_data = corr_data[mask]
-                # comb_corr[comb] = np.mean(np.abs(np.corrcoef(sample_data)))
-                # if np.isnan(comb_corr[comb]):
-                #     comb_corr[comb] = 0
-                # corr = np.corrcoef(corr_data)
-                # comb_corr[comb] = np.mean((corr))
-                # if np.isnan(comb_corr[comb]):
-                #     comb_corr[comb] = 0
-                # print(comb, comb_corr[comb])
 
                 mask = np.zeros(corr_data.shape[0], dtype=bool)
                 mask[
@@ -881,8 +509,6 @@ class TopDownSearch:
                 corr_res = np.corrcoef(
                     sample_data + np.random.random(sample_data.shape) * 1e-13
                 )
-                # comb_cost = index_costs.get(comb[0], 0) + index_costs.get(comb[1], 0)
-                # print(np.linalg.matrix_rank(corr_res))
                 if self.config.topdown.aggregation == "mean":
                     comb_corr[comb] = -np.mean(np.abs(corr_res))
                 elif self.config.topdown.aggregation == "det":
@@ -907,16 +533,13 @@ class TopDownSearch:
 
                 sys.stdout.flush()
 
-        # vals = list(comb_corr.values())
-        # print(np.quantile(vals, 0.25), np.quantile(vals, 0.5), np.quantile(vals, 0.75))
-        # comb_corr = sorted(comb_corr.items(), key=lambda x: x[1] if x[1] >= np.quantile(vals, 0.5) else 1.0)
         comb_corr = sorted(comb_corr.items(), key=lambda x: x[1])
         # print(comb_corr)
         # consider different cases to merge indices from high to low
         # until it reaches the target threshold
         merged_indices = set()
         merged_groups = []
-        groups = 0
+        # groups = 0
         for comb, score in comb_corr:
             print(comb, score)
             if (
@@ -937,20 +560,6 @@ class TopDownSearch:
             ):
                 break
 
-        # merged_indices = DisjointSet()
-        # merged_groups = []
-        # for comb in comb_corr:
-        #     if merged_indices.size(comb[0]) >= 3 or merged_indices.size(comb[1]) >= 3:
-        #         continue
-
-        #     print("adding", comb)
-        #     merged_indices.union(comb[0], comb[1])
-        #     merged_groups = merged_indices.groups()
-        #     # merged_indices.union(comb[0], comb[1])
-        #     if len(indices) - merged_indices.size() + len(merged_groups) <= threshold:
-        #         break
-        # merged_groups = merged_groups.values()
-
         # create index merge and split to restore
         merge_ops, split_ops = [], []
         for ig, elmts in enumerate(merged_groups):
@@ -959,7 +568,6 @@ class TopDownSearch:
             merging_indices = [indices[i] for i in elmts]
             merging_sizes = [ind.size for ind in merging_indices]
             merge_result = Index(f"tmp_merge_{ig}", np.prod(merging_sizes))
-            # search_engine.constraint_engine.split_actions[OSplit([merge_result])] = search_engine.constraint_engine.split_actions[OSplit(sorted(merging_indices))]
             merge_op = IndexMerge(
                 merging_indices=merging_indices, merge_result=merge_result
             )
@@ -971,17 +579,18 @@ class TopDownSearch:
             )
             split_ops.append(split_op)
 
-        print(
-            len(merge_ops), "remaining order is", len(indices) - len(merge_ops)
-        )
-        import sys
+        # print(
+        #     len(merge_ops), "remaining order is",
+        # len(indices) - len(merge_ops)
+        # )
+        # import sys
 
-        sys.stdout.flush()
+        # sys.stdout.flush()
         return merge_ops, split_ops
 
     def _split_indices_correlation(
         self, st: SearchState, indices: List[Index]
-    ) -> Generator[Tuple[bool, SearchState], None, None]:
+    ) -> Generator[Sequence[IndexSplit], None, None]:
         # split each index into most smaller parts
         index_splits = []
 
@@ -1000,7 +609,7 @@ class TopDownSearch:
             ]
             index_splits.append(split_ops)
 
-        return itertools.product(*index_splits)
+        yield from itertools.product(*index_splits)
 
     def _split_indices_allowed(self, st: SearchState, indices: List[Index]):
         index_splits = []
@@ -1021,7 +630,8 @@ class TopDownSearch:
         ):
             if sum(combination) == splits_allowed:
                 # print(
-                #     "splits distribution", combination, "for indices", indices
+                #     "splits distribution", combination,
+                # "for indices", indices
                 # )
                 splits = []
                 for ind_idx, ind in enumerate(indices):
@@ -1105,7 +715,6 @@ class TopDownSearch:
         level: int,
         error_dist: BaseErrorDist,
         remaining_delta: float,
-        curr_best: TreeNetwork,
     ):
         """Optimize the children nodes in a given network"""
         # if len(nodes) == 0:
@@ -1253,11 +862,10 @@ class TopDownSearch:
         remaining_delta: float,
         error_dist: BaseErrorDist,
         parent_indices,
-        curr_best: Optional[TreeNetwork] = None,
     ) -> Generator[SearchState, None, None]:
         # print("Optimizing")
         # print(st.network)
-        search_start = time.time()
+        # search_start = time.time()
         search_engine = PartitionSearch(self.config)
         # decrease the delta budget exponentially
         delta, remaining_delta = error_dist.get_delta(level, remaining_delta)
@@ -1269,26 +877,32 @@ class TopDownSearch:
         # merge_ops, split_ops = apply_rules(
         #     self.hints.get(tuple(parent_indices), {}), tensor
         # )
+        merge_ops, split_ops = [], []
         if (self.config.topdown.search_algo in ["correlation", "svd"]) and (
             parent_indices is not None
             or self.config.topdown.merge_mode == "all"
         ):
             # merge indices by correlation
-            begin_corr = time.time()
+            # begin_corr = time.time()
             merge_ops, split_ops = self.merge_by_correlation(
                 st.network, search_engine, delta=delta
             )
-            print("correlation time:", time.time() - begin_corr)
+            # print("correlation time:", time.time() - begin_corr)
 
             for merge_op in merge_ops:
                 st.network.merge_index(merge_op)
             # print("after index merge")
             # print(st.network)
 
+        bn = None
+        result = None
         for result in search_engine.search(st.network, delta=delta):
             # print("search time:", time.time() - search_start)
             # after the search, we mine the hints
             bn = result.best_network
+
+        assert result is not None
+        assert bn is not None
 
         if (self.config.topdown.search_algo in ["correlation", "svd"]) and (
             parent_indices is not None
@@ -1331,17 +945,20 @@ class TopDownSearch:
         #         for (split_net, sn_st) in self._optimize_subnet_for_node(
         #             best_st, node, level + 1, error_dist, remaining_delta
         #         ):
-        #             if best_sn_st is None or sn_st.network.cost() < best_sn_st.network.cost():
+        #             if (best_sn_st is None or
+        # sn_st.network.cost() < best_sn_st.network.cost()):
         #                 best_sn_st = sn_st
         #                 best_split = split_net
 
         #         if best_sn_st is not None:
         #             best_st.network = best_split
-        #             best_st.network.replace_with(node, best_sn_st.network, best_sn_st.reshape_history)
+        #             best_st.network.replace_with(
+        # node, best_sn_st.network, best_sn_st.reshape_history)
         #             best_st.reshape_history = best_sn_st.reshape_history
         #             best_st.unused_delta = best_sn_st.unused_delta
         #         else:
-        #             best_st.unused_delta = best_st.unused_delta + remaining_delta**2
+        #             best_st.unused_delta = (best_st.unused_delta +
+        # remaining_delta**2)
 
         #     yield best_st
         # else:
@@ -1358,7 +975,6 @@ class TopDownSearch:
                 level + 1,
                 error_dist,
                 remaining_delta,
-                None,
                 # best_sn_st.network if best_sn_st is not None else None,
             ):
                 # print(
@@ -1376,6 +992,7 @@ class TopDownSearch:
 
             if best_sn_st is not None:
                 # print("find local optimal")
+                assert best_split is not None
                 best_st.network = best_split
                 best_st.network.replace_with(
                     node, best_sn_st.network, best_sn_st.reshape_history

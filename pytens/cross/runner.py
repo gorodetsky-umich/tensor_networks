@@ -5,7 +5,7 @@ from typing import Optional
 
 import numpy as np
 
-from pytens.algs import TensorNetwork
+from pytens.algs import TensorNetwork, rand_tt
 from pytens.cross.cross import CrossApproximation, CrossConfig
 from pytens.cross.funcs import TensorFunc
 
@@ -38,7 +38,7 @@ class TTCrossRunner(CrossRunner):
         validation: Optional[np.ndarray] = None,
     ) -> TensorNetwork:
         indices = f.indices[:]
-        net = TensorNetwork.rand_tt(indices, [1] * len(indices))
+        net = rand_tt(indices, [1] * len(indices))
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(

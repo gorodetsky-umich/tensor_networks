@@ -7,7 +7,7 @@ import numpy as np
 import pydantic
 
 from pytens.search.state import SearchState, Action
-from pytens.algs import TensorNetwork, Tensor
+from pytens.algs import TreeNetwork, Tensor
 from pytens.types import IndexSplit, IndexMerge
 
 
@@ -32,10 +32,10 @@ class SearchStats(pydantic.BaseModel):
 
 class SearchResult:
     stats: SearchStats
-    unused_delta: Optional[float] = 0.0
-    best_network: Optional[TensorNetwork] = None
+    unused_delta: float = 0.0
+    best_network: Optional[TreeNetwork] = None
     best_actions: Optional[Sequence[Action]] = None
-    best_solver_cost: Optional[int] = -1
+    best_solver_cost: int = -1
 
     def __init__(
         self,
@@ -50,7 +50,7 @@ class SearchResult:
         self.unused_delta = unused_delta
 
 
-def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
+def approx_error(tensor: Tensor, net: TreeNetwork) -> float:
     """Compute the reconstruction error.
 
     Given a tensor network TN and the target tensor X,
@@ -69,10 +69,10 @@ def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
 
 def log_stats(
     search_stats: SearchStats,
-    target_tensor: np.ndarray,
+    target_tensor: Tensor,
     ts: float,
     st: SearchState,
-    bn: TensorNetwork,
+    bn: TreeNetwork,
 ):
     """Log statistics of a given state."""
     search_stats.ops.append((ts, len(st.past_actions)))
@@ -108,6 +108,7 @@ def reshape_indices(reshape_ops, indices, data):
                 new_ind_group = []
                 for ind in ind_group:
                     if ind == reshape_op.splitting_index:
+                        assert reshape_op.split_result is not None
                         new_ind_group.extend(reshape_op.split_result)
                     else:
                         new_ind_group.append(ind)
@@ -125,6 +126,7 @@ def reshape_indices(reshape_ops, indices, data):
                             for ind in ind_group
                             if ind not in reshape_op.merging_indices
                         ]
+                        assert reshape_op.merge_result is not None
                         new_ind_group = [reshape_op.merge_result] + unchanged
                         # we want to permute these indices before comparison
                         cnt_before = sum(len(g) for g in indices[:group_idx])

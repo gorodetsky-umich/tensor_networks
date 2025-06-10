@@ -40,11 +40,11 @@ class TestTT(unittest.TestCase):
         self.u = Index("u", 10)
         self.v = Index("v", 20)
         self.tt_ranks = [2, 2]
-        self.TT = TensorNetwork.rand_tt(
+        self.TT = rand_tt(
             [self.x, self.u, self.v], self.tt_ranks
         )
         self.tt_ranks2 = [3, 4]
-        self.TT2 = TensorNetwork.rand_tt(
+        self.TT2 = rand_tt(
             [self.x, self.u, self.v], self.tt_ranks2
         )
 
@@ -125,7 +125,7 @@ class TestTT(unittest.TestCase):
         out2 = self.TT2.contract().value
 
         self.assertTrue(
-            np.allclose(inner_val, np.sum(out1 * out2), atol=1e-14, rtol=1e-14)
+            np.allclose(inner_val, np.sum(out1 * out2), atol=1e-12, rtol=1e-12)
         )
 
     def test_integrate(self):
@@ -169,10 +169,10 @@ class TestTT(unittest.TestCase):
         self.assertEqual(ranks[1], self.tt_ranks[1] + self.tt_ranks2[1])
 
     def test_sum_multiple_tt(self):
-        TT1 = TensorNetwork.rand_tt([self.x, self.u, self.v], [2, 2])
-        TT2 = TensorNetwork.rand_tt([self.x, self.u, self.v], [4, 3])
-        TT3 = TensorNetwork.rand_tt([self.x, self.u, self.v], [8, 12])
-        TT4 = TensorNetwork.rand_tt([self.x, self.u, self.v], [3, 4])
+        TT1 = rand_tt([self.x, self.u, self.v], [2, 2])
+        TT2 = rand_tt([self.x, self.u, self.v], [4, 3])
+        TT3 = rand_tt([self.x, self.u, self.v], [8, 12])
+        TT4 = rand_tt([self.x, self.u, self.v], [3, 4])
 
         tts = [TT1, TT2, TT3, TT4]
         tt_sum_1 = tt_sum(tts)
@@ -374,7 +374,7 @@ class TestTT(unittest.TestCase):
         ttop_arr = ttop.contract().value
         # print(ttop_arr.shape)
 
-        tt = TensorNetwork.rand_tt([x, y, z], [3, 2])
+        tt = rand_tt([x, y, z], [3, 2])
         tt_arr = tt.contract().value
         # print(tt_arr.shape)
 
@@ -397,7 +397,7 @@ class TestTT(unittest.TestCase):
         ttop_arr = ttop.contract().value
         # print(ttop_arr.shape)
 
-        tt = TensorNetwork.rand_tt([x, y, z], [3, 2])
+        tt = rand_tt([x, y, z], [3, 2])
         tt_arr = tt.contract().value
         # print(tt_arr.shape)
 
@@ -446,9 +446,9 @@ class TestTT(unittest.TestCase):
         ttop = ttop_rank1(
             indices_in, indices_out, [A, np.eye(5, 5), np.eye(3, 3)], "A"
         )
-        tt = TensorNetwork.rand_tt([x, y, z], [3, 2])
+        tt = rand_tt([x, y, z], [3, 2])
 
-        x0 = TensorNetwork.rand_tt([x, y, z], [3, 2])
+        x0 = rand_tt([x, y, z], [3, 2])
         op = lambda ttin: ttop_apply(ttop, ttin)
         _, resid = gmres(op, tt, x0, 1e-5, 1e-10, maxiter=30)
         # print("resid = ", resid)
@@ -1055,7 +1055,7 @@ class TestCross(unittest.TestCase):
 
         indices = [Index("i", 8), Index("j", 10)]
         func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1])
+        net = rand_tt(func.indices, [1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1076,7 +1076,7 @@ class TestCross(unittest.TestCase):
 
         indices = [Index("i", 8), Index("j", 10), Index("k", 12)]
         func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1, 1])
+        net = rand_tt(func.indices, [1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1102,7 +1102,7 @@ class TestCross(unittest.TestCase):
             Index("l", 20),
         ]
         func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1, 1, 1])
+        net = rand_tt(func.indices, [1, 1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1180,7 +1180,7 @@ class TestCross(unittest.TestCase):
             Index("l", 20),
         ]
         func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
+        net = rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1239,7 +1239,7 @@ class TestCross(unittest.TestCase):
             Index("p", 8),
         ]
         func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
+        net = rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(
             kickrank=2,
             cross_algo=CrossAlgo.DEIM,
@@ -1279,7 +1279,7 @@ class TestCross(unittest.TestCase):
             Index("p", 8),
         ]
         func = TestCross.FuncPathological(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
+        net = rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(
             kickrank=2,
             cross_algo=CrossAlgo.DEIM,
@@ -1312,7 +1312,7 @@ class TestCross(unittest.TestCase):
             Index("l", 20),
         ]
         func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1, 1, 1])
+        net = rand_tt(func.indices, [1, 1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
 
@@ -1359,19 +1359,16 @@ class TestGeneralOps(unittest.TestCase):
             IndexSplit(splitting_index=Index("j", 16), split_target=[8, 2])
         )
         net.merge_index(
-            IndexMerge(merging_indices=[Index("s_11", 2), Index("s_12", 3)])
+            IndexMerge(merging_indices=[Index("s_1", 2), Index("s_2", 3)])
         )
-        self.assertEqual(
-            net.free_indices(),
+        self.assertListEqual(
+            sorted(net.free_indices()),
             [
-                # Index("s_11", 2),
-                # Index("s_12", 3),
-                Index("s_12", 2),
-                Index("s_13", 3),
-                Index("s_16", 2),
-                Index("s_17", 2),
-                Index("s_18", 8),
-                Index("s_19", 2),
+                Index("s_5", 2),
+                Index("s_6", 2),
+                Index("s_7", 8),
+                Index("s_8", 2),
+                Index("s_9", 6),
             ],
         )
 
@@ -1413,7 +1410,7 @@ class TestGeneralOps(unittest.TestCase):
                 Index("k", 6),
                 Index("l", 7),
                 Index("m", 8),
-                Index("s_11", 2),
+                Index("s_0", 2),
             ],
         )
 

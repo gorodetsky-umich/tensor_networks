@@ -76,6 +76,7 @@ class CrossResult(pydantic.BaseModel):
     ranks_and_errors: Sequence[Tuple[int, float]]
 
 
+
 @profile
 def _select_indices_maxvol(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
