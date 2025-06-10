@@ -147,15 +147,15 @@ class TopDownConfig(pydantic.BaseModel):
     )
     annel_step: int = pydantic.Field(
         default=10,
-        description="Configure the step number for simulated annealing",
+        description="Configure the step number for SA",
     )
     init_temp: float = pydantic.Field(
         default=100,
-        description="Configure the initial temperature for simulated annealing",
+        description="Configure the initial temperature for AS",
     )
     temp_schedule: Literal["linear", "exp", "log"] = pydantic.Field(
         default="linear",
-        description="Configure the temperature schedule for simulated annealing",
+        description="Configure the temperature schedule for SA",
     )
     alpha: float = pydantic.Field(
         default=0.01,

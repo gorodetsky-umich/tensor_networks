@@ -1,14 +1,13 @@
-from typing import Optional, Sequence, Tuple, Set, List, Callable
+from typing import Optional, Sequence, Tuple, List
 from dataclasses import dataclass
-import math
 
 import numpy as np
 import scipy
-from tntorch.maxvol import py_maxvol
 
 from line_profiler import profile
 
-from pytens.types import Index
+from pytens.cross.funcs import TensorFunc
+
 
 @dataclass
 class CrossApproxState:
@@ -29,17 +28,10 @@ class CrossApproxState:
     ranks_and_errors: List[Tuple[int, float]]
     tensor: np.ndarray
 
-class TensorFunc:
-    def __init__(self, function: Callable, domain: List[np.ndarray]):
-        self.domain = domain
-        self.function = function
-
-    def __call__(self, args):
-        return self.function(args)
 
 def new_point(
     approx_state: CrossApproxState,
-    validation_points: np.ndarray,
+    validation_points: Tuple[np.ndarray, np.ndarray],
     err: np.ndarray,
 ) -> Tuple[int, int]:
     """Propose a new point to start the 2D cross approximation"""
@@ -50,7 +42,6 @@ def new_point(
         abs_err[max_diff] = -np.inf
         max_diff = np.argmax(abs_err).astype(int)
         i, j = validation_points[0][max_diff], validation_points[1][max_diff]
-        # print(i, i in approx_state.selected_rows, j, j in approx_state.selected_cols)
 
     # print(
     #     np.sqrt(err_sq),
@@ -60,7 +51,7 @@ def new_point(
     # )
     # approx_state.selected_rows = np.append(approx_state.selected_rows, i)
     # approx_state.selected_cols = np.append(approx_state.selected_cols, j)
-    return i, j
+    return int(i), int(j)
 
 
 def end_cross_approx(
@@ -91,9 +82,11 @@ def end_cross_approx(
 
 def validation(
     approx_tensor: np.ndarray,
-    valid_pts: np.ndarray,
+    valid_pts: Tuple[np.ndarray, np.ndarray],
     valid_vals: np.ndarray,
 ) -> Tuple[float, np.ndarray]:
+    """Validate the tensor approximation over the given points."""
+
     approx_vals = approx_tensor[*valid_pts]
     assert valid_vals.shape == approx_vals.shape, (
         f"real values and approximate values have different shapes,"
@@ -105,7 +98,7 @@ def validation(
     validation_nrm_sq = np.sum(valid_vals**2)
     return np.sqrt(validation_err_sq / validation_nrm_sq), validation_err
 
-# TODO: probably we don't need this method, replace it with direct argument access
+
 def product_args(row_args, col_args, rows=None, cols=None):
     """Compute the product of choices of arguments given rows or cols"""
     # print(row_args.shape, col_args.shape)
@@ -122,6 +115,7 @@ def product_args(row_args, col_args, rows=None, cols=None):
     args = np.concat([rargs, cargs], axis=1)
     return args
 
+
 @profile
 def cross(
     tensor_func: TensorFunc,
@@ -130,23 +124,25 @@ def cross(
     max_k: Optional[int] = None,
 ):
     """
-    Implementation of 2D cross approximation from [TODO: insert the paper link]
+    Implementation of cross approximation from Jonas Ballani, Lars Grasedyck,
+    Melanie Kluge, Black box approximation of tensors in hierarchical Tucker
+    format, Linear Algebra and its Applications, Volume 438, Issue 2, 2013,
+    Pages 639-657, ISSN 0024-3795, https://doi.org/10.1016/j.laa.2011.08.010.
 
     It will modify the argument approx_state with results.
     """
     k = 0
     i, j = 0, 0
     old_i, old_j = None, None
-    domain = tensor_func.domain
-    function = tensor_func.function
-    r = np.prod([len(domain[i]) for i in approx_state.lefts]).astype(int)
-    c = np.prod([len(domain[i]) for i in approx_state.rights]).astype(int)
+    function = tensor_func
     row_args = approx_state.row_arg_space
     col_args = approx_state.col_arg_space
     reorder = approx_state.perm_order
+    r = len(row_args)
+    c = len(col_args)
 
     # generate the validation set by sampling from the domain
-    valid_size = 1000
+    valid_size = min(r + c, 5000)
     valid_x = np.random.choice(r, valid_size)
     valid_y = np.random.choice(c, valid_size)
     valid_pts = (valid_x, valid_y)
@@ -155,16 +151,18 @@ def cross(
     valid_vals = function(args)
 
     approx_tensor = np.zeros((r, c), order="F")
-    
+
     # start = time.time()
     # preallocate the space for arguments
     col_arg_num = col_args.shape[1]
     row_arg_num = row_args.shape[1]
 
-    u_args = np.insert(row_args, row_arg_num, np.zeros((col_arg_num,1)), axis=1)
+    u_args = np.insert(
+        row_args, row_arg_num, np.zeros((col_arg_num, 1)), axis=1
+    )
     u_args = u_args[:, reorder]
 
-    v_args = np.insert(col_args, 0, np.zeros((row_arg_num,1)), axis=1)
+    v_args = np.insert(col_args, 0, np.zeros((row_arg_num, 1)), axis=1)
     v_args = v_args[:, reorder]
 
     eval_cache = {}
@@ -172,7 +170,11 @@ def cross(
     while max_k is None or k < max_k:
         # print("iter time:", time.time() - start)
         # start = time.time()
-        for _ in range(3):
+        uk, vk = np.empty(0), np.empty(0)
+        masked_rows, masked_cols = np.empty(0), np.empty(0)
+        row_vals, col_vals = np.empty(1), np.empty(1)
+        gamma = 0.0
+        for iter in range(3):
             if (-1, j) in eval_cache:
                 col_vals = eval_cache[(-1, j)]
             else:
@@ -182,6 +184,9 @@ def cross(
 
                 col_vals = function(u_args)
                 eval_cache[(-1, j)] = col_vals
+
+            # if iter == 0 and k != 0:
+            #     approx_state.cols.append(col_vals)
 
             approx_col_vals = approx_tensor[:, j]
             uk = col_vals - approx_col_vals
@@ -193,9 +198,11 @@ def cross(
             if len(masked_rows) > 0:
                 abs_uk[masked_rows] = -np.inf
 
-            i = np.argmax(abs_uk).astype(int)  # astype to get rid of type errors
+            i = np.argmax(abs_uk).astype(
+                int
+            )  # astype to get rid of type errors
 
-            print("choosing i =", i)
+            # print("choosing i =", i)
 
             # if i == old_i:
             #     break
@@ -207,23 +214,23 @@ def cross(
                     if jj < row_arg_num:
                         v_args[:, ii] = row_args[i][jj]
 
-
-
                 # print(v_args.shape)
                 # print((p, q))
                 row_vals = function(v_args)
                 eval_cache[(i, -1)] = row_vals
-        
+
             vk = row_vals - approx_tensor[i, :]
 
             # print("vk", (u[i:i+1, :]@v.T).shape)
             if vk[j] == 0:
-                print(f"zero {i,j}, checking convergence")
-                if max_k is not None and k >= max_k:
-                    approx_state.tensor = approx_tensor
-                    return 0
+                # print(f"zero {i,j}, checking convergence")
+                # if max_k is not None and k >= max_k:
+                #     approx_state.tensor = approx_tensor
+                #     return 0
 
-                eeps, valid_errs = validation(approx_tensor, valid_pts, valid_vals)
+                eeps, valid_errs = validation(
+                    approx_tensor, valid_pts, valid_vals
+                )
                 i, j = new_point(approx_state, valid_pts, valid_errs)
                 # print("after check_cvg", i, j)
                 continue
@@ -237,7 +244,7 @@ def cross(
             if len(masked_cols) > 0:
                 abs_vk[masked_cols] = -np.inf
             j = np.argmax(abs_vk).astype(int)
-            print("choosing j =", j)
+            # print("choosing j =", j)
             # vk = vk.reshape(q, 1)
 
             if i == old_i and j == old_j:
@@ -246,15 +253,8 @@ def cross(
             old_i = i
             old_j = j
 
-        # err_sq = np.square(np.linalg.norm(uk)) * np.square(np.linalg.norm(vk))
-        # err = np.sqrt((min(p, q) - k) * err_sq)
-        # err = np.sqrt(err_sq)
-
-        # outer_update = np.einsum("i,j->ij", uk, vk)
-        # # outer_update = np.outer(uk, vk)
-        # approx_tensor += np.outer(uk, vk)
         ger = scipy.linalg.get_blas_funcs("ger", [approx_tensor])
-        print(uk.shape, vk.shape, approx_tensor.shape)
+        # print(uk.shape, vk.shape, approx_tensor.shape)
         ger(1.0 / gamma, uk, vk, a=approx_tensor, overwrite_a=1)
         # print(u.shape, uk.shape, v.shape, vk.shape)
         # u_vec = np.einsum("ji,i->j", u[:k], uk)
@@ -275,15 +275,15 @@ def cross(
         # print(k, gamma)
         # remember all ranks and errors in the state
         eeps, valid_errs = validation(approx_tensor, valid_pts, valid_vals)
-        # penalty = (min(p, q) - k) ** 0.5
+        k += 1
+        # penalty = (min(r, c) - k) ** 0.5
         approx_state.ranks_and_errors.append((k, eeps))
         approx_state.selected_rows = np.append(masked_rows, i)
         approx_state.selected_cols = np.append(masked_cols, j)
-        approx_state.rows.append(row_vals)
-        approx_state.cols.append(col_vals)
-        k += 1
+        # approx_state.rows.append(row_vals)
+        # approx_state.cols.append(col_vals)
 
-        print(eeps, k)
+        # print(eeps, k)
         if end_cross_approx(eeps, k, eps, max_k):
             # if err <= eps * nrm:
             approx_state.tensor = approx_tensor
@@ -295,36 +295,3 @@ def cross(
                 return eeps
 
             i, j = new_point(approx_state, valid_pts, valid_errs)
-
-@profile
-def cross_incomplete(
-    tensor_func: TensorFunc,
-    approx_state: CrossApproxState,
-    eps: Optional[float] = None,
-    max_k: Optional[int] = None,
-) -> float:
-    """
-    Implementation of 2D cross approximation from [TODO: insert the paper link]
-
-    It will modify the argument approx_state with results.
-    """
-    k = 0
-    i, j = 0, 0
-    domain = tensor_func.domain
-    function = tensor_func.function
-    r = np.prod([len(domain[i]) for i in approx_state.lefts]).astype(int)
-    c = np.prod([len(domain[i]) for i in approx_state.rights]).astype(int)
-    row_args = approx_state.row_arg_space
-    col_args = approx_state.col_arg_space
-    reorder = approx_state.perm_order
-
-    # generate the validation set by sampling from the domain
-    valid_size = 1000
-    valid_x = np.random.choice(r, valid_size)
-    valid_y = np.random.choice(c, valid_size)
-    valid_pts = (valid_x, valid_y)
-    args = np.concat((row_args[valid_x], col_args[valid_y]), axis=-1).T
-    args = args[reorder]
-    valid_vals = function(args)
-
-    approx_tensor = np.zeros((r, c), order="F")

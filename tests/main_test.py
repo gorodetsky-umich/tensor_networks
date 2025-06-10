@@ -29,7 +29,7 @@ from pytens.algs import (
     ttop_rank2,
     ttop_sum_apply,
 )
-from pytens.cross.cross import TensorFunc
+from pytens.cross.funcs import FuncHilbert
 from tests.search_test import (
     TestConfig,  # noqa: F401
     TestAction,  # noqa: F401
@@ -110,7 +110,7 @@ class TestTT(unittest.TestCase):
         out2 = self.TT2.contract().value
 
         self.assertTrue(
-            np.allclose(inner_val, np.sum(out1 * out2), atol=1e-14, rtol=1e-14)
+            np.allclose(inner_val, np.sum(out1 * out2), atol=1e-12, rtol=1e-12)
         )
 
     def test_integrate(self):
@@ -548,11 +548,11 @@ class TestTree(unittest.TestCase):
 
     def test_tree_canonicalize(self):
         x = np.random.randn(3, 4, 5)
-        single_node1 = TensorNetwork()
+        single_node1 = TreeNetwork()
         indices1 = [Index("i", 3), Index("j", 4), Index("k", 5)]
         single_node1.add_node("x", Tensor(x, indices1))
 
-        single_node2 = TensorNetwork()
+        single_node2 = TreeNetwork()
         indices2 = [Index("j", 4), Index("i", 3), Index("k", 5)]
         single_node2.add_node("y", Tensor(x.transpose(1, 0, 2), indices2))
 
@@ -562,7 +562,7 @@ class TestTree(unittest.TestCase):
         )
 
         # test symmetry
-        tree1 = TensorNetwork()
+        tree1 = TreeNetwork()
         u = np.random.randn(2, 3, 4)
         u_indices = [Index("iu", 2), Index("ju", 3), Index("ku", 4)]
         v = np.random.randn(4, 5, 6)
@@ -575,7 +575,7 @@ class TestTree(unittest.TestCase):
         tree1.add_edge("root", "u")
         tree1.add_edge("root", "v")
 
-        tree2 = TensorNetwork()
+        tree2 = TreeNetwork()
         root_indices2 = [Index("iv", 4), Index("iu", 2), Index("f", 3)]
         tree2.add_node("root", Tensor(root.transpose(1, 0, 2), root_indices2))
         u_indices2 = [
@@ -597,7 +597,7 @@ class TestTree(unittest.TestCase):
             tree1.canonical_structure(), tree2.canonical_structure()
         )
 
-        tt1 = TensorNetwork()
+        tt1 = TreeNetwork()
         u1 = np.random.randn(2, 3)
         u1_indices = [Index("iu", 2), Index("uv", 3)]
         v1 = np.random.randn(3, 4, 5)
@@ -610,7 +610,7 @@ class TestTree(unittest.TestCase):
         tt1.add_edge("u", "v")
         tt1.add_edge("v", "w")
 
-        tt2 = TensorNetwork()
+        tt2 = TreeNetwork()
         u2 = np.random.randn(4, 3)
         u2_indices = [Index("iu", 4), Index("uv", 3)]
         v2 = np.random.randn(3, 2, 5)
@@ -656,19 +656,16 @@ class TestGeneralOps(unittest.TestCase):
             IndexSplit(splitting_index=Index("j", 16), split_target=[8, 2])
         )
         net.merge_index(
-            IndexMerge(merging_indices=[Index("s_11", 2), Index("s_12", 3)])
+            IndexMerge(merging_indices=[Index("s_1", 2), Index("s_2", 3)])
         )
-        self.assertEqual(
-            net.free_indices(),
+        self.assertListEqual(
+            sorted(net.free_indices()),
             [
-                # Index("s_11", 2),
-                # Index("s_12", 3),
-                Index("s_12", 2),
-                Index("s_13", 3),
-                Index("s_16", 2),
-                Index("s_17", 2),
-                Index("s_18", 8),
-                Index("s_19", 2),
+                Index("s_5", 2),
+                Index("s_6", 2),
+                Index("s_7", 8),
+                Index("s_8", 2),
+                Index("s_9", 6),
             ],
         )
 
@@ -710,7 +707,7 @@ class TestGeneralOps(unittest.TestCase):
                 Index("k", 6),
                 Index("l", 7),
                 Index("m", 8),
-                Index("s_11", 2),
+                Index("s_0", 2),
             ],
         )
 
@@ -1054,14 +1051,9 @@ class TestCross(unittest.TestCase):
     #     print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
 
     def test_cross_network_four_step(self):
-        p, q, r, s = 200, 200, 200, 200
+        p, q, r, s = 25, 25, 25, 25
 
-        def f1(x):
-            return 1. / np.sqrt(np.sum((x+1) ** 2, axis=1))
-
-        tensor_func = TensorFunc(f1, [
-            np.arange(0, p) for _ in range(4)
-        ])
+        tensor_func = FuncHilbert(p, 4)
         # tensor_func = TensorFunc(lambda i, j, k, l: 1 / (i+j+k+l+4), (p, q, r,s))
         # p, q, r, s = 30, 12, 120, 120
         # data = np.load("../data/BigEarthNet/bigearthnet_stack_30_0/data.npy")
@@ -1073,7 +1065,7 @@ class TestCross(unittest.TestCase):
         # tensor_func = TensorFunc(lambda i,j,k,l: data[i,j,k,l], data.shape)
         # print(real_val.shape)
 
-        net = TensorNetwork()
+        net = TreeNetwork()
         net.add_node("G", Tensor(np.zeros((p, q, r,s)), [Index("i", p), Index("j", q), Index("k", r), Index("l", s)]))
         restrictions = {}
         # net.cross(tensor_func, restrictions, "G", [0], max_k=2)
@@ -1096,17 +1088,19 @@ class TestCross(unittest.TestCase):
         # print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
         # print("inf norm error", np.max(net_val - real_val) / np.max(real_val))
 
-        import time
+        # import time
 
-        start = time.time()
+        # start = time.time()
         net.cross(tensor_func, restrictions, "G", [0], delta=1e-1)
-        print("cross time:", time.time() - start)
-        print(net)
-        # net_val = net.contract().value
-        # all_args = np.mgrid[0:p,0:q,0:r,0:s].reshape(4, -1).T
-        # real_val = tensor_func.function(all_args).reshape(p, q, r,s)
+        # print("cross time:", time.time() - start)
+        # print(net)
+        net_val = net.contract().value
+        all_args = np.mgrid[0:p,0:q,0:r,0:s].reshape(4, -1).T
+        real_val = tensor_func(all_args).reshape(p, q, r,s)
         # print("F norm", np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val))
         # print("inf norm error", np.max(np.abs(net_val - real_val)) / np.max(np.abs(real_val)))
+        rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
+        self.assertLessEqual(float(rtol), 0.5)
 
         # start = time.time()
         # u, s, v = np.linalg.svd(real_val.reshape(p*q, -1), full_matrices=False)

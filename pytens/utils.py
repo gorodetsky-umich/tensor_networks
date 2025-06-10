@@ -1,6 +1,6 @@
 """Some utility functions."""
 
-from typing import Optional, Sequence
+from typing import Optional, List
 from dataclasses import dataclass
 
 import numpy as np
@@ -101,9 +101,7 @@ def delta_svd(
     )
 
 
-
-
-def flatten_lists(xss):
+def flatten_lists(xss: List) -> List:
     """Flatten nested lists."""
 
     if isinstance(xss, list):

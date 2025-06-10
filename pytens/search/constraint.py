@@ -184,7 +184,11 @@ class ConstraintSearch:
             deviation = eps - sums
             # print(eps, deviation)
             # find the indices where after it the deviation are mostly positive
-            cnts = np.convolve(deviation >= 0, np.ones(3, dtype=int), "same")
+            cnts = np.convolve(
+                deviation >= 0,
+                np.ones(min(3, len(deviation)), dtype=int),
+                "same",
+            )
             pos_cnt = cnts >= 0
             within_range = np.logical_and(deviation >= 0, deviation <= err)
             valid_errors = np.where(np.logical_and(within_range, pos_cnt))[0]

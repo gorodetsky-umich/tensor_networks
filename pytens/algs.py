@@ -15,7 +15,8 @@ import opt_einsum as oe
 import networkx as nx
 import matplotlib.pyplot as plt
 
-from .cross.cross import (cross,
+from .cross.cross import (
+    cross,
     CrossApproxState,
     product_args,
     TensorFunc,
@@ -277,12 +278,12 @@ class Tensor:
     def _index_to_args(
         self,
         selected_indices: Sequence[int],
-        index_map: Dict[Index, Sequence[Index]],
+        index_map: Dict[Index, List[Index]],
         restrictions: Dict[Index, np.ndarray],
     ) -> Tuple[np.ndarray, List[Index]]:
         """
-        index_map: the map from local indices to global free indices
-        restrictions: the map from local indices to their restricted global choices
+        index_map: from local indices to global free indices
+        restrictions: from local indices to their restricted global choices
         """
         sizes = [self.indices[i].size for i in selected_indices]
         # print(sizes, restrictions)
@@ -292,7 +293,8 @@ class Tensor:
             f"unraveled index does not match the given dimensions, "
             f"expected {len(sizes)}, but get {len(args)}"
         )
-        global_args, order = [], []
+        global_args: List[np.ndarray] = []
+        order: List[Index] = []
 
         for iarg, arg in enumerate(args):
             # print(arg.shape)
@@ -322,7 +324,7 @@ class Tensor:
     def cross_approx(
         self,
         tensor_func: TensorFunc,
-        index_map: Dict[Index, Sequence[Index]],
+        index_map: Dict[Index, List[Index]],
         restrictions: Dict[Index, np.ndarray],
         lefts: Sequence[int],
         eps: Optional[float] = None,
@@ -374,14 +376,35 @@ class Tensor:
         )
 
         k = len(rows)
-        u = np.array(approx_state.cols).T
+        col_arg_num = rargs.shape[1]
+        row_arg_num = largs.shape[1]
+
+        u_args = np.insert(
+            largs, row_arg_num, np.zeros((col_arg_num, 1)), axis=1
+        )
+        u_args = u_args[:, perm_order]
+        u = np.empty((lsz, k))
+        for jidx, j in enumerate(cols):
+            for ii, jj in enumerate(perm_order):
+                if jj >= row_arg_num:
+                    u_args[:, ii] = rargs[j][jj - row_arg_num]
+
+            # print(u_args.shape, u.shape)
+            u[:, jidx] = tensor_func(u_args)
 
         s_args = product_args(largs, rargs, rows=rows, cols=cols)
-        s = tensor_func(s_args[:,perm_order]).reshape(k, k).T
+        s = tensor_func(s_args[:, perm_order]).reshape(k, k).T
 
         u = u @ np.linalg.pinv(s)
 
-        v = np.array(approx_state.rows)
+        v_args = np.insert(rargs, 0, np.zeros((row_arg_num, 1)), axis=1)
+        v_args = v_args[:, perm_order]
+        v = np.empty((k, rsz))
+        for iidx, i in enumerate(rows):
+            for ii, jj in enumerate(perm_order):
+                if jj < row_arg_num:
+                    v_args[:, ii] = largs[i][jj]
+            v[iidx] = tensor_func(v_args)
 
         u = u.reshape([self.indices[i].size for i in lefts] + [-1])
         u_indices = [self.indices[i] for i in lefts]
@@ -474,7 +497,9 @@ class Tensor:
         for arr in [self.value, other.value]:
             end = start + arr.shape[block_start:]
             # Create a slice object for each dimension
-            slice_suffix = tuple(slice(start[i], end[i]) for i in range(len(end)))
+            slice_suffix = tuple(
+                slice(start[i], end[i]) for i in range(len(end))
+            )
             slices = slice_prefix + slice_suffix
             # Place the current array on the diagonal
             large_array[slices] = arr
@@ -486,6 +511,7 @@ class Tensor:
             large_indices.append(Index(ind.name, large_array.shape[i]))
 
         return Tensor(large_array, large_indices)
+
 
 # @dataclass(frozen=True, eq=True)
 @dataclass(eq=True)
@@ -741,7 +767,7 @@ class TensorNetwork:  # pylint: disable=R0904
     def integrate(
         self,
         indices: Sequence[Index],
-        weights: Sequence[Union[np.ndarray, float]],
+        weights: Union[Sequence[np.ndarray], Sequence[float], np.ndarray],
     ) -> "TensorNetwork":
         """Integrate over the chosen indices. So far just uses simpson rule."""
 
@@ -928,9 +954,10 @@ class TensorNetwork:  # pylint: disable=R0904
     def split_index(self, split_op: IndexSplit) -> Optional[NodeName]:
         """Split free indices into smaller parts"""
         for n in self.network.nodes:
+            n = typing.cast(NodeName, n)
             tensor = self.node_tensor(n)
             tensor = tensor.split_indices(split_op)
-            rename_map = {}
+            rename_map: Dict[IndexName, IndexName] = {}
             new_indices = []
             used_results_cnt = 0
             for ind in tensor.indices:
@@ -953,11 +980,14 @@ class TensorNetwork:  # pylint: disable=R0904
                 self.set_node_tensor(n, tensor)
                 return n
 
-    def merge_index(self, merge_op: IndexMerge):
+        return None
+
+    def merge_index(self, merge_op: IndexMerge) -> None:
         """Merge specified free indices"""
         for n in self.network.nodes:
             tensor = self.node_tensor(n)
 
+            new_ind: IndexName = ""
             if merge_op.merge_result is None:
                 new_ind = self.fresh_index()
             else:
@@ -971,14 +1001,14 @@ class TensorNetwork:  # pylint: disable=R0904
         name: NodeName,
         subnet: "TensorNetwork",
         split_info: Optional[List[Union[IndexSplit, IndexMerge]]] = None,
-    ):
+    ) -> None:
         """Replace a node with a sub-tensor network."""
         if name not in self.network.nodes:
             return
 
         ind_names = [ind.name for ind in self.all_indices()]
         subnet_free_indices = subnet.free_indices()
-        index_subst = {}
+        index_subst: Dict[IndexName, IndexName] = {}
         node_subst = {}
         for m in subnet.network.nodes:
             m_tensor = subnet.node_tensor(m)
@@ -1141,8 +1171,10 @@ class TensorNetwork:  # pylint: disable=R0904
             new_graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
         )
 
+
 class TreeNetwork(TensorNetwork):
     """Class for arbitrary tree-structured networks"""
+
     def round(
         self, node_name: NodeName, delta: float, visited: Optional[set] = None
     ) -> Tuple[NodeName, float]:
@@ -1281,7 +1313,6 @@ class TreeNetwork(TensorNetwork):
                 common_index = None
                 for n in self.network.neighbors(merged):
                     n_indices = self.node_tensor(n).indices
-                    # print(n, merged, n not in visited, visited[n], index, n_indices)
                     if index in n_indices:
                         common_index = i
 
@@ -1383,11 +1414,10 @@ class TreeNetwork(TensorNetwork):
             return hash((self_free_indices, sorted_children_rs))
 
         return _postorder(root)
-    
 
     def leaf_indices(
         self, visited: Set[NodeName], node_name: NodeName
-    ) -> Sequence:
+    ) -> List:
         """Get all leaf indices for the subtree rooted at the given node."""
         indices = self.node_tensor(node_name).indices
         perm = []
@@ -1438,7 +1468,7 @@ class TreeNetwork(TensorNetwork):
 
             # create a restriction for each internal index
             if ind not in free_indices:
-                # extract the restrictions at the corresponding positions of index map
+                # extract the restrictions at the corresponding positions
                 local_args = []
                 for args in restrictions[ind]:
                     arg_list = []
@@ -1479,10 +1509,11 @@ class TreeNetwork(TensorNetwork):
         # print(rcs)
 
         return u_name, v_name, st
-    
+
     def node_by_free_index(self, index: IndexName) -> NodeName:
         """Identify the node in the network containing the given free index"""
         for n in self.network.nodes:
+            n = typing.cast(NodeName, n)
             tensor = self.node_tensor(n)
             if index in [ind.name for ind in tensor.indices]:
                 return n
@@ -1492,14 +1523,17 @@ class TreeNetwork(TensorNetwork):
     @dataclass
     class DimTreeNode:
         """Class for a dimension tree node"""
+
         indices: List[Index]
-        children: Sequence["TreeNetwork.DimTreeNode"]
+        children: List["TreeNetwork.DimTreeNode"]
         node: NodeName
 
         def __lt__(self, other: Self) -> bool:
             return sorted(self.indices) < sorted(other.indices)
 
-        def sorted_indices(self, net: TensorNetwork) -> Tuple[int, Sequence[int]]:
+        def sorted_indices(
+            self, net: TensorNetwork
+        ) -> Tuple[int, Sequence[int]]:
             """sort the children by free indices
             and get the corresponding children nodes
             """
@@ -1534,10 +1568,13 @@ class TreeNetwork(TensorNetwork):
         Assume that the tree is rooted at the give node.
         """
         free_indices = self.free_indices()
+
         # do the dfs traversal starting from the root
-        def dfs(visited: Set[NodeName], node: NodeName) -> TreeNetwork.DimTreeNode:
+        def dfs(
+            visited: Set[NodeName], node: NodeName
+        ) -> TreeNetwork.DimTreeNode:
             visited.add(node)
-            children: Sequence[TreeNetwork.DimTreeNode] = []
+            children: List[TreeNetwork.DimTreeNode] = []
             for nbr in self.network.neighbors(node):
                 if nbr not in visited:
                     nbr_tree = dfs(visited, nbr)
@@ -1552,9 +1589,10 @@ class TreeNetwork(TensorNetwork):
 
         return dfs(set(), root)
 
-
-    def __add__(self, other: "TreeNetwork") -> "TreeNetwork":
+    def __add__(self, other: Any) -> Self:
         """Add two tree networks."""
+        if not isinstance(other, TreeNetwork):
+            raise NotImplementedError
 
         assert nx.is_isomorphic(self.network, other.network)
 
@@ -1565,9 +1603,12 @@ class TreeNetwork(TensorNetwork):
         other_root = other.node_by_free_index(root_ind.name)
         other_tree = other.dimension_tree(other_root)
 
-        result_net = TreeNetwork()
-        
-        def add(tree1: TreeNetwork.DimTreeNode, tree2: TreeNetwork.DimTreeNode):
+        result_net = copy.deepcopy(self)
+        result_net.network.clear()
+
+        def _add(
+            tree1: TreeNetwork.DimTreeNode, tree2: TreeNetwork.DimTreeNode
+        ) -> None:
             tensor1 = self.node_tensor(tree1.node)
             tensor2 = other.node_tensor(tree2.node)
             assert len(tensor1.indices) == len(tensor2.indices)
@@ -1583,17 +1624,19 @@ class TreeNetwork(TensorNetwork):
             children1 = sorted(tree1.children, key=lambda x: x.indices)
             children2 = sorted(tree2.children, key=lambda x: x.indices)
             for c1, c2 in zip(children1, children2):
-                add(c1, c2)
+                _add(c1, c2)
                 result_net.add_edge(tree1.node, c1.node)
 
-        add(self_tree, other_tree)
+        _add(self_tree, other_tree)
         # round the result to compress the ranks
         result_net.round(self_root, delta=1e-6)
 
         return result_net
-    
-    def __mul__(self, other: "TreeNetwork") -> "TreeNetwork":
+
+    def __mul__(self, other: Any) -> Self:
         """Elementwise multiplication of two tree networks."""
+        if not isinstance(other, TreeNetwork):
+            raise NotImplementedError
 
         assert nx.is_isomorphic(self.network, other.network)
 
@@ -1604,15 +1647,18 @@ class TreeNetwork(TensorNetwork):
         other_root = other.node_by_free_index(root_ind.name)
         other_tree = other.dimension_tree(other_root)
 
-        result_net = TreeNetwork()
-        
-        def mul(tree1: TreeNetwork.DimTreeNode, tree2: TreeNetwork.DimTreeNode):
+        result_net = copy.deepcopy(self)
+        result_net.network.clear()
+
+        def _mul(
+            tree1: TreeNetwork.DimTreeNode, tree2: TreeNetwork.DimTreeNode
+        ) -> None:
             tensor1 = self.node_tensor(tree1.node)
             tensor2 = other.node_tensor(tree2.node)
             assert len(tensor1.indices) == len(tensor2.indices)
             # permute the indices to follow the canonical order
             # free indices, children indices, parent indices
-            free_cnt, perm = tree1.sorted_indices(self)
+            _, perm = tree1.sorted_indices(self)
             tensor1 = tensor1.permute(perm)
             _, perm = tree2.sorted_indices(other)
             tensor2 = tensor2.permute(perm)
@@ -1622,25 +1668,31 @@ class TreeNetwork(TensorNetwork):
             children1 = sorted(tree1.children, key=lambda x: x.indices)
             children2 = sorted(tree2.children, key=lambda x: x.indices)
             for c1, c2 in zip(children1, children2):
-                mul(c1, c2)
+                _mul(c1, c2)
                 result_net.add_edge(tree1.node, c1.node)
 
-        mul(self_tree, other_tree)
+        _mul(self_tree, other_tree)
         # round the result to compress the ranks
         result_net.round(self_root, delta=1e-6)
 
         return result_net
 
-class TensorTrain(TensorNetwork):
-    """Class for tensor trains"""
-    def __init__(self):
-        super().__init__()
 
-    def __add__(self, other: Self) -> Self:
+class TensorTrain(TreeNetwork):
+    """Class for tensor trains"""
+
+    def __add__(self, other: Any) -> Self:
         """Add two tensor trains.
 
         New tensor has same names as self
         """
+        if isinstance(other, TensorTrain):
+            pass
+        elif isinstance(other, TreeNetwork):
+            return super().__add__(other)
+        else:
+            raise NotImplementedError
+
         assert nx.is_isomorphic(self.network, other.network)
 
         new_tens = copy.deepcopy(self)
@@ -1663,6 +1715,13 @@ class TensorTrain(TensorNetwork):
 
         New tensor has same names as self
         """
+        if isinstance(other, TensorTrain):
+            pass
+        elif isinstance(other, TreeNetwork):
+            return super().__add__(other)
+        else:
+            raise NotImplementedError
+
         assert nx.is_isomorphic(self.network, other.network)
 
         new_tens = copy.deepcopy(self)
@@ -1677,6 +1736,7 @@ class TensorTrain(TensorNetwork):
             new_tens.set_node_tensor(node1, tens1.mult(tens2, free_indices))
 
         return new_tens
+
 
 def vector(
     name: Union[str, int], index: Index, value: np.ndarray
@@ -1754,9 +1814,7 @@ def tt_rank1(indices: List[Index], vals: List[np.ndarray]) -> TensorTrain:
     return tt
 
 
-def tt_separable(
-    indices: List[Index], funcs: List[np.ndarray]
-) -> TensorTrain:
+def tt_separable(indices: List[Index], funcs: List[np.ndarray]) -> TensorTrain:
     """Rank 2 function formed by sums of functions of individual dimensions."""
 
     dim = len(indices)
@@ -1972,10 +2030,7 @@ def tt_gramsvd_round(tn: TensorTrain, eps: float) -> TensorTrain:
     return tn
 
 
-def tt_svd_round(
-    tn: TensorTrain,
-    eps: float
-) -> TensorTrain:
+def tt_svd_round(tn: TensorTrain, eps: float) -> TensorTrain:
     """Round a tensor train.
 
     Nodes should be integers 0,1,2,...,dim-1
@@ -2191,9 +2246,9 @@ def next_gram_sum(
 
 
 def tt_sum_gramsvd_round(
-    factors_list: list[TensorNetwork],
+    factors_list: list[TensorTrain],
     eps: float = 1e-14,
-) -> TensorNetwork:
+) -> TensorTrain:
     """Gram-rounding of sum of tensor trains."""
 
     def core_info(k: int) -> tuple[list, list]:
@@ -2275,16 +2330,16 @@ class TTRandRound:
     """
 
     def __init__(
-        self, y: Union[TensorNetwork, List[TensorNetwork]], target_ranks: List
+        self, y: Union[TensorTrain, List[TensorTrain]], target_ranks: List
     ):
         self.y = y
         self.target_ranks = target_ranks
 
-        if isinstance(y, List) and isinstance(y[0], TensorNetwork):
+        if isinstance(y, List) and isinstance(y[0], TensorTrain):
             self.ns = len(y)
             self.d = y[0].network.number_of_nodes()
 
-        elif isinstance(y, TensorNetwork):
+        elif isinstance(y, TensorTrain):
             self.ns = 1
             self.d = y.network.number_of_nodes()
 
@@ -2342,7 +2397,7 @@ class TTRandRound:
 
         raise ValueError("Invalid option")
 
-    def rand_then_orth(self) -> TensorNetwork:
+    def rand_then_orth(self) -> TensorTrain:
         """Implements Algorithm 3.2 in reference [1]"""
 
         if isinstance(self.y, TensorNetwork):
@@ -2371,7 +2426,7 @@ class TTRandRound:
                         being used to round a TT-sum"
         )
 
-    def rto_rounding_ttsum(self) -> TensorNetwork:
+    def rto_rounding_ttsum(self) -> TensorTrain:
         """Implements Algorithm 3.4 in reference [1]"""
 
         if isinstance(self.y, List):
@@ -2447,7 +2502,7 @@ class TTRandRound:
         return res
 
 
-def tt_randomized_round(y: TensorNetwork, target_ranks: List) -> TensorNetwork:
+def tt_randomized_round(y: TensorTrain, target_ranks: List) -> TensorNetwork:
     """Executes randomized rounding for a TT TensorNetwork"""
 
     rand_setup = TTRandRound(y, target_ranks)
@@ -2455,8 +2510,8 @@ def tt_randomized_round(y: TensorNetwork, target_ranks: List) -> TensorNetwork:
 
 
 def tt_sum_randomized_round(
-    y: List[TensorNetwork], target_ranks: List
-) -> TensorNetwork:
+    y: List[TensorTrain], target_ranks: List
+) -> TensorTrain:
     """Executes randomized rounding for a TT TensorNetwork"""
 
     rand_setup = TTRandRound(y, target_ranks)
@@ -2464,7 +2519,7 @@ def tt_sum_randomized_round(
 
 
 def tt_rand_precond_svd_round(
-    tn: Union[TensorNetwork, List[TensorNetwork]],
+    tn: Union[TensorTrain, List[TensorTrain]],
     eps: float,
     rank_bound: list[int],
 ) -> TensorNetwork:
@@ -2666,11 +2721,11 @@ def ttop_sum(
 
 
 def tt_sum(
-    tt_in: List[TensorNetwork],
-) -> TensorNetwork:
+    tt_in: List[TensorTrain],
+) -> TensorTrain:
     """Sum a set of tensor trains."""
 
-    tt_out = TensorNetwork()
+    tt_out = TensorTrain()
     dim = tt_in[0].dim()
     for ii, node in enumerate(tt_in[0].network.nodes):
         inds = tt_in[0].node_tensor(node).indices
@@ -2838,7 +2893,7 @@ def gmres(  # pylint: disable=R0913,R0917
     eps: float = 1e-5,
     round_eps: float = 1e-10,
     maxiter: int = 100,
-) -> TensorNetwork:
+) -> Tuple[TensorNetwork, float]:
     """Perform GMRES.
     VERY HACKY
     """
@@ -2926,7 +2981,7 @@ def gmres(  # pylint: disable=R0913,R0917
     return x, resid
 
 
-def rand_tree(indices: List[Index], ranks: List[int]) -> TensorNetwork:
+def rand_tree(indices: List[Index], ranks: List[int]) -> TreeNetwork:
     """Return a random tensor tree."""
 
     ndims = len(indices)
@@ -2964,7 +3019,7 @@ def rand_tree(indices: List[Index], ranks: List[int]) -> TensorNetwork:
         # print("finalizing parent of", node, "as", p)
         parent[node] = (p, len(nodes) - 1)
 
-    tree = TensorNetwork()
+    tree = TreeNetwork()
 
     for i in range(num_of_nodes):
         i_ranks = []

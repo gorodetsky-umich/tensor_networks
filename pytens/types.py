@@ -31,6 +31,7 @@ class Index:
     def __gt__(self, other: Self) -> bool:
         return str(self.name) > str(other.name)
 
+
 @dataclass
 class SVDConfig:
     """Configuration fields for SVD in tensor networks."""
@@ -46,7 +47,7 @@ class IndexMerge(pydantic.BaseModel):
     merging_positions: Optional[Sequence[int]] = None
     merge_result: Optional[Index] = None
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash((type(self),) + tuple(self.__dict__.values()))
 
 
@@ -57,5 +58,5 @@ class IndexSplit(pydantic.BaseModel):
     split_target: Sequence[int]
     split_result: Optional[Sequence[Index]] = None
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash((type(self),) + tuple(self.__dict__.values()))

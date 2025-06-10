@@ -215,6 +215,7 @@ class PartitionSearch:
             if net.cost() < self.best_network.cost():
                 self.best_network = net
                 self.unused_delta = unused_delta
+                self.best_acs = st.past_actions
 
     def replay(
         self,
