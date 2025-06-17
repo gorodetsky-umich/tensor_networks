@@ -1,17 +1,20 @@
 """Utility function for structure search."""
 
 import os
-from typing import Tuple, List, Dict, Optional, Sequence
+from typing import Tuple, List, Dict, Optional, Self, Union, Literal
 
 import numpy as np
 import pydantic
 
-from pytens.search.state import SearchState, Action
+from pytens.search.state import SearchState
 from pytens.algs import TreeNetwork, Tensor
+from pytens.cross.funcs import TensorFunc
 from pytens.types import IndexSplit, IndexMerge
 
 
 class SearchStats(pydantic.BaseModel):
+    """Statistics collected during the search process"""
+
     best_cost: List[Tuple[float, float]] = []
     costs: List[Tuple[float, float]] = []
     errors: List[Tuple[float, float]] = []
@@ -20,34 +23,60 @@ class SearchStats(pydantic.BaseModel):
 
     # results
     count: int = 0
-    time: float = 0
-    preprocess_time: float = 0
-    cr_core: float = 0
-    cr_start: float = 0
-    re: float = 0
+    preprocess_time: float = 0.0
+    search_start: float = 0.0
+    search_end: float = 0.0
+    cr_core: float = 0.0
+    cr_start: float = 0.0
+    re_f: float = 0.0
+    re_max: float = 0.0
 
     def incr_unique(self, key: int):
+        """Increment the unique counter."""
         self.unique[key] = self.unique.get(key, 0) + 1
 
 
 class SearchResult:
+    """Result returned by the search process"""
+
     stats: SearchStats
     unused_delta: float = 0.0
-    best_network: Optional[TreeNetwork] = None
-    best_actions: Optional[Sequence[Action]] = None
+    best_state: Optional[SearchState] = None
     best_solver_cost: int = -1
 
     def __init__(
         self,
         stats=SearchStats(),
-        best_network=None,
-        best_actions=None,
+        best_state=None,
         unused_delta=0.0,
     ):
         self.stats = stats
-        self.best_network = best_network
-        self.best_actions = best_actions
+        self.best_state = best_state
         self.unused_delta = unused_delta
+
+    def __lt__(self, other: Self) -> bool:
+        if self.best_state is None:
+            return False
+
+        if other.best_state is None:
+            return True
+
+        if self.best_state < other.best_state:
+            return True
+
+        if self.best_state == other.best_state:
+            return self.unused_delta > other.unused_delta
+
+        return False
+
+    def update_best_state(self, other: Self) -> Self:
+        """Update the field of best_state if other is better"""
+        assert other.best_state is not None
+        if other < self:
+            self.best_state = other.best_state
+            self.unused_delta = other.unused_delta
+
+        return self
 
 
 def approx_error(tensor: Tensor, net: TreeNetwork) -> float:
@@ -84,6 +113,29 @@ def log_stats(
     search_stats.unique[ukey] = search_stats.unique.get(ukey, 0) + 1
 
 
+def rtol(
+    base_tensor: np.ndarray,
+    approx_tensor: np.ndarray,
+    norm: Literal["F", "M"] = "F",
+) -> float:
+    """
+    Compute the relative error between two given tensors
+    on the specified norms.
+    """
+    if norm == "F":
+        return float(
+            np.linalg.norm(base_tensor - approx_tensor)
+            / np.linalg.norm(base_tensor)
+        )
+
+    if norm == "M":
+        return np.max(abs(base_tensor - approx_tensor)) / np.max(
+            abs(base_tensor)
+        )
+
+    raise ValueError("unsupported norm type")
+
+
 def remove_temp_dir(temp_dir, temp_files):
     """Remove temporary npz files"""
     try:
@@ -107,9 +159,9 @@ def reshape_indices(reshape_ops, indices, data):
             for ind_group in indices:
                 new_ind_group = []
                 for ind in ind_group:
-                    if ind == reshape_op.splitting_index:
-                        assert reshape_op.split_result is not None
-                        new_ind_group.extend(reshape_op.split_result)
+                    if ind == reshape_op.index:
+                        assert reshape_op.result is not None
+                        new_ind_group.extend(reshape_op.result)
                     else:
                         new_ind_group.append(ind)
 
@@ -120,14 +172,14 @@ def reshape_indices(reshape_ops, indices, data):
             for group_idx, ind_group in enumerate(indices):
                 new_ind_group = []
                 for ind in ind_group:
-                    if ind in reshape_op.merging_indices:
+                    if ind in reshape_op.indices:
                         unchanged = [
                             ind
                             for ind in ind_group
-                            if ind not in reshape_op.merging_indices
+                            if ind not in reshape_op.indices
                         ]
-                        assert reshape_op.merge_result is not None
-                        new_ind_group = [reshape_op.merge_result] + unchanged
+                        assert reshape_op.result is not None
+                        new_ind_group = [reshape_op.result] + unchanged
                         # we want to permute these indices before comparison
                         cnt_before = sum(len(g) for g in indices[:group_idx])
                         cnt_after = sum(
@@ -135,7 +187,7 @@ def reshape_indices(reshape_ops, indices, data):
                         )
                         curr_perm = [
                             ind_group.index(ind) + cnt_before
-                            for ind in reshape_op.merging_indices
+                            for ind in reshape_op.indices
                         ] + [
                             ind_group.index(ind) + cnt_before
                             for ind in unchanged
@@ -159,3 +211,19 @@ def reshape_indices(reshape_ops, indices, data):
         indices = new_indices
 
     return indices, data
+
+
+def init_state(
+    data_tensor: Union[TreeNetwork, TensorFunc], delta
+) -> SearchState:
+    if isinstance(data_tensor, TreeNetwork):
+        return SearchState(data_tensor, delta)
+
+    if isinstance(data_tensor, TensorFunc):
+        net = TreeNetwork()
+        net.add_node("G0", Tensor(np.empty(0), data_tensor.indices))
+        return SearchState(net, delta)
+
+    raise TypeError(
+        f"Expect data tensors to have types TreeNetwork or TensorFunc, but get {type(data_tensor)}"
+    )

@@ -1,6 +1,6 @@
 """Search algorithsm for tensor networks."""
 
-from typing import Optional
+from typing import Union
 import time
 import itertools
 
@@ -13,7 +13,12 @@ from pytens.search.exhaustive import DFSSearch, BFSSearch
 from pytens.search.partition import PartitionSearch
 from pytens.search.hierarchical.top_down import TopDownSearch
 from pytens.search.hierarchical.error_dist import AlphaErrorDist
-from pytens.search.utils import approx_error, SearchResult, reshape_indices
+from pytens.search.utils import (
+    approx_error,
+    SearchResult,
+    reshape_indices,
+    rtol,
+)
 
 
 class SearchEngine:
@@ -22,26 +27,36 @@ class SearchEngine:
     def __init__(self, config: SearchConfig):
         self.config = config
 
-    def partition_search(
-        self, net: TreeNetwork, tensor_func: Optional[TensorFunc] = None
-    ):
+    def partition_search(self, data_tensor: Union[TreeNetwork, TensorFunc]):
         """Perform an search with output-directed splits + constraint solve."""
 
         engine = PartitionSearch(self.config)
-        for result in engine.search(net, tensor_func=tensor_func):
-            assert result.best_network is not None
+        result = engine.search(data_tensor)
+        assert result.best_state is not None
 
-            free_indices = net.free_indices()
-            unopt_size = float(np.prod([i.size for i in free_indices]))
-            best_size = result.best_network.cost()
-            best_val = result.best_network.contract().value
-            net_val = net.contract().value
-            net_norm = np.linalg.norm(net_val)
-            result.stats.cr_core = unopt_size / best_size
-            result.stats.cr_start = net.cost() / best_size
-            if net_norm != 0:
-                result.stats.re = float(np.linalg.norm(best_val) / net_norm)
-            return result
+        free_indices = data_tensor.free_indices()
+        unopt_size = float(np.prod([i.size for i in free_indices]))
+        best_size = result.best_state.network.cost()
+        best_val = result.best_state.network.contract().value
+
+        if isinstance(data_tensor, TreeNetwork):
+            net_val = data_tensor.contract().value
+            start_cost = data_tensor.cost()
+        elif isinstance(data_tensor, TensorFunc):
+            sizes = [ind.size for ind in data_tensor.indices]
+            val_size = 10000
+            validation = [np.random.randint(i, size=val_size) for i in sizes]
+            net_val = data_tensor(np.stack(validation, axis=-1))
+            best_val = best_val[*validation]
+            start_cost = np.prod(sizes)
+        else:
+            raise TypeError("unknown data tensor type")
+
+        result.stats.re_f = rtol(net_val, best_val, "F")
+        result.stats.re_max = rtol(net_val, best_val, "M")
+        result.stats.cr_core = unopt_size / best_size
+        result.stats.cr_start = float(start_cost / best_size)
+        return result
 
     def dfs(
         self,
@@ -51,16 +66,19 @@ class SearchEngine:
 
         dfs_runner = DFSSearch(self.config)
         result = dfs_runner.run(net)
-        assert result.best_network is not None
+        assert result.best_state is not None
         end = time.time()
 
-        result.stats.time = end - dfs_runner.start - dfs_runner.logging_time
+        result.stats.search_start = dfs_runner.start
+        result.stats.search_end = end - dfs_runner.logging_time
         # result.best_network = dfs_runner.best_network
         unopt_size = float(np.prod([i.size for i in net.free_indices()]))
-        result.stats.cr_core = unopt_size / result.best_network.cost()
-        result.stats.cr_start = net.cost() / dfs_runner.best_network.cost()
-        err = approx_error(dfs_runner.target_tensor, dfs_runner.best_network)
-        result.stats.re = err
+        best_network = result.best_state.network
+        best_cost = best_network.cost()
+        result.stats.cr_core = unopt_size / best_cost
+        result.stats.cr_start = net.cost() / best_cost
+        err = approx_error(dfs_runner.target_tensor, best_network)
+        result.stats.re_f = err
 
         return result
 
@@ -69,7 +87,8 @@ class SearchEngine:
 
         bfs_runner = BFSSearch(self.config)
         result = bfs_runner.run(net)
-        best_network = result.best_network
+        assert result.best_state is not None
+        best_network = result.best_state.network
         assert best_network is not None
 
         # search_stats["best_network"] = best_network
@@ -77,7 +96,7 @@ class SearchEngine:
         result.stats.cr_core = float(unopt_size) / best_network.cost()
         result.stats.cr_start = net.cost() / best_network.cost()
         err = approx_error(bfs_runner.target_tensor, best_network)
-        result.stats.re = err
+        result.stats.re_f = err
 
         return result
 

@@ -23,14 +23,14 @@ class TestConfig(unittest.TestCase):
                     "action_type": "isplit",
                 },
                 "rank_search": {
-                    "fit_mode": "all",
+                    "search_mode": "all",
                     "k": 3,
                 },
             }
         )
         config = SearchConfig.load(config_str)
         self.assertEqual(config.synthesizer.action_type, "isplit")
-        self.assertEqual(config.rank_search.fit_mode, "all")
+        self.assertEqual(config.rank_search.search_mode, "all")
         self.assertEqual(config.rank_search.k, 3)
 
 
@@ -70,14 +70,14 @@ class TestAction(unittest.TestCase):
         net.add_node("G", tensor)
 
         ac = ISplit("G", [0, 1])
-        (u, s, v), _ = ac.execute(net)
+        (u, s, v), _ = ac.svd(net)
         self.assertEqual(net.value(u).shape, (3, 4, 12))
         self.assertEqual(net.value(s).shape, (12, 12))
         self.assertEqual(net.value(v).shape, (12, 5, 6))
 
         net.merge(v, s)
         ac = ISplit("G", [0])
-        (u, s, v), _ = ac.execute(net)
+        (u, s, v), _ = ac.svd(net)
         self.assertEqual(net.value(u).shape, (3, 3))
         self.assertEqual(net.value(s).shape, (3, 3))
         self.assertEqual(net.value(v).shape, (3, 4, 12))
@@ -91,14 +91,14 @@ class TestAction(unittest.TestCase):
         net.add_node("G", tensor)
 
         ac = OSplit([Index("i", 3), Index("k", 5)])
-        (u, s, v), _ = ac.execute(net)
+        (u, s, v), _ = ac.svd(net)
         self.assertEqual(net.value(u).shape, (3, 5, 15))
         self.assertEqual(net.value(s).shape, (15, 15))
         self.assertEqual(net.value(v).shape, (15, 4, 6))
 
         net.merge(v, s)
         ac = OSplit([Index("i", 3)])
-        (u, s, v), _ = ac.execute(net)
+        (u, s, v), _ = ac.svd(net)
         self.assertEqual(net.value(u).shape, (3, 3))
         self.assertEqual(net.value(s).shape, (3, 3))
         self.assertEqual(net.value(v).shape, (3, 5, 15))
@@ -135,26 +135,28 @@ class TestState(unittest.TestCase):
         )
 
         ac = ISplit("G", [0])
-        for new_st in init_state.take_action(ac, config=SearchConfig()):
-            self.assertListEqual(
-                new_st.get_legal_actions(),
-                [
-                    ISplit("n0", [0]),
-                    ISplit("n0", [1]),
-                    ISplit("n0", [2]),
-                    ISplit("G", [0]),
-                ],
-            )
+        new_st = init_state.take_action(ac)
+        assert new_st is not None
+        self.assertListEqual(
+            new_st.get_legal_actions(),
+            [
+                ISplit("n0", [0]),
+                ISplit("n0", [1]),
+                ISplit("n0", [2]),
+                ISplit("G", [0]),
+            ],
+        )
 
         ac = OSplit([Index("i", 3)])
-        for new_st in init_state.take_action(ac, config=SearchConfig()):
-            self.assertListEqual(
-                new_st.get_legal_actions(True),
-                [
-                    OSplit([Index("j", 4)]),
-                    OSplit([Index("k", 5)]),
-                ],
-            )
+        new_st = init_state.take_action(ac)
+        assert new_st is not None
+        self.assertListEqual(
+            new_st.get_legal_actions(True),
+            [
+                OSplit([Index("j", 4)]),
+                OSplit([Index("k", 5)]),
+            ],
+        )
 
 
 class TestSearch(unittest.TestCase):
@@ -192,6 +194,7 @@ class TestSearch(unittest.TestCase):
             err_norm,
             0.5 * self.net.norm()
         )
+        self.assertLessEqual(err_norm, 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_bfs(self):
@@ -214,6 +217,7 @@ class TestSearch(unittest.TestCase):
             err_norm,
             0.5 * self.net.norm()
         )
+        self.assertLessEqual(err_norm, 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_partition(self):
@@ -242,7 +246,7 @@ class TestSearch(unittest.TestCase):
         config = SearchConfig()
         config.engine.eps = 0.5
         config.engine.verbose = True
-        config.rank_search.fit_mode = "all"
+        config.rank_search.search_mode = "all"
         search_engine = SearchEngine(config=config)
         result = search_engine.partition_search(self.net)
         assert result is not None
@@ -259,6 +263,7 @@ class TestSearch(unittest.TestCase):
             err_norm,
             float(0.5 * self.net.norm())
         )
+        self.assertLessEqual(err_norm, float(0.5 * self.net.norm()))
         self.assertLessEqual(bn.cost(), self.net.cost())
 
 class TestTopDownSearch(unittest.TestCase):

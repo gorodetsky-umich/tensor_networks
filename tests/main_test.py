@@ -1343,7 +1343,7 @@ class TestGeneralOps(unittest.TestCase):
         net.add_node("n0", tensor)
 
         net.split_index(
-            IndexSplit(splitting_index=Index("k", 6), split_target=[2, 3])
+            IndexSplit(index=Index("k", 6), shape=[2, 3])
         )
         self.assertEqual(len(net.free_indices()), 4)
 
@@ -1351,15 +1351,15 @@ class TestGeneralOps(unittest.TestCase):
         net.merge(v, s)
         self.assertEqual(len(net.free_indices()), 4)
         net.split_index(
-            IndexSplit(splitting_index=Index("i", 4), split_target=[2, 2])
+            IndexSplit(index=Index("i", 4), shape=[2, 2])
         )
         self.assertEqual(len(net.free_indices()), 5)
 
         net.split_index(
-            IndexSplit(splitting_index=Index("j", 16), split_target=[8, 2])
+            IndexSplit(index=Index("j", 16), shape=[8, 2])
         )
         net.merge_index(
-            IndexMerge(merging_indices=[Index("s_1", 2), Index("s_2", 3)])
+            IndexMerge(indices=[Index("s_1", 2), Index("s_2", 3)])
         )
         self.assertListEqual(
             sorted(net.free_indices()),
