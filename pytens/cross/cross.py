@@ -283,7 +283,6 @@ def cross(
         # approx_state.rows.append(row_vals)
         # approx_state.cols.append(col_vals)
 
-        # print(eeps, k)
         if end_cross_approx(eeps, k, eps, max_k):
             # if err <= eps * nrm:
             approx_state.tensor = approx_tensor

@@ -1,10 +1,10 @@
 """Exhaustive search of tensor network structures."""
 
-from typing import Sequence
+from typing import List, Optional
 import time
 import copy
 
-from pytens.algs import TensorNetwork
+from pytens.algs import TreeNetwork
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import SearchState
 from pytens.search.utils import log_stats, SearchStats, SearchResult
@@ -30,11 +30,11 @@ class BFSSearch(ExhaustiveSearch):
 
     def _add_wodup(
         self,
-        best_network: TensorNetwork,
+        best_network: Optional[TreeNetwork],
         new_st: SearchState,
         worked: set,
-        worklist: Sequence[SearchState],
-    ) -> TensorNetwork:
+        worklist: List[SearchState],
+    ) -> TreeNetwork:
         """Add a network to a worked set to remove duplicates."""
         # new_net.draw()
         # plt.show()
@@ -57,7 +57,7 @@ class BFSSearch(ExhaustiveSearch):
 
         return best_network
 
-    def run(self, net: TensorNetwork) -> SearchResult:
+    def run(self, net: TreeNetwork) -> SearchResult:
         """Execute the BFS search algorithm on the given tensor network"""
 
         self.target_tensor = net.contract()
@@ -87,44 +87,45 @@ class BFSSearch(ExhaustiveSearch):
             ):
                 # plt.subplot(2,1,1)
                 # st.network.draw()
-                for new_st in st.take_action(ac, config=self.config):
-                    # plt.subplot(2,1,2)
-                    # new_st.network.draw()
-                    # plt.show()
-                    if (
-                        self.config.heuristics.prune_full_rank
-                        and new_st.is_noop
-                    ):
-                        continue
+                new_st = st.take_action(ac)
+                if new_st is None:
+                    continue
+                # plt.subplot(2,1,2)
+                # new_st.network.draw()
+                # plt.show()
+                if self.config.heuristics.prune_full_rank and new_st.is_noop:
+                    continue
 
-                    ts = time.time() - start - logging_time
-                    best_network = self._add_wodup(
-                        best_network,
+                ts = time.time() - start - logging_time
+                best_network = self._add_wodup(
+                    best_network,
+                    new_st,
+                    worked,
+                    worklist,
+                )
+                count += 1
+
+                verbose_start = time.time()
+                if self.config.engine.verbose:
+                    log_stats(
+                        self.search_stats,
+                        self.target_tensor,
+                        ts,
                         new_st,
-                        worked,
-                        worklist,
+                        best_network,
                     )
-                    count += 1
-
-                    verbose_start = time.time()
-                    if self.config.engine.verbose:
-                        log_stats(
-                            self.search_stats,
-                            self.target_tensor,
-                            ts,
-                            new_st,
-                            best_network,
-                        )
-                    verbose_end = time.time()
-                    logging_time += verbose_end - verbose_start
+                verbose_end = time.time()
+                logging_time += verbose_end - verbose_start
 
         end = time.time()
 
-        self.search_stats.time = end - start - logging_time
+        self.search_stats.search_start = start
+        self.search_stats.search_end = end - logging_time
         self.search_stats.count = count
 
         result = SearchResult()
-        result.best_network = best_network
+        if best_network is not None:
+            result.best_state = SearchState(best_network, 0)
         result.stats = self.search_stats
         return result
 
@@ -171,39 +172,41 @@ class DFSSearch(ExhaustiveSearch):
             config = copy.deepcopy(self.config)
             config.rank_search.error_split_stepsize = split_errors
 
-            gen = curr_st.take_action(ac, config=config)
+            new_st = curr_st.take_action(ac)
+            if new_st is None:
+                continue
             # greedy = False
-            for new_st in gen:
-                if self.config.heuristics.prune_full_rank and new_st.is_noop:
-                    continue
 
-                if new_st.network.cost() < self.best_network.cost():
-                    self.best_network = new_st.network
+            if self.config.heuristics.prune_full_rank and new_st.is_noop:
+                continue
 
-                self.log(new_st)
+            if new_st.network.cost() < self.best_network.cost():
+                self.best_network = new_st.network
 
-                if self.config.heuristics.prune_duplicates:
-                    h = new_st.network.canonical_structure(
-                        consider_ranks=self.config.heuristics.prune_by_ranks
-                    )
-                    # print(h)
-                    if h in worked:
-                        return
+            self.log(new_st)
 
-                    worked.add(h)
-
-                if used_ops + 1 >= self.config.engine.max_ops:
-                    # print("max op")
+            if self.config.heuristics.prune_duplicates:
+                h = new_st.network.canonical_structure(
+                    consider_ranks=self.config.heuristics.prune_by_ranks
+                )
+                # print(h)
+                if h in worked:
                     return
 
-                # best_before = best_network.cost()
-                self.dfs(worked, new_st)
-                # best_after = best_network.cost()
-                # if best_before == best_after:
-                #     # greedy = True
-                #     break
+                worked.add(h)
 
-    def run(self, net: TensorNetwork) -> SearchResult:
+            if used_ops + 1 >= self.config.engine.max_ops:
+                # print("max op")
+                return
+
+            # best_before = best_network.cost()
+            self.dfs(worked, new_st)
+            # best_after = best_network.cost()
+            # if best_before == best_after:
+            #     # greedy = True
+            #     break
+
+    def run(self, net: TreeNetwork) -> SearchResult:
         """Run a DFS search from the given tensor network."""
 
         self.target_tensor = net.contract()
@@ -219,5 +222,5 @@ class DFSSearch(ExhaustiveSearch):
 
         result = SearchResult()
         result.stats = self.search_stats
-        result.best_network = self.best_network
+        result.best_state = SearchState(self.best_network, 0)
         return result

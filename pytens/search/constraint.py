@@ -1,8 +1,9 @@
 """Linear constraints for finding best rank assignment."""
 
-from typing import List, Sequence, Optional, Tuple, Dict
+from typing import List, Sequence, Union, Optional
 import itertools
 import os
+import copy
 
 import gurobipy as gp
 from gurobipy import GRB
@@ -13,7 +14,11 @@ from pytens.search.configuration import SearchConfig
 from pytens.search.state import OSplit, SearchState
 from pytens.cross.cross import TensorFunc
 
+import logging
+
 BAD_SCORE = 9999999999999
+
+logger = logging.Logger("constraint", level=logging.DEBUG)
 
 
 class ILPSolver:
@@ -33,7 +38,7 @@ class ILPSolver:
     def add_var(self, ind: Index):
         """Add variables for a given rank i"""
         # for a given edge, we add binary variables i0, i1, .., in
-        indices = [(ind.name, j) for j in ind.size]
+        indices = [(ind.name, j) for j in ind.value_choices]
         # print(indices)
         # print(ind, len(indices), ind.size[1] - ind.size[0])
         self.vars.update(self.model.addVars(indices, vtype=GRB.BINARY))
@@ -55,8 +60,8 @@ class ILPSolver:
 
             # print(ind)
             # print(ind, len(pfsums[ind.name]))
-            assert len(pfsums[ind.name]) == len(ind.size)
-            for sz, p in zip(ind.size, pfsums[ind.name]):
+            assert len(pfsums[ind.name]) == len(ind.value_choices)
+            for sz, p in zip(ind.value_choices, pfsums[ind.name]):
                 coeff[(ind.name, sz)] = p
 
         # print(self.vars, delta ** 2)
@@ -80,7 +85,7 @@ class ILPSolver:
 
             all_var_cost = 0
             if len(var_inds) > 1:
-                var_sizes = [ind.size for ind in var_inds]
+                var_sizes = [ind.value_choices for ind in var_inds]
                 for v_sizes in itertools.product(*var_sizes):
                     # we need to add a temporary variable to
                     # turn this term into a linear term
@@ -98,7 +103,7 @@ class ILPSolver:
             elif len(var_inds) == 1:
                 ind = var_inds[0]
                 var_cost = 0
-                for v in ind.size:
+                for v in ind.value_choices:
                     var_cost += v * self.vars[(ind.name, v)]
 
                 all_var_cost += var_cost
@@ -120,7 +125,7 @@ class ConstraintSearch:
         self.split_actions = {}
         self.first_steps = {}
         self.temp_files = []
-        self.delta = 0
+        self.delta = 0.0
 
     def abstract(self, s):
         """Separate the given set of singular values into chunks."""
@@ -153,22 +158,29 @@ class ConstraintSearch:
         # the final sizes need to be accumulated
         final_sizes = [len(s) - x for x in np.cumsum(np.array(s_sizes))]
 
-        # print(list(zip(final_sizes, s_sums)))
+        # print(s_sizes, list(zip(final_sizes, s_sums)))
         return s_sums, final_sizes
+
+    def _recompute(self, file_name):
+        return self.config.preprocess.force_recompute or not os.path.exists(
+            file_name
+        )
 
     def _preprocess_cross(
         self,
-        target_tensor: Tensor,
-        positions: Sequence[int],
+        data_tensor: TensorFunc,
         comb: Sequence[Index],
-        cross_func: TensorFunc,
     ):
         # print(comb)
         net = TreeNetwork()
-        net.add_node("G", target_tensor)
+        net.add_node("G", Tensor(np.empty(0), data_tensor.indices))
         bin_size = self.config.synthesizer.bin_size
         err = self.config.engine.eps * bin_size
-        _, _, st = net.cross(cross_func, {}, "G", positions[: len(comb)], err)
+        indices = data_tensor.indices
+        lefts = [indices.index(i) for i in comb]
+        _, _, st = net.cross(
+            data_tensor, {}, "G", lefts, err, compute_data=False
+        )
         sizes, sums = zip(*st.ranks_and_errors)
         # print(st.ranks_and_errors)
 
@@ -199,105 +211,49 @@ class ConstraintSearch:
                 final_sizes.append(sizes[valid_errors][min_idx])
                 # print(final_sums, final_sizes)
 
-        # print(comb, final_sums, final_sizes)
         self.split_actions[OSplit(comb)] = (final_sums, final_sizes)
 
     def preprocess_comb(
         self,
-        target_tensor: Tensor,
+        data_tensor: Union[TreeNetwork, TensorFunc],
         comb: Sequence[Index],
         compute_uv: bool = False,
-        cross_func: Optional[TensorFunc] = None,
     ):
         """Precompute the singluar values for a given index combination."""
-        free_indices = target_tensor.indices
-        right_indices = [i for i in free_indices if i not in comb]
-        positions = []
-        for i in list(comb) + right_indices:
-            positions.append(target_tensor.indices.index(i))
+        logger.debug("preprocess %s", comb)
 
-        tensor_val = target_tensor.value.transpose(positions)
-        left_size = np.prod([x.size for x in comb])
-        file_name = (
-            f"{self.config.output.output_dir}/{len(self.first_steps)}.npz"
-        )
-        # if OSplit(comb) in self.split_actions:
-        #     print("skipping", [str(ac) for ac in comb])
-        #     return
-        # else:
-        #     print("not skipping", [str(ac) for ac in comb])
-
-        if cross_func is not None:
-            self._preprocess_cross(target_tensor, positions, comb, cross_func)
+        if isinstance(data_tensor, TensorFunc):
+            self._preprocess_cross(data_tensor, comb)
             return
 
-        if compute_uv:
-            u, s, v = np.linalg.svd(
-                tensor_val.reshape(left_size, -1), False, True
-            )
-            # save to file to avoid memory explosion
-            if not os.path.exists(self.config.output.output_dir):
-                os.makedirs(self.config.output.output_dir)
-
-            np.savez(file_name, u=u, s=s, v=v)
-            self.first_steps[OSplit(comb)] = file_name
-            self.temp_files.append(file_name)
+        ac = OSplit(comb)
+        ac.delta = 0.0
+        file_name = os.path.join(
+            self.config.output.output_dir, f"{len(self.first_steps)}.npz"
+        )
+        if not self._recompute(file_name):
+            data = np.load(file_name)
+            s = data["s"]
+            self.first_steps[ac] = file_name
         else:
-            if not self.config.preprocess.force_recompute and os.path.exists(
-                file_name
-            ):
-                data = np.load(file_name)
-                s = data["s"]
+            net = copy.deepcopy(data_tensor)
+            (u, s, v), _ = ac.svd(net, compute_uv=compute_uv)
+            u = net.value(u)
+            s = np.diag(net.value(s))
+            v = net.value(v)
+            if compute_uv:
+                # save to file to avoid memory explosion
+                if not os.path.exists(self.config.output.output_dir):
+                    os.makedirs(self.config.output.output_dir)
+
+                np.savez(file_name, u=u, s=s, v=v)
                 self.first_steps[OSplit(comb)] = file_name
-            else:
-                s = np.linalg.svd(
-                    tensor_val.reshape(left_size, -1), False, False
-                )
-            sums, sizes = self.abstract(s)
-            self.split_actions[OSplit(comb)] = (sums, sizes)
+                self.temp_files.append(file_name)
 
-    def preprocess(
-        self,
-        target_tensor: Tensor,
-        acs: Optional[Sequence[OSplit]] = None,
-        compute_uv: bool = False,
-        delta: Optional[float] = None,
-        cross_func: Optional[TensorFunc] = None,
-    ):
-        """Compute the mapping between splits and singular values.
+        sums, sizes = self.abstract(s)
+        self.split_actions[OSplit(comb)] = (sums, sizes)
 
-        Build the abstractions.
-        """
-        free_indices = target_tensor.indices
-        if delta is not None:
-            self.delta = delta
-        elif cross_func is not None:
-            self.delta = self.config.engine.eps
-        else:
-            x_norm = np.linalg.norm(target_tensor.value)
-            self.delta = float(self.config.engine.eps * x_norm)
-
-        if acs is not None:
-            for ac in acs:
-                comb = ac.indices
-                self.preprocess_comb(
-                    target_tensor, comb, cross_func=cross_func
-                )
-        else:
-            for comb in SearchState.all_index_combs(free_indices):
-                self.preprocess_comb(
-                    target_tensor,
-                    comb,
-                    compute_uv=compute_uv,
-                    cross_func=cross_func,
-                )
-                # self.first_steps[OSplit(comb)] = (u, s, v)
-
-    # we can integrate this with A*, beam search, or other things
-    # let's try A* first
-    def get_cost(
-        self, st: SearchState, upper: int
-    ) -> Tuple[Dict[int, int], int]:
+    def solve(self, st: SearchState, upper: int) -> Optional[SearchState]:
         """Compute cost for a given set of splits."""
         solver = ILPSolver(self.config)
 
@@ -305,7 +261,6 @@ class ConstraintSearch:
         # extract nodes from the current network
         relabel_map = {}
         for idx, ac in enumerate(st.past_actions):
-            # print(ac)
             if not isinstance(ac, OSplit):
                 index_ac = ac.to_osplit(st, idx)
             else:
@@ -318,7 +273,7 @@ class ConstraintSearch:
             # we need to substitute the links to all
             relabel_map[st.links[idx]] = tuple(ac_sizes)
 
-        st.network.relabel_indices(relabel_map)
+        st.network.rerange_indices(relabel_map)
         indices = st.network.all_indices()
         free_indices = st.network.free_indices()
         var_indices = []
@@ -331,33 +286,25 @@ class ConstraintSearch:
                 solver.add_var(ind)
         solver.add_constraint(var_indices, pfsums, self.delta)
 
-        nodes = [
-            data["tensor"] for _, data in st.network.network.nodes(data=True)
-        ]
+        nodes = [st.network.node_tensor(n) for n in st.network.network.nodes]
         solver.set_objective(free_indices, nodes, upper)
         solver.model.optimize()
 
         if solver.model.Status == GRB.INFEASIBLE:
             solver.model.dispose()
             solver.env.dispose()
-            return {}, BAD_SCORE
+            return None
 
-        relabel_map, error_map = {}, {}
+        relabel_map, rerange_map = {}, {}
         for ind in var_indices:
-            for jj, j in enumerate(ind.size):
+            for j in ind.value_choices:
                 if solver.vars[(ind.name, j)].x == 1:
-                    relabel_map[ind.name] = j
-                    error_map[ind.name] = jj
+                    relabel_map[ind.name] = int(j)
+
+            rerange_map[ind.name] = tuple()
 
         st.network.relabel_indices(relabel_map)
-        # st.network.compress()
-        result = {}
-        for ind, ind_size in relabel_map.items():
-            for k, v in enumerate(st.links):
-                if v == ind:
-                    result[k] = ind_size
-                    break
-
+        st.network.rerange_indices(rerange_map)
         solver.model.dispose()
         solver.env.dispose()
-        return result, st.network.cost()
+        return st

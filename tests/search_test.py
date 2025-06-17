@@ -24,14 +24,14 @@ class TestConfig(unittest.TestCase):
                     "action_type": "isplit",
                 },
                 "rank_search": {
-                    "fit_mode": "all",
+                    "search_mode": "all",
                     "k": 3,
                 },
             }
         )
         config = SearchConfig.load(config_str)
         self.assertEqual(config.synthesizer.action_type, "isplit")
-        self.assertEqual(config.rank_search.fit_mode, "all")
+        self.assertEqual(config.rank_search.search_mode, "all")
         self.assertEqual(config.rank_search.k, 3)
 
 
@@ -71,14 +71,14 @@ class TestAction(unittest.TestCase):
         net.add_node("G", tensor)
 
         ac = ISplit("G", [0, 1])
-        (u, s, v), _ = ac.execute(net)
+        (u, s, v), _ = ac.svd(net)
         self.assertEqual(net.value(u).shape, (3, 4, 12))
         self.assertEqual(net.value(s).shape, (12, 12))
         self.assertEqual(net.value(v).shape, (12, 5, 6))
 
         net.merge(v, s)
         ac = ISplit("G", [0])
-        (u, s, v), _ = ac.execute(net)
+        (u, s, v), _ = ac.svd(net)
         self.assertEqual(net.value(u).shape, (3, 3))
         self.assertEqual(net.value(s).shape, (3, 3))
         self.assertEqual(net.value(v).shape, (3, 4, 12))
@@ -92,14 +92,14 @@ class TestAction(unittest.TestCase):
         net.add_node("G", tensor)
 
         ac = OSplit([Index("i", 3), Index("k", 5)])
-        (u, s, v), _ = ac.execute(net)
+        (u, s, v), _ = ac.svd(net)
         self.assertEqual(net.value(u).shape, (3, 5, 15))
         self.assertEqual(net.value(s).shape, (15, 15))
         self.assertEqual(net.value(v).shape, (15, 4, 6))
 
         net.merge(v, s)
         ac = OSplit([Index("i", 3)])
-        (u, s, v), _ = ac.execute(net)
+        (u, s, v), _ = ac.svd(net)
         self.assertEqual(net.value(u).shape, (3, 3))
         self.assertEqual(net.value(s).shape, (3, 3))
         self.assertEqual(net.value(v).shape, (3, 5, 15))
@@ -136,26 +136,28 @@ class TestState(unittest.TestCase):
         )
 
         ac = ISplit("G", [0])
-        for new_st in init_state.take_action(ac, config=SearchConfig()):
-            self.assertListEqual(
-                new_st.get_legal_actions(),
-                [
-                    ISplit("n0", [0]),
-                    ISplit("n0", [1]),
-                    ISplit("n0", [2]),
-                    ISplit("G", [0]),
-                ],
-            )
+        new_st = init_state.take_action(ac)
+        assert new_st is not None
+        self.assertListEqual(
+            new_st.get_legal_actions(),
+            [
+                ISplit("n0", [0]),
+                ISplit("n0", [1]),
+                ISplit("n0", [2]),
+                ISplit("G", [0]),
+            ],
+        )
 
         ac = OSplit([Index("i", 3)])
-        for new_st in init_state.take_action(ac, config=SearchConfig()):
-            self.assertListEqual(
-                new_st.get_legal_actions(True),
-                [
-                    OSplit([Index("j", 4)]),
-                    OSplit([Index("k", 5)]),
-                ],
-            )
+        new_st = init_state.take_action(ac)
+        assert new_st is not None
+        self.assertListEqual(
+            new_st.get_legal_actions(True),
+            [
+                OSplit([Index("j", 4)]),
+                OSplit([Index("k", 5)]),
+            ],
+        )
 
 
 class TestSearch(unittest.TestCase):
@@ -182,13 +184,13 @@ class TestSearch(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.stats.count, 8)
 
-        bn = result.best_network
+        assert result.best_state is not None
+        bn = result.best_state.network
         assert bn is not None
-        err_norm = float(np.linalg.norm(self.net.contract().value - bn.contract().value))
-        self.assertLessEqual(
-            err_norm,
-            0.5 * self.net.norm()
+        err_norm = float(
+            np.linalg.norm(self.net.contract().value - bn.contract().value)
         )
+        self.assertLessEqual(err_norm, 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_bfs(self):
@@ -200,13 +202,13 @@ class TestSearch(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.stats.count, 7)
 
-        bn = result.best_network
+        assert result.best_state is not None
+        bn = result.best_state.network
         assert bn is not None
-        err_norm = float(np.linalg.norm(self.net.contract().value - bn.contract().value))
-        self.assertLessEqual(
-            err_norm,
-            0.5 * self.net.norm()
+        err_norm = float(
+            np.linalg.norm(self.net.contract().value - bn.contract().value)
         )
+        self.assertLessEqual(err_norm, 0.5 * self.net.norm())
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_partition(self):
@@ -218,9 +220,12 @@ class TestSearch(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.stats.count, 7)
 
-        bn = result.best_network
+        assert result.best_state is not None
+        bn = result.best_state.network
         assert bn is not None
-        err_norm = float(np.linalg.norm(self.net.contract().value - bn.contract().value))
+        err_norm = float(
+            np.linalg.norm(self.net.contract().value - bn.contract().value)
+        )
         self.assertLessEqual(
             err_norm,
             0.5 * self.net.norm(),
@@ -231,24 +236,27 @@ class TestSearch(unittest.TestCase):
         config = SearchConfig()
         config.engine.eps = 0.5
         config.engine.verbose = True
-        config.rank_search.fit_mode = "all"
+        config.rank_search.search_mode = "all"
         search_engine = SearchEngine(config=config)
         result = search_engine.partition_search(self.net)
         assert result is not None
         self.assertEqual(result.stats.count, 7)
-        bn = result.best_network
+
+        assert result.best_state is not None
+        bn = result.best_state.network
         assert bn is not None
-        err_norm = float(np.linalg.norm(self.net.contract().value - bn.contract().value))
-        self.assertLessEqual(
-            err_norm,
-            float(0.5 * self.net.norm())
+        err_norm = float(
+            np.linalg.norm(self.net.contract().value - bn.contract().value)
         )
+        self.assertLessEqual(err_norm, float(0.5 * self.net.norm()))
         self.assertLessEqual(bn.cost(), self.net.cost())
 
     def test_partition_cross(self):
         for f in FUNCS[:1]:
             for n in [25]:
-                tensor_func = f(4, n)
+                domain = np.linspace(-32.5, 32.5, n)
+                indices = [Index(f"I{i}", n, domain) for i in range(4)]
+                tensor_func = f(indices)
                 grid = np.meshgrid(*[np.arange(0, n) for _ in range(4)])
                 all_args = np.stack(grid, axis=0).reshape(4, -1).T
                 real_val = tensor_func(all_args).reshape(n, n, n, n)
@@ -262,10 +270,10 @@ class TestSearch(unittest.TestCase):
                     indices = [Index(f"I{i}", n) for i in range(4)]
                     tensor = Tensor(np.zeros([n] * 4), indices)
                     net.add_node("G", tensor)
-                    result = search_engine.partition_search(net, tensor_func)
+                    result = search_engine.partition_search(tensor_func)
                     # end = time.time()
-                    assert result is not None
-                    bn = result.best_network
+                    assert result.best_state is not None
+                    bn = result.best_state.network
                     assert bn is not None
                     # print(bn)
                     err = real_val - bn.contract().value
@@ -281,39 +289,26 @@ class TestSearch(unittest.TestCase):
                     rtol = np.linalg.norm(err) / np.linalg.norm(real_val)
                     self.assertLessEqual(float(rtol), 0.5)
 
-    # def test_partition_cross_data(self):
-    #     for j in [4]:
-    #         for i in range(10):
-    #             name = f"pdebench_density_{i}"
-    #             data = np.load(f"../data/PDEBench/3D_CFD_{i}/data.npy")
-    #             data = data[:,j].reshape(-1, 64, 64, 64)
-    #             tensor_func = FuncData(4, 0, data)
-    #             real_val = data
-    #             for eps in [1e-2]:
-    #                 start = time.time()
-    #                 config = SearchConfig()
-    #                 config.engine.eps = eps
-    #                 config.engine.verbose = True
-    #                 search_engine = SearchEngine(config=config)
-    #                 net = TreeNetwork()
-    #                 indices = [Index(f"I{i}", data.shape[i]) for i in range(4)]
-    #                 tensor = Tensor(np.zeros(data.shape), indices)
-    #                 net.add_node("G", tensor)
-    #                 result = search_engine.partition_search(net, tensor_func)
-    #                 end = time.time()
-    #                 assert result is not None
-    #                 bn = result.best_network
-    #                 assert bn is not None
-    #                 # print(bn.free_indices())
-    #                 err = real_val - bn.contract().value
-    #                 print(
-    #                     name,
-    #                     eps,
-    #                     end - start,
-    #                     net.cost() / bn.cost(),
-    #                     np.linalg.norm(err) / np.linalg.norm(real_val),
-    #                     np.max(np.abs(err)) / np.max(np.abs(real_val)),
-    #                 )
+    def test_partition_cross_data(self):
+        n = 25
+        grid = np.meshgrid(*[np.arange(0, n) for _ in range(4)])
+        all_args = np.stack(grid, axis=0).reshape(4, -1).T
+        real_val = 1.0 / np.sum(all_args + 1, axis=1)
+        real_val = real_val.reshape(n, n, n, n)
+        indices = [Index(f"I{i}", n, range(n)) for i in range(4)]
+        tensor_func = FuncData(indices, real_val)
+
+        config = SearchConfig()
+        config.engine.eps = 1e-1
+        config.engine.verbose = True
+        search_engine = SearchEngine(config=config)
+        result = search_engine.partition_search(tensor_func)
+        assert result.best_state is not None
+        bn = result.best_state.network
+        err = np.linalg.norm(real_val - bn.contract().value) / np.linalg.norm(
+            real_val
+        )
+        self.assertLessEqual(float(err), 1e-1)
 
 
 class TestTopDownSearch(unittest.TestCase):

@@ -32,7 +32,7 @@ class RankSearchConfig(pydantic.BaseModel):
         default=1,
         description="The number of different ranks considered for each split",
     )
-    fit_mode: Literal["topk", "all"] = pydantic.Field(
+    search_mode: Literal["topk", "all"] = pydantic.Field(
         default="topk",
         description=(
             "The choice of rank search algorithm"
@@ -44,7 +44,7 @@ class RankSearchConfig(pydantic.BaseModel):
         default=1,
         description=(
             "The number of optimality selected from constraint solving"
-            "(Used together with fit_mode==topk)"
+            "(Used together with search_mode==topk)"
         ),
     )
 
@@ -127,7 +127,7 @@ class TopDownConfig(pydantic.BaseModel):
         default="not_first",
         description="Configure whether to merge indices at the first level",
     )
-    search_algo: Literal["random", "enumerate", "correlation", "svd"] = (
+    search_algo: Literal["random", "enumerate", "correlation"] = (
         pydantic.Field(
             default="enumerate",
             description="Configure whether to use random algorithms",

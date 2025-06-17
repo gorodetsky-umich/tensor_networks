@@ -1,39 +1,30 @@
 """Algorithms for tensor networks."""
 
 import copy
-import logging
-from collections.abc import Sequence
-from collections import Counter
-from dataclasses import dataclass
-import typing
-from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Set, Any
 import itertools
+import logging
 import math
+import typing
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Self, Set, Tuple, Union
 
+import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import opt_einsum as oe
-import networkx as nx
-import matplotlib.pyplot as plt
 
-from .cross.cross import (
-    cross,
-    CrossApproxState,
-    product_args,
-    TensorFunc,
-)
-from .utils import (
-    delta_svd,
-    flatten_lists,
-)
+from .cross.cross import CrossApproxState, TensorFunc, cross, product_args
 from .types import (
     Index,
-    IndexName,
     IndexMerge,
+    IndexName,
     IndexSplit,
     NodeName,
     SVDConfig,
 )
-
+from .utils import delta_svd, flatten_lists
 
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -64,11 +55,20 @@ class Tensor:
 
         return self
 
-    def relabel_indices(self, relabel_map: Dict[IndexName, Any]) -> Self:
+    def relabel_indices(self, relabel_map: Dict[IndexName, int]) -> Self:
         """Relabel the index size."""
         for ii, index in enumerate(self.indices):
             if index.name in relabel_map:
                 self.indices[ii] = index.with_new_size(relabel_map[index.name])
+        return self
+
+    def rerange_indices(
+        self, rerange_map: Dict[IndexName, Sequence[float]]
+    ) -> Self:
+        """Rerange the index size."""
+        for ii, index in enumerate(self.indices):
+            if index.name in rerange_map:
+                self.indices[ii] = index.with_new_rng(rerange_map[index.name])
         return self
 
     def concat_fill(
@@ -215,7 +215,10 @@ class Tensor:
         return tens
 
     def svd(
-        self, lefts: Sequence[int], delta: float = 1e-5
+        self,
+        lefts: Sequence[int],
+        delta: float = 1e-5,
+        compute_uv: bool = True,
     ) -> Tuple[List["Tensor"], float]:
         """Split a tensor into three by SVD.
 
@@ -228,16 +231,11 @@ class Tensor:
         right_sz = int(np.prod([self.indices[j].size for j in rights]))
         value = value.reshape(left_sz, right_sz)
 
-        result = delta_svd(value, delta)
+        result = delta_svd(value, delta, compute_uv=compute_uv)
         u = result.u
         s = result.s
         v = result.v
         d = result.remaining_delta
-
-        u = u.reshape([self.indices[i].size for i in lefts] + [-1])
-        u_indices = [self.indices[i] for i in lefts]
-        u_indices.append(Index("r_split_l", u.shape[-1]))
-        u_tensor = Tensor(u, u_indices)
 
         s_indices = [
             Index("r_split_l", s.shape[0]),
@@ -245,12 +243,22 @@ class Tensor:
         ]
         s_tensor = Tensor(np.diag(s), s_indices)
 
-        v = v.reshape([-1] + [self.indices[j].size for j in rights])
-        v_indices = [self.indices[j] for j in rights]
-        v_indices = [Index("r_split_r", v.shape[0])] + v_indices
-        v_tensor = Tensor(v, v_indices)
+        if compute_uv:
+            assert u is not None
+            u = u.reshape([self.indices[i].size for i in lefts] + [-1])
+            u_indices = [self.indices[i] for i in lefts]
+            u_indices.append(Index("r_split_l", u.shape[-1]))
+            u_tensor = Tensor(u, u_indices)
 
-        return [u_tensor, s_tensor, v_tensor], d
+            assert v is not None
+            v = v.reshape([-1] + [self.indices[j].size for j in rights])
+            v_indices = [self.indices[j] for j in rights]
+            v_indices = [Index("r_split_r", v.shape[0])] + v_indices
+            v_tensor = Tensor(v, v_indices)
+
+            return [u_tensor, s_tensor, v_tensor], d
+
+        return [s_tensor], d
 
     def qr(self, lefts: Sequence[int]) -> Tuple["Tensor", "Tensor"]:
         """Split a tensor into two by QR."""
@@ -329,6 +337,7 @@ class Tensor:
         lefts: Sequence[int],
         eps: Optional[float] = None,
         max_k: Optional[int] = None,
+        compute_data: bool = True,
     ) -> Tuple["Tensor", "Tensor", np.ndarray, CrossApproxState]:
         """Compute the cross approximation of the tensor functions
         for the given reshaping.
@@ -379,41 +388,58 @@ class Tensor:
         col_arg_num = rargs.shape[1]
         row_arg_num = largs.shape[1]
 
-        u_args = np.insert(
-            largs, row_arg_num, np.zeros((col_arg_num, 1)), axis=1
-        )
-        u_args = u_args[:, perm_order]
-        u = np.empty((lsz, k))
-        for jidx, j in enumerate(cols):
-            for ii, jj in enumerate(perm_order):
-                if jj >= row_arg_num:
-                    u_args[:, ii] = rargs[j][jj - row_arg_num]
+        if compute_data:
+            u_args = np.insert(
+                largs, row_arg_num, np.zeros((col_arg_num, 1)), axis=1
+            )
+            u_args = u_args[:, perm_order]
+            u = np.empty((lsz, k))
+            for jidx, j in enumerate(cols):
+                for ii, jj in enumerate(perm_order):
+                    if jj >= row_arg_num:
+                        u_args[:, ii] = rargs[j][jj - row_arg_num]
 
-            # print(u_args.shape, u.shape)
-            u[:, jidx] = tensor_func(u_args)
+                # print(u_args.shape, u.shape)
+                u[:, jidx] = tensor_func(u_args)
 
-        s_args = product_args(largs, rargs, rows=rows, cols=cols)
-        s = tensor_func(s_args[:, perm_order]).reshape(k, k).T
+            s_args = product_args(largs, rargs, rows=rows, cols=cols)
+            s = tensor_func(s_args[:, perm_order]).reshape(k, k).T
 
-        u = u @ np.linalg.pinv(s)
+            # import time
+            # try:
+            #     start = time.time()
+            #     u, _, _, _ = np.linalg.lstsq(s.T, u.T)
+            #     u = u.T
+            #     print("lstsq time", time.time() - start, s.shape, u.shape)
+            # except:
+            #     print("lstsq fails")
+            #     u = u @ np.linalg.pinv(s)
 
-        v_args = np.insert(rargs, 0, np.zeros((row_arg_num, 1)), axis=1)
-        v_args = v_args[:, perm_order]
-        v = np.empty((k, rsz))
-        for iidx, i in enumerate(rows):
-            for ii, jj in enumerate(perm_order):
-                if jj < row_arg_num:
-                    v_args[:, ii] = largs[i][jj]
-            v[iidx] = tensor_func(v_args)
+            # start = time.time()
+            u = u @ np.linalg.pinv(s)
+            # print("pinv time", time.time() - start, s.shape, u.shape)
 
-        u = u.reshape([self.indices[i].size for i in lefts] + [-1])
+            v_args = np.insert(rargs, 0, np.zeros((row_arg_num, 1)), axis=1)
+            v_args = v_args[:, perm_order]
+            v = np.empty((k, rsz))
+            for iidx, i in enumerate(rows):
+                for ii, jj in enumerate(perm_order):
+                    if jj < row_arg_num:
+                        v_args[:, ii] = largs[i][jj]
+                v[iidx] = tensor_func(v_args)
+
+            u = u.reshape([self.indices[i].size for i in lefts] + [-1])
+        else:
+            u = np.empty((0,))
+            v = np.empty((0,))
+
         u_indices = [self.indices[i] for i in lefts]
-        u_indices.append(Index("r_split", u.shape[-1]))
+        u_indices.append(Index("r_split", k))
         u_tensor = Tensor(u, u_indices)
 
         v = v.reshape([-1] + [self.indices[j].size for j in rights])
         v_indices = [self.indices[j] for j in rights]
-        v_indices = [Index("r_split", v.shape[0])] + v_indices
+        v_indices = [Index("r_split", k)] + v_indices
         v_tensor = Tensor(v, v_indices)
 
         rc_args = np.concat([largs[rows], rargs[cols]], axis=1)
@@ -466,8 +492,8 @@ class Tensor:
         new_indices = []
         next_index = 0
         for ind in self.indices:
-            if ind == split_into.splitting_index:
-                for sz in split_into.split_target:
+            if ind == split_into.index:
+                for sz in split_into.shape:
                     new_ind = f"_fresh_index_{next_index}"
                     new_indices.append(Index(new_ind, sz))
                     next_index += 1
@@ -560,7 +586,7 @@ class TensorNetwork:  # pylint: disable=R0904
         val: np.ndarray = self.network.nodes[node_name]["tensor"].value
         return val
 
-    def all_indices(self) -> Counter:
+    def all_indices(self) -> Counter[Index]:
         """Get all indices in the network."""
         indices = []
         for _, data in self.network.nodes(data=True):
@@ -570,15 +596,30 @@ class TensorNetwork:  # pylint: disable=R0904
 
     def rename_indices(self, rename_map: Dict[IndexName, IndexName]) -> Self:
         """Rename the indices in the network."""
-        for _, data in self.network.nodes(data=True):
-            data["tensor"].rename_indices(rename_map)
+        for n in self.network.nodes:
+            self.node_tensor(n).rename_indices(rename_map)
         return self
 
-    def relabel_indices(self, relabel_map: Dict[IndexName, Any]) -> Self:
+    def relabel_indices(self, relabel_map: Dict[IndexName, int]) -> Self:
         """Relabel the indices in the network."""
-        for _, data in self.network.nodes(data=True):
-            data["tensor"].relabel_indices(relabel_map)
+        for n in self.network.nodes:
+            self.node_tensor(n).relabel_indices(relabel_map)
         return self
+
+    def rerange_indices(
+        self, rerange_map: Dict[IndexName, Sequence[float]]
+    ) -> Self:
+        """Reassign ranges to the indices in the network."""
+        for n in self.network.nodes:
+            self.node_tensor(n).rerange_indices(rerange_map)
+        return self
+
+    def assign_index_range(
+        self, rerange_map: Dict[IndexName, Sequence[float]]
+    ) -> None:
+        """Change the indices value choices in the network."""
+        for n in self.network.nodes:
+            self.node_tensor(n).rerange_indices(rerange_map)
 
     def free_indices(self) -> List[Index]:
         """Get the free indices."""
@@ -651,6 +692,7 @@ class TensorNetwork:  # pylint: disable=R0904
         # estr = ','.join(estr)
         logger.debug("Contraction string = %s", estr)
         out = oe.contract(estr, *arrs, optimize="auto")
+        logger.debug("finish contraction")
         indices = [eargs.output_str_index_map[s] for s in eargs.output_str]
         tens = Tensor(out, indices)
         return tens
@@ -669,7 +711,7 @@ class TensorNetwork:  # pylint: disable=R0904
             tens = data["tensor"]
             ix = []
             new_indices = []
-            for _, local_ind in enumerate(tens.indices):
+            for local_ind in tens.indices:
                 try:
                     dim = free_indices.index(local_ind)
                     ix.append(ind[dim])
@@ -823,19 +865,20 @@ class TensorNetwork:  # pylint: disable=R0904
         """
         x = self.node_tensor(node_name)
         rights = [i for i in range(len(x.indices)) if i not in lefts]
-        if not config.compute_data:
-            u = Tensor(
-                np.array([]),
-                [x.indices[i] for i in lefts] + [Index("r_split_l", -1)],
-            )
-            v = Tensor(
-                np.array([]),
-                [Index("r_split_r", -1)] + [x.indices[i] for i in rights],
-            )
-            s = Tensor(
-                np.array([]), [Index("r_split_l", -1), Index("r_split_r", -1)]
-            )
+        if not config.compute_data or not config.compute_uv:
+            rl = Index("r_split_l", -1)
+            rr = Index("r_split_r", -1)
+            u = Tensor(np.empty(0), [x.indices[i] for i in lefts] + [rl])
+            v = Tensor(np.empty(0), [rr] + [x.indices[i] for i in rights])
             d = config.delta
+
+            if config.compute_data:
+                s, _ = x.svd(
+                    lefts, delta=config.delta, compute_uv=config.compute_uv
+                )
+                s = s[0]
+            else:
+                s = Tensor(np.empty(0), [rl, rr])
         else:
             x = self.node_tensor(node_name)
             # svd decompose the data into specified index partition
@@ -855,7 +898,10 @@ class TensorNetwork:  # pylint: disable=R0904
         self.add_node(
             s_name,
             s.rename_indices(
-                {"r_split_l": new_index_l, "r_split_r": new_index_r}
+                {
+                    "r_split_l": new_index_l,
+                    "r_split_r": new_index_r,
+                }
             ),
         )
 
@@ -964,8 +1010,8 @@ class TensorNetwork:  # pylint: disable=R0904
                 if isinstance(ind.name, str) and ind.name.startswith(
                     "_fresh_index_"
                 ):
-                    if split_op.split_result is not None:
-                        new_ind = split_op.split_result[used_results_cnt].name
+                    if split_op.result is not None:
+                        new_ind = split_op.result[used_results_cnt].name
                         used_results_cnt += 1
                     else:
                         new_ind = self.fresh_index()
@@ -974,7 +1020,7 @@ class TensorNetwork:  # pylint: disable=R0904
             # print(rename_map)
             tensor = tensor.rename_indices(rename_map)
             if len(new_indices) > 0:
-                split_op.split_result = [
+                split_op.result = [
                     ind for ind in tensor.indices if ind.name in new_indices
                 ]
                 self.set_node_tensor(n, tensor)
@@ -988,11 +1034,11 @@ class TensorNetwork:  # pylint: disable=R0904
             tensor = self.node_tensor(n)
 
             new_ind: IndexName = ""
-            if merge_op.merge_result is None:
+            if merge_op.result is None:
                 new_ind = self.fresh_index()
             else:
-                new_ind = merge_op.merge_result.name
-            tensor = tensor.merge_indices(merge_op.merging_indices, new_ind)
+                new_ind = merge_op.result.name
+            tensor = tensor.merge_indices(merge_op.indices, new_ind)
 
             self.set_node_tensor(n, tensor)
 
@@ -1044,9 +1090,9 @@ class TensorNetwork:  # pylint: disable=R0904
                     for split_op in split_info:
                         if (
                             isinstance(split_op, IndexSplit)
-                            and split_op.splitting_index in nbr_indices
+                            and split_op.index in nbr_indices
                         ):
-                            split_ind_names = split_op.split_result
+                            split_ind_names = split_op.result
                             if (
                                 split_ind_names is not None
                                 and len(
@@ -1451,8 +1497,11 @@ class TreeNetwork(TensorNetwork):
         lefts: Sequence[int],
         delta: Optional[float] = None,
         max_k: Optional[int] = None,
+        compute_data: bool = True,
     ) -> Tuple[NodeName, NodeName, CrossApproxState]:
         """Split a node by cross approximation."""
+        logger.debug("running cross")
+
         free_indices = sorted(self.free_indices())
         tensor = self.node_tensor(node_name)
 
@@ -1483,8 +1532,15 @@ class TreeNetwork(TensorNetwork):
                 local_restrictions[ind] = np.array(local_args)
                 # print(ind, local_restrictions[ind])
 
+        logger.debug("calling cross_approx on tensors")
         u, v, rcs, st = tensor.cross_approx(
-            tensor_func, index_map, local_restrictions, lefts, delta, max_k
+            tensor_func,
+            index_map,
+            local_restrictions,
+            lefts,
+            delta,
+            max_k,
+            compute_data=compute_data,
         )
 
         new_index = self.fresh_index()
@@ -2063,6 +2119,8 @@ def tt_svd_round(tn: TensorTrain, eps: float) -> TensorTrain:
     trunc_svd = delta_svd(value, eps / np.sqrt(dim - 1), with_normalizing=True)
     delta = trunc_svd.delta
     assert delta is not None
+    assert trunc_svd.v is not None
+    assert trunc_svd.u is not None
 
     v = np.dot(np.diag(trunc_svd.s), trunc_svd.v)
     r2 = trunc_svd.u.shape[1]
@@ -2080,6 +2138,8 @@ def tt_svd_round(tn: TensorTrain, eps: float) -> TensorTrain:
         r1, n, r2a = value.shape
         val = np.reshape(value, (r1 * n, r2a))
         trunc_svd = delta_svd(val, delta)
+        assert trunc_svd.v is not None
+        assert trunc_svd.u is not None
         v = np.dot(np.diag(trunc_svd.s), trunc_svd.v)
         r2 = trunc_svd.u.shape[1]
         new_core = np.reshape(trunc_svd.u, (r1, n, r2))
@@ -2547,6 +2607,7 @@ def tt_rand_precond_svd_round(
         delta = eps / (dim - 1) ** 0.5
 
         trunc_svd = delta_svd(tens_curr.reshape((sh[0], -1)), delta, True)
+        assert trunc_svd.v is not None
 
         tens_curr = trunc_svd.v.reshape([-1] + sh[1:])
         if i == 1:
