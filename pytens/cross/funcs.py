@@ -1,6 +1,7 @@
 """Test functions for cross approximation"""
 
 from typing import List
+from functools import lru_cache
 
 import numpy as np
 
@@ -436,7 +437,7 @@ class FuncToy2(TensorFunc):
         self.b = b
 
     def run(self, args: np.ndarray):
-        return np.pow(np.sum(np.pow(args, self.b), axis=1), -1.0 / self.b)
+        return np.power(np.sum(np.power(args, self.b), axis=1), -1.0 / self.b)
 
 
 class FuncTDE(TensorFunc):
@@ -452,8 +453,8 @@ class FuncTDE(TensorFunc):
         self.lam = lam
 
     def run(self, args: np.ndarray):
-        return np.pow(
-            np.sum(np.pow(args, self.b), axis=1) + np.exp(self.t * self.lam),
+        return np.power(
+            np.sum(np.power(args, self.b), axis=1) + np.exp(self.t * self.lam),
             -1.0 / self.b,
         )
 

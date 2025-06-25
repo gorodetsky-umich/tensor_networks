@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import pydantic
 import numpy as np
+import pytens.algs as algs
 
 IntOrStr = Union[str, int]
 NodeName = IntOrStr
@@ -74,3 +75,50 @@ class IndexSplit(pydantic.BaseModel):
 
     def __hash__(self) -> int:
         return hash((type(self),) + tuple(self.__dict__.values()))
+
+@dataclass
+class NodeInfo:
+    """Node name and the corresponding indices"""
+    node: NodeName
+    indices: List[Index]
+    free_indices: List[Index]
+
+class Connection:
+    """Node connections including children and parent"""
+    def __init__(self, children: List["DimTreeNode"], parent: Optional["DimTreeNode"] = None):
+        self.children = children
+        self.parent = parent
+
+class CrossVals:
+    """Values for cross approximation"""
+    def __init__(self, up_vals: List[List[int]], down_vals: List[List[int]]):
+        self.up_vals = up_vals
+        self.down_vals = down_vals
+
+class DimTreeNode:
+    """Class for a dimension tree node"""
+
+    def __init__(
+        self,
+        node: NodeName,
+        indices: List[Index],
+        free_indices: List[Index],
+        children: List["DimTreeNode"],
+        down_vals: List[List[int]],
+        up_vals: List[List[int]],
+        parent: Optional["DimTreeNode"] = None,
+    ):
+        self.info = NodeInfo(node, indices, free_indices)
+        self.conn = Connection(children, parent)
+        self.values = CrossVals(up_vals, down_vals)
+
+    def __lt__(self, other: Self) -> bool:
+        return sorted(self.info.indices) < sorted(other.info.indices)
+
+    def preorder(self) -> List["DimTreeNode"]:
+        """Get the list of tree nodes in the pre-order traversal."""
+        results = [self]
+        for c in self.conn.children:
+            results.extend(c.preorder())
+
+        return results

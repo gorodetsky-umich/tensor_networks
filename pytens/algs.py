@@ -8,14 +8,25 @@ import typing
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Self, Set, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Self,
+    Set,
+    Tuple,
+    Union,
+    Literal,
+)
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import opt_einsum as oe
 
-from .cross.cross import CrossApproxState, TensorFunc, cross, product_args
+from .cross.cross import *
 from .types import (
     Index,
     IndexMerge,
@@ -23,10 +34,11 @@ from .types import (
     IndexSplit,
     NodeName,
     SVDConfig,
+    DimTreeNode,
 )
-from .utils import delta_svd, flatten_lists
+from .utils import delta_svd
 
-# logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -285,7 +297,7 @@ class Tensor:
 
     def _index_to_args(
         self,
-        selected_indices: Sequence[int],
+        selected_indices: Sequence[Index],
         index_map: Dict[Index, List[Index]],
         restrictions: Dict[Index, np.ndarray],
     ) -> Tuple[np.ndarray, List[Index]]:
@@ -293,7 +305,7 @@ class Tensor:
         index_map: from local indices to global free indices
         restrictions: from local indices to their restricted global choices
         """
-        sizes = [self.indices[i].size for i in selected_indices]
+        sizes = [i.size for i in selected_indices]
         # print(sizes, restrictions)
         local_indices = np.arange(np.prod(sizes))
         args = np.unravel_index(local_indices, sizes)
@@ -306,7 +318,7 @@ class Tensor:
 
         for iarg, arg in enumerate(args):
             # print(arg.shape)
-            ind = self.indices[selected_indices[iarg]]
+            ind = selected_indices[iarg]
             global_indices = index_map.get(ind, [ind])
             order.extend(global_indices)
 
@@ -328,124 +340,6 @@ class Tensor:
 
         # print([args.shape for args in global_args])
         return np.stack(global_args, axis=-1), order
-
-    def cross_approx(
-        self,
-        tensor_func: TensorFunc,
-        index_map: Dict[Index, List[Index]],
-        restrictions: Dict[Index, np.ndarray],
-        lefts: Sequence[int],
-        eps: Optional[float] = None,
-        max_k: Optional[int] = None,
-        compute_data: bool = True,
-    ) -> Tuple["Tensor", "Tensor", np.ndarray, CrossApproxState]:
-        """Compute the cross approximation of the tensor functions
-        for the given reshaping.
-        """
-        # print("current approximation size", self.value.shape)
-        # create the mapping between row, col, and function arguments
-        lsizes, rsizes = [], []
-        rights = []
-        for i, ind in enumerate(self.indices):
-            if i in lefts:
-                lsizes.append(ind.size)
-            else:
-                rsizes.append(ind.size)
-                rights.append(i)
-
-        lsz = int(np.prod(lsizes))
-        rsz = int(np.prod(rsizes))
-        largs, lorder = self._index_to_args(lefts, index_map, restrictions)
-        rargs, rorder = self._index_to_args(rights, index_map, restrictions)
-        perm_order = np.argsort(np.array(lorder + rorder))
-        approx_state = CrossApproxState(
-            row_arg_space=largs,
-            col_arg_space=rargs,
-            perm_order=perm_order,
-            lefts=lefts,
-            rights=rights,
-            rows=[],
-            cols=[],
-            selected_rows=np.empty((0,), dtype=int),
-            selected_cols=np.empty((0,), dtype=int),
-            ranks_and_errors=[],
-            tensor=np.zeros((lsz, rsz)),
-        )
-
-        if max_k is None:
-            max_k = min(lsz, rsz)
-
-        _ = cross(tensor_func, approx_state, eps, max_k)
-        rows = approx_state.selected_rows
-        cols = approx_state.selected_cols
-        # print(rows, cols)
-        assert len(rows) == len(cols), (
-            f"expect rows and cols to have the same "
-            f"length, but get {rows} and {cols}"
-        )
-
-        k = len(rows)
-        col_arg_num = rargs.shape[1]
-        row_arg_num = largs.shape[1]
-
-        if compute_data:
-            u_args = np.insert(
-                largs, row_arg_num, np.zeros((col_arg_num, 1)), axis=1
-            )
-            u_args = u_args[:, perm_order]
-            u = np.empty((lsz, k))
-            for jidx, j in enumerate(cols):
-                for ii, jj in enumerate(perm_order):
-                    if jj >= row_arg_num:
-                        u_args[:, ii] = rargs[j][jj - row_arg_num]
-
-                # print(u_args.shape, u.shape)
-                u[:, jidx] = tensor_func(u_args)
-
-            s_args = product_args(largs, rargs, rows=rows, cols=cols)
-            s = tensor_func(s_args[:, perm_order]).reshape(k, k).T
-
-            # import time
-            # try:
-            #     start = time.time()
-            #     u, _, _, _ = np.linalg.lstsq(s.T, u.T)
-            #     u = u.T
-            #     print("lstsq time", time.time() - start, s.shape, u.shape)
-            # except:
-            #     print("lstsq fails")
-            #     u = u @ np.linalg.pinv(s)
-
-            # start = time.time()
-            u = u @ np.linalg.pinv(s)
-            # print("pinv time", time.time() - start, s.shape, u.shape)
-
-            v_args = np.insert(rargs, 0, np.zeros((row_arg_num, 1)), axis=1)
-            v_args = v_args[:, perm_order]
-            v = np.empty((k, rsz))
-            for iidx, i in enumerate(rows):
-                for ii, jj in enumerate(perm_order):
-                    if jj < row_arg_num:
-                        v_args[:, ii] = largs[i][jj]
-                v[iidx] = tensor_func(v_args)
-
-            u = u.reshape([self.indices[i].size for i in lefts] + [-1])
-        else:
-            u = np.empty((0,))
-            v = np.empty((0,))
-
-        u_indices = [self.indices[i] for i in lefts]
-        u_indices.append(Index("r_split", k))
-        u_tensor = Tensor(u, u_indices)
-
-        v = v.reshape([-1] + [self.indices[j].size for j in rights])
-        v_indices = [self.indices[j] for j in rights]
-        v_indices = [Index("r_split", k)] + v_indices
-        v_tensor = Tensor(v, v_indices)
-
-        rc_args = np.concat([largs[rows], rargs[cols]], axis=1)
-        rc_args = rc_args[:, perm_order]
-        # print(rc_args)
-        return u_tensor, v_tensor, rc_args, approx_state
 
     def permute(self, target_indices: Sequence[int]) -> "Tensor":
         """Return a new tensor with indices permuted by the specified order."""
@@ -1109,6 +1003,53 @@ class TensorNetwork:  # pylint: disable=R0904
         for u, v in subnet.network.edges:
             self.add_edge(node_subst[u], node_subst[v])
 
+    def evaluate(self, indices: np.ndarray) -> np.ndarray:
+        """
+        Evaluate the tensor network at the given indices.
+
+        Assumes indices are provided in the order retrieved by
+        TensorNetwork.free_indices()
+        """
+        free_indices = self.free_indices()
+        assert indices.shape[1] == len(free_indices), (
+            f"the nbr of slices should be equal to the nbr of free indices"
+            f"but get {indices.shape}, free indices {len(free_indices)}"
+        )
+
+        batch_ind = "_batch"
+        ind_mapping = {batch_ind: "a"}
+        node_vals = []
+        node_strs = []
+        for node in self.network.nodes:
+            tensor = self.node_tensor(node)
+            tslices = []
+            has_batch = False
+            node_str = ""
+            for ind in tensor.indices:
+                ind_letter = chr(97 + len(ind_mapping))
+                if ind in free_indices:
+                    tslices.append(indices[:, free_indices.index(ind)])
+                    if not has_batch:
+                        has_batch = True
+                        node_str += ind_mapping[batch_ind]
+                else:
+                    tslices.append(slice(None))
+                    if ind.name not in ind_mapping:
+                        ind_mapping[ind.name] = ind_letter
+                    node_str += ind_mapping[ind.name]
+
+            batch_val = tensor.value[*tslices]
+            node_vals.append(batch_val)
+            node_strs.append(node_str)
+
+        estr = ",".join(node_strs) + "->" + ind_mapping[batch_ind]
+        logger.debug(
+            "contraction args: %s, shapes: %s",
+            estr,
+            [n.shape for n in node_vals],
+        )
+        return oe.contract(estr, *node_vals, optimize="auto")
+
     def __lt__(self, other: Self) -> bool:
         return self.cost() < other.cost()
 
@@ -1462,7 +1403,10 @@ class TreeNetwork(TensorNetwork):
         return _postorder(root)
 
     def leaf_indices(
-        self, visited: Set[NodeName], node_name: NodeName
+        self,
+        visited: Set[NodeName],
+        node_name: NodeName,
+        cut: Set[IndexName] = set(),
     ) -> List:
         """Get all leaf indices for the subtree rooted at the given node."""
         indices = self.node_tensor(node_name).indices
@@ -1481,6 +1425,9 @@ class TreeNetwork(TensorNetwork):
             if n in visited:
                 continue
 
+            if self.get_contraction_index(n, node_name)[0].name in cut:
+                continue
+
             leaves.append(self.leaf_indices(visited, n))
             common_index = self.get_contraction_index(n, node_name)
             assert len(common_index) == 1
@@ -1489,82 +1436,44 @@ class TreeNetwork(TensorNetwork):
         # reorder the leaves according to the order of the indices
         return [leaves[i] for i in np.argsort(perm)]
 
-    def cross(
-        self,
-        tensor_func: TensorFunc,
-        restrictions: Dict[Index, np.ndarray],
-        node_name: NodeName,
-        lefts: Sequence[int],
-        delta: Optional[float] = None,
-        max_k: Optional[int] = None,
-        compute_data: bool = True,
-    ) -> Tuple[NodeName, NodeName, CrossApproxState]:
-        """Split a node by cross approximation."""
-        logger.debug("running cross")
+    # def cross(
+    #     self,
+    #     tensor_func: TensorFunc,
+    #     delta: Optional[float] = None,
+    #     max_k: Optional[int] = None,
+    #     compute_data: bool = True,
+    # ) -> Tuple[NodeName, NodeName, CrossApproxState]:
+    #     """Split a node by cross approximation."""
+    #     logger.debug("running cross")
 
-        free_indices = sorted(self.free_indices())
-        tensor = self.node_tensor(node_name)
+    #     # reconstruct the dimension tree for the current network
+    #     root = self.node_by_free_index(self.free_indices()[0].name)
+    #     dim_tree = self.dimension_tree(root)
+    #     logger.debug("dimension tree created")
 
-        # create the index map by DFS
-        # the result is in the order of its indices
-        leaves = self.leaf_indices(set(), node_name)
+    #     index_values = {} # mapping from index name to its position and values
 
-        index_map = {}
-        local_restrictions = {}
-        for ind, lvs in zip(tensor.indices, leaves):
-            # print(lvs, flatten_lists(lvs))
-            index_map[ind] = flatten_lists(lvs)
+    #     # walk and update the indices from root to leaves
 
-            # create a restriction for each internal index
-            if ind not in free_indices:
-                # extract the restrictions at the corresponding positions
-                local_args = []
-                for args in restrictions[ind]:
-                    arg_list = []
-                    for i in index_map[ind]:
-                        arg_list.append(args[free_indices.index(i)])
+    #             for ind in indices:
+    #                 if ind in free_indices:
+    #                     ranges.append(range(ind.size))
+    #                     orders.append(free_indices.index(ind))
 
-                    # if arg_list not in local_args:
-                    #     # print("adding local arg restriction", arg_list)
-                    #     local_args.append(arg_list)
-                    local_args.append(arg_list)
+    #             for cidx, c in enumerate(tree.children):
+    #                 ranges.append(tree.cvals[cidx])
+    #                 orders.extend([free_indices.index(i) for i in c.indices])
 
-                local_restrictions[ind] = np.array(local_args)
-                # print(ind, local_restrictions[ind])
+    #             args = np.array(list(itertools.product(*ranges)))
+    #             # reorder the args according to the indices
+    #             args = args[:, np.argsort(orders)]
+    #             # evaluate the function
+    #             values = tensor_func(args)
+    #             # update the index values by maxvol
+    #             # first, reshape the values to the proper shape
+    #             # the updating child on one side, and all others on the other
 
-        logger.debug("calling cross_approx on tensors")
-        u, v, rcs, st = tensor.cross_approx(
-            tensor_func,
-            index_map,
-            local_restrictions,
-            lefts,
-            delta,
-            max_k,
-            compute_data=compute_data,
-        )
-
-        new_index = self.fresh_index()
-        x_nbrs = list(self.network.neighbors(node_name))
-        self.network.remove_node(node_name)
-
-        u_name = node_name
-        self.add_node(u_name, u.rename_indices({"r_split": new_index}))
-        v_name = self.fresh_node()
-        self.add_node(v_name, v.rename_indices({"r_split": new_index}))
-
-        for y in x_nbrs:
-            y_inds = self.node_tensor(y).indices
-            if any(i in y_inds for i in u.indices):
-                self.add_edge(u_name, y)
-            if any(i in y_inds for i in v.indices):
-                self.add_edge(v_name, y)
-
-        self.add_edge(u_name, v_name)
-
-        restrictions[u.indices[-1]] = rcs
-        # print(rcs)
-
-        return u_name, v_name, st
+    #             values = values.reshape()
 
     def node_by_free_index(self, index: IndexName) -> NodeName:
         """Identify the node in the network containing the given free index"""
@@ -1576,74 +1485,79 @@ class TreeNetwork(TensorNetwork):
 
         raise KeyError(f"Cannot find index {index} in the network")
 
-    @dataclass
-    class DimTreeNode:
-        """Class for a dimension tree node"""
+    def canonicalize_indices(self, tree: DimTreeNode):
+        """sort the children by free indices
+        and get the corresponding children nodes
+        """
+        indices: List[Index] = []
+        node_indices = self.node_tensor(tree.info.node).indices
+        for ind in tree.info.free_indices:
+            indices.append(ind)
 
-        indices: List[Index]
-        children: List["TreeNetwork.DimTreeNode"]
-        node: NodeName
+        # children indices
+        for n in sorted(tree.conn.children):
+            self.canonicalize_indices(n)
+            ind = self.get_contraction_index(n.info.node, tree.info.node)[0]
+            indices.append(ind)
 
-        def __lt__(self, other: Self) -> bool:
-            return sorted(self.indices) < sorted(other.indices)
+        # parent indices, should be one
+        p_indices = [ind for ind in node_indices if ind not in indices]
+        assert len(p_indices) <= 1, (
+            f"should have at most one parent index, but get {p_indices}"
+        )
 
-        def sorted_indices(
-            self, net: TensorNetwork
-        ) -> Tuple[int, Sequence[int]]:
-            """sort the children by free indices
-            and get the corresponding children nodes
-            """
-            indices: List[Index] = []
-            free_indices = net.free_indices()
-            node_indices = net.node_tensor(self.node).indices
-            for ind in node_indices:
-                if ind in free_indices:
-                    indices.append(ind)
+        indices.extend(p_indices)
+        perm = [node_indices.index(ind) for ind in indices]
+        new_tensor = self.node_tensor(tree.info.node).permute(perm)
+        self.set_node_tensor(tree.info.node, new_tensor)
 
-            # sort free indices in the order of names
-            indices = sorted(indices)
-            free_cnt = len(indices)
-
-            # children indices
-            for n in sorted(self.children):
-                ind = net.get_contraction_index(n.node, self.node)[0]
-                indices.append(ind)
-
-            # parent indices, should be one
-            p_indices = [ind for ind in node_indices if ind not in indices]
-            assert len(p_indices) <= 1, (
-                f"should have at most one parent index, but get {p_indices}"
-            )
-
-            indices.extend(p_indices)
-
-            return free_cnt, [node_indices.index(ind) for ind in indices]
-
-    def dimension_tree(self, root: NodeName) -> "TreeNetwork.DimTreeNode":
+    def dimension_tree(self, root: NodeName) -> DimTreeNode:
         """Create a mapping from set of indices to node names.
         Assume that the tree is rooted at the give node.
         """
         free_indices = self.free_indices()
 
         # do the dfs traversal starting from the root
-        def dfs(
-            visited: Set[NodeName], node: NodeName
-        ) -> TreeNetwork.DimTreeNode:
+        def dfs(visited: Set[NodeName], node: NodeName) -> DimTreeNode:
             visited.add(node)
-            children: List[TreeNetwork.DimTreeNode] = []
+            children: List[DimTreeNode] = []
+            up_vals, down_vals = [], []
             for nbr in self.network.neighbors(node):
                 if nbr not in visited:
                     nbr_tree = dfs(visited, nbr)
                     children.append(nbr_tree)
+                    up_vals.extend([0] * len(nbr_tree.info.indices))
 
-            indices = set(ind for c in children for ind in c.indices)
+            indices = set(ind for c in children for ind in c.info.indices)
+            node_free_indices = []
             for ind in self.node_tensor(node).indices:
                 if ind in free_indices:
                     indices.add(ind)
+                    node_free_indices.append(ind)
+                    if len(children) == 0:
+                        up_vals.append(0)
 
-            return TreeNetwork.DimTreeNode(list(indices), children, node)
+            for ind in free_indices:
+                if ind not in indices:
+                    down_vals.append(0)
 
-        return dfs(set(), root)
+            # both up vals and down vals should include the free indices
+            res = DimTreeNode(
+                node=node,
+                indices=list(indices),
+                free_indices=sorted(node_free_indices),
+                children=sorted(children, key=lambda x: x.info.indices),
+                up_vals=[up_vals],
+                down_vals=[down_vals],
+            )
+            for c in res.conn.children:
+                c.conn.parent = res
+
+            return res
+
+        tree = dfs(set(), root)
+        self.canonicalize_indices(tree)
+        return tree
 
     def __add__(self, other: Any) -> Self:
         """Add two tree networks."""
@@ -1661,29 +1575,7 @@ class TreeNetwork(TensorNetwork):
 
         result_net = copy.deepcopy(self)
         result_net.network.clear()
-
-        def _add(
-            tree1: TreeNetwork.DimTreeNode, tree2: TreeNetwork.DimTreeNode
-        ) -> None:
-            tensor1 = self.node_tensor(tree1.node)
-            tensor2 = other.node_tensor(tree2.node)
-            assert len(tensor1.indices) == len(tensor2.indices)
-            # permute the indices to follow the canonical order
-            # free indices, children indices, parent indices
-            free_cnt, perm = tree1.sorted_indices(self)
-            tensor1 = tensor1.permute(perm)
-            _, perm = tree2.sorted_indices(other)
-            tensor2 = tensor2.permute(perm)
-            block = tensor1.block_diagonal(tensor2, block_start=free_cnt)
-            result_net.add_node(tree1.node, block)
-
-            children1 = sorted(tree1.children, key=lambda x: x.indices)
-            children2 = sorted(tree2.children, key=lambda x: x.indices)
-            for c1, c2 in zip(children1, children2):
-                _add(c1, c2)
-                result_net.add_edge(tree1.node, c1.node)
-
-        _add(self_tree, other_tree)
+        self._binary_op(other, "add", self_tree, other_tree, result_net)
         # round the result to compress the ranks
         result_net.round(self_root, delta=1e-6)
 
@@ -1705,33 +1597,38 @@ class TreeNetwork(TensorNetwork):
 
         result_net = copy.deepcopy(self)
         result_net.network.clear()
-
-        def _mul(
-            tree1: TreeNetwork.DimTreeNode, tree2: TreeNetwork.DimTreeNode
-        ) -> None:
-            tensor1 = self.node_tensor(tree1.node)
-            tensor2 = other.node_tensor(tree2.node)
-            assert len(tensor1.indices) == len(tensor2.indices)
-            # permute the indices to follow the canonical order
-            # free indices, children indices, parent indices
-            _, perm = tree1.sorted_indices(self)
-            tensor1 = tensor1.permute(perm)
-            _, perm = tree2.sorted_indices(other)
-            tensor2 = tensor2.permute(perm)
-            mul_res = tensor1.mult(tensor2, self.free_indices())
-            result_net.add_node(tree1.node, mul_res)
-
-            children1 = sorted(tree1.children, key=lambda x: x.indices)
-            children2 = sorted(tree2.children, key=lambda x: x.indices)
-            for c1, c2 in zip(children1, children2):
-                _mul(c1, c2)
-                result_net.add_edge(tree1.node, c1.node)
-
-        _mul(self_tree, other_tree)
+        self._binary_op(other, "mul", self_tree, other_tree, result_net)
         # round the result to compress the ranks
         result_net.round(self_root, delta=1e-6)
 
         return result_net
+
+    def _binary_op(
+        self,
+        other: "TreeNetwork",
+        op: Literal["add", "mul"],
+        tree1: DimTreeNode,
+        tree2: DimTreeNode,
+        result_net: Self,
+    ) -> None:
+        tensor1 = self.node_tensor(tree1.info.node)
+        tensor2 = other.node_tensor(tree2.info.node)
+        assert len(tensor1.indices) == len(tensor2.indices)
+
+        if op == "add":
+            res = tensor1.block_diagonal(tensor2, len(tree1.info.free_indices))
+        elif op == "mul":
+            res = tensor1.mult(tensor2, self.free_indices())
+        else:
+            raise ValueError(f"Unknown operation {op}")
+
+        result_net.add_node(tree1.info.node, res)
+
+        for c1, c2 in zip(
+            tree1.conn.children, tree2.conn.children
+        ):
+            self._binary_op(other, op, c1, c2, result_net)
+            result_net.add_edge(tree1.info.node, c1.info.node)
 
 
 class TensorTrain(TreeNetwork):

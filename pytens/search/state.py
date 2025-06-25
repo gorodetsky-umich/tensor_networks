@@ -283,7 +283,7 @@ class ISplit(Action):
         if compute_data:
             net.node_tensor(s).update_val_size(net.value(s)[:r, :r])
             if compute_uv:
-                net.node_tensor(u).update_val_size(net.value(u)[:, :r])
+                net.node_tensor(u).update_val_size(net.value(u)[..., :r])
                 net.node_tensor(v).update_val_size(net.value(v)[:r])
 
         return (u, s, v), err
