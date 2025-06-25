@@ -26,7 +26,8 @@ import networkx as nx
 import numpy as np
 import opt_einsum as oe
 
-from .cross.cross import *
+from .cross.cross import cross
+from .cross.funcs import TensorFunc
 from .types import (
     Index,
     IndexMerge,
@@ -1436,6 +1437,12 @@ class TreeNetwork(TensorNetwork):
         # reorder the leaves according to the order of the indices
         return [leaves[i] for i in np.argsort(perm)]
 
+    def cross(self, tensor_func: TensorFunc, eps: Optional[float] = None) -> None:
+        """Run cross approximation over the current network structure 
+        until the relative error goes below the prescribed epsilon."""
+        root = list(self.network.nodes)[0]
+        cross(tensor_func, self, root, eps)
+
     # def cross(
     #     self,
     #     tensor_func: TensorFunc,
@@ -1521,12 +1528,12 @@ class TreeNetwork(TensorNetwork):
         def dfs(visited: Set[NodeName], node: NodeName) -> DimTreeNode:
             visited.add(node)
             children: List[DimTreeNode] = []
-            up_vals, down_vals = [], []
+            up_szs, down_szs = [], []
             for nbr in self.network.neighbors(node):
                 if nbr not in visited:
                     nbr_tree = dfs(visited, nbr)
                     children.append(nbr_tree)
-                    up_vals.extend([0] * len(nbr_tree.info.indices))
+                    up_szs.extend([ind.size for ind in nbr_tree.info.indices])
 
             indices = set(ind for c in children for ind in c.info.indices)
             node_free_indices = []
@@ -1535,23 +1542,34 @@ class TreeNetwork(TensorNetwork):
                     indices.add(ind)
                     node_free_indices.append(ind)
                     if len(children) == 0:
-                        up_vals.append(0)
+                        up_szs.append(ind.size)
 
             for ind in free_indices:
                 if ind not in indices:
-                    down_vals.append(0)
+                    down_szs.append(ind.size)
 
-            # both up vals and down vals should include the free indices
+            # instantiate up_vals with appropriate sizes
             res = DimTreeNode(
                 node=node,
                 indices=list(indices),
                 free_indices=sorted(node_free_indices),
                 children=sorted(children, key=lambda x: x.info.indices),
-                up_vals=[up_vals],
-                down_vals=[down_vals],
+                up_vals=[up_szs],
+                down_vals=[down_szs],
             )
             for c in res.conn.children:
                 c.conn.parent = res
+                rank = self.get_contraction_index(c.info.node, node)[0].size
+
+                up_vals = []
+                for sz in c.values.up_vals[0]:
+                    up_vals.append(np.random.randint(0, sz-1, rank))
+                c.values.up_vals = np.stack(up_vals, axis=-1).tolist()
+
+                down_vals = []
+                for sz in c.values.down_vals[0]:
+                    down_vals.append(np.random.randint(0, sz-1, rank))
+                c.values.down_vals = np.stack(down_vals, axis=-1).tolist()
 
             return res
 

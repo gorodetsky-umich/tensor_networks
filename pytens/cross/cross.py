@@ -177,7 +177,7 @@ def incr_ranks(tree: DimTreeNode, net):
 
 
 @profile
-def run(
+def cross(
     f: TensorFunc,
     net: "pt.TreeNetwork",
     root: "pt.NodeName",
@@ -238,34 +238,34 @@ if __name__ == "__main__":
     net = pt.TreeNetwork()
     a = pt.Tensor(
         np.empty((0, 0)),
-        [pt.Index(0, n), pt.Index("k", 1)],
+        [pt.Index(0, n), pt.Index("k", 2)],
     )
     net.add_node("A", a)
     e = pt.Tensor(
         np.empty((0, 0)),
-        [pt.Index(1, n), pt.Index("l", 1)],
+        [pt.Index(1, n), pt.Index("l", 2)],
     )
     net.add_node("E", e)
     f = pt.Tensor(
         np.empty((0, 0, 0)),
-        [pt.Index("k", 1), pt.Index("l", 1), pt.Index("m", 1)],
+        [pt.Index("k", 2), pt.Index("l", 2), pt.Index("m", 12)],
     )
     net.add_node("F", f)
     net.add_edge("A", "F")
     net.add_edge("E", "F")
     b = pt.Tensor(
         np.empty((0, 0)),
-        [pt.Index("j", 1), pt.Index(2, n)],
+        [pt.Index("j", 2), pt.Index(2, n)],
     )
     net.add_node("B", b)
     c = pt.Tensor(
         np.empty((0, 0)),
-        [pt.Index("i", 1), pt.Index(3, n)],
+        [pt.Index("i", 2), pt.Index(3, n)],
     )
     net.add_node("C", c)
     d = pt.Tensor(
         np.empty((0, 0, 0)),
-        [pt.Index("i", 1), pt.Index("j", 1), pt.Index("m", 1)],
+        [pt.Index("i", 2), pt.Index("j", 2), pt.Index("m", 12)],
     )
     net.add_node("D", d)
     net.add_edge("B", "D")
@@ -285,7 +285,7 @@ if __name__ == "__main__":
     )
     # create the DimTreeNode
     tree = net.dimension_tree("A")
-    run(f, net, "A", 0.1)
+    cross(f, net, "A", 0.1)
     print("=====result net=====")
     print(net)
     print("end:", time.time() - total_start)
