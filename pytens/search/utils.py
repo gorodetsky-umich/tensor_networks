@@ -129,8 +129,8 @@ def rtol(
         )
 
     if norm == "M":
-        return np.max(abs(base_tensor - approx_tensor)) / np.max(
-            abs(base_tensor)
+        return float(
+            np.max(abs(base_tensor - approx_tensor)) / np.max(abs(base_tensor))
         )
 
     raise ValueError("unsupported norm type")

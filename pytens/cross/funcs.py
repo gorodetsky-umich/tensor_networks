@@ -2,6 +2,7 @@
 
 from abc import abstractmethod
 from typing import List
+from functools import lru_cache
 
 import numpy as np
 
