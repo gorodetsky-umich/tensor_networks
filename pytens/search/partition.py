@@ -151,6 +151,7 @@ class PartitionSearch:
     ) -> SearchResult:
         res = SearchResult()
         if tensor_func is not None:
+            _ = st.network.cross(tensor_func, self.config.engine.eps)
             # st.curr_delta = self.config.engine.eps * st.network.norm()
             res.best_state = st
             return res
