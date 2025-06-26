@@ -316,9 +316,8 @@ class CrossApproximation:
         for n in tree_nodes:
             if len(n.up_info.nodes) == 0:
                 continue
-            n_indices = net.node_tensor(n.info.node).indices
-            p_indices = net.node_tensor(n.conn.parent.info.node).indices
-            root_to_leaves(f, p_indices, n_indices, n)
+
+            root_to_leaves(f, n)
 
             logger.debug(
                 "root to leaves: %s, up indices: %s, down indices: %s",
