@@ -993,32 +993,160 @@ class TestGeneralOps(unittest.TestCase):
 class TestCross(unittest.TestCase):
     def test_cross_err(self):
         p = 25
-        indices = [Index(f"I{i}", p, range(1,p+1)) for i in range(4)]
+        indices = [Index(i, p, range(1,p+1)) for i in range(4)]
         tensor_func = FuncHilbert(indices)
-        net = TreeNetwork()
-        net.add_node("G", Tensor(np.zeros((p, p, p, p)), indices))
-        restrictions = {}
-        net.cross(tensor_func, restrictions, "G", [0], delta=1e-1)
-        net_val = net.contract().value
-        all_args = np.mgrid[0:p,0:p,0:p,0:p].reshape(4, -1).T
-        real_val = tensor_func(all_args).reshape(p, p, p, p)
-        rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
-        self.assertLessEqual(float(rtol), 0.5)
 
-    def test_cross_two_step(self):
-        p = 25
-        indices = [Index(f"I{i}", p,range(1,p+1)) for i in range(4)]
-        tensor_func = FuncHilbert(indices)
         net = TreeNetwork()
-        net.add_node("G", Tensor(np.zeros((p, p, p, p)), indices))
-        restrictions = {}
-        net.cross(tensor_func, restrictions, "G", [0], delta=1e-1)
-        net.cross(tensor_func, restrictions, "n0", [1], delta=1e-1)
+        net.add_node("A", Tensor(np.empty((0, 0, 0)), indices[:2] + [Index("i", 1)]))
+        net.add_node("B", Tensor(np.empty((0, 0, 0)), indices[-2:] + [Index("i", 1)]))
+        net.add_edge("A", "B")
+        net.cross(tensor_func, 0.1)
+
         net_val = net.contract().value
         all_args = np.mgrid[0:p,0:p,0:p,0:p].reshape(4, -1).T
         real_val = tensor_func(all_args).reshape(p, p, p, p)
         rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
-        self.assertLessEqual(float(rtol), 0.5)
+        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(net.cost(), p**4)
+
+    def test_cross_tt(self):
+        p = 25
+        indices = [Index(i, p,range(1,p+1)) for i in range(4)]
+        tensor_func = FuncHilbert(indices)
+
+        net = TreeNetwork()
+        net.add_node("A", Tensor(np.empty((0, 0, 0)), indices[:2] + [Index("i", 1)]))
+        net.add_node("B", Tensor(np.empty((0, 0, 0)), [indices[-2], Index("i", 1), Index("j", 1)]))
+        net.add_node("C", Tensor(np.empty((0, 0)), [indices[-1], Index("j", 1)]))
+        net.add_edge("A", "B")
+        net.add_edge("B", "C")
+        net.cross(tensor_func, 0.1)
+
+        net_val = net.contract().value
+        all_args = np.mgrid[0:p,0:p,0:p,0:p].reshape(4, -1).T
+        real_val = tensor_func(all_args).reshape(p, p, p, p)
+        rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
+        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(net.cost(), p**4)
+
+    def test_cross_ht(self):
+        p = 25
+        indices = [Index(i, p,range(1,p+1)) for i in range(4)]
+        tensor_func = FuncHilbert(indices)
+
+        net = TreeNetwork()
+        net.add_node("A", Tensor(np.empty((0, 0)), [Index("i0", 1), Index("i1", 1)]))
+        net.add_node("B", Tensor(np.empty((0, 0, 0)), [Index("i2", 1), Index("i4", 1), Index("i0", 1)]))
+        net.add_node("C", Tensor(np.empty((0, 0, 0)), [Index("i3", 1), Index("i5", 1), Index("i1", 1)]))
+        net.add_node("D", Tensor(np.empty((0, 0)), [Index("i2", 1), indices[0]]))
+        net.add_node("E", Tensor(np.empty((0, 0)), [Index("i4", 1), indices[1]]))
+        net.add_node("F", Tensor(np.empty((0, 0)), [Index("i3", 1), indices[2]]))
+        net.add_node("G", Tensor(np.empty((0, 0)), [Index("i5", 1), indices[3]]))
+        net.add_edge("A", "B")
+        net.add_edge("A", "C")
+        net.add_edge("B", "D")
+        net.add_edge("B", "E")
+        net.add_edge("C", "F")
+        net.add_edge("C", "G")
+        net.cross(tensor_func, 0.1)
+
+        net_val = net.contract().value
+        all_args = np.mgrid[0:p,0:p,0:p,0:p].reshape(4, -1).T
+        real_val = tensor_func(all_args).reshape(p, p, p, p)
+        rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
+        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(net.cost(), p**4)
+
+    def test_cross_tree_no_internal(self):
+        p = 25
+        indices = [Index(f"s{i}", p*(i+1),range(1,p*(i+1)+1)) for i in range(4)]
+        tensor_func = FuncHilbert(indices)
+
+        net = TreeNetwork()
+        #
+        #   A         E
+        #     \     /
+        #      C - D
+        #     /     \
+        #   B         F
+        #
+        net.add_node("A", Tensor(np.empty((0, 0)), [Index("i", 1), indices[0]]))
+        net.add_node("B", Tensor(np.empty((0, 0)), [indices[1], Index("j", 1)]))
+        net.add_node("C", Tensor(np.empty((0, 0, 0)), [Index("i", 1), Index("j", 1), Index("k", 1)]))
+        net.add_node("D", Tensor(np.empty((0, 0, 0)), [Index("k", 1), Index("l", 1), Index("m", 1)]))
+        net.add_node("E", Tensor(np.empty((0, 0)), [Index("l", 1), indices[2]]))
+        net.add_node("F", Tensor(np.empty((0, 0)), [Index("m", 1), indices[3]]))
+        net.add_edge("A", "C")
+        net.add_edge("B", "C")
+        net.add_edge("C", "D")
+        net.add_edge("D", "E")
+        net.add_edge("D", "F")
+        net.cross(tensor_func, 0.1)
+
+        net_val = net.contract().value
+        all_args = np.mgrid[0:p,0:p*2,0:p*3,0:p*4].reshape(4, -1).T
+        real_val = tensor_func(all_args).reshape(p, p*2, p*3, p*4)
+        rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
+        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(net.cost(), p**4)
+
+    def test_cross_tree(self):
+        p = 25
+        indices = [Index(i, p*(i+1),range(1,p*(i+1)+1)) for i in range(4)]
+        tensor_func = FuncHilbert(indices)
+
+        net = TreeNetwork()
+        net.add_node("A", Tensor(np.empty((0, 0, 0)), [Index("i", 1), Index("j", 1), indices[2]]))
+        net.add_node("B", Tensor(np.empty((0, 0)), [indices[0], Index("k", 1)]))
+        net.add_node("C", Tensor(np.empty((0, 0)), [indices[1], Index("j", 1)]))
+        net.add_node("D", Tensor(np.empty((0, 0, 0)), [Index("i", 1), Index("k", 1), Index("l", 1)]))
+        net.add_node("E", Tensor(np.empty((0, 0)), [Index("l", 1), indices[3]]))
+        net.add_edge("A", "C")
+        net.add_edge("A", "D")
+        net.add_edge("D", "B")
+        net.add_edge("D", "E")
+        # print(net)
+        net.cross(tensor_func, 0.1)
+
+        net_val = net.contract().value
+        all_args = np.mgrid[0:p,0:p*2,0:p*3,0:p*4].reshape(4, -1).T
+        real_val = tensor_func(all_args).reshape(p, p*2, p*3, p*4)
+        rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
+        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(net.cost(), p**4)
+
+    def test_cross_multi_tree(self):
+        p = 25
+        indices = [Index(i, p*(i//2+1),range(1,p*(i//2+1)+1)) for i in range(6)]
+        tensor_func = FuncHilbert(indices)
+
+        net = TreeNetwork()
+        net.add_node("A", Tensor(np.empty((0, 0, 0, 0)), [Index("i2", 1), Index("i0", 1), Index("i1", 1), indices[2]]))
+        net.add_node("B", Tensor(np.empty((0, 0, 0, 0)), [Index("i0", 1), Index("i3", 1), Index("i4", 1), Index("i5", 1)]))
+        net.add_node("C", Tensor(np.empty((0, 0)), [indices[1], Index("i3", 1)]))
+        net.add_node("D", Tensor(np.empty((0, 0)), [Index("i4", 1), indices[0]]))
+        net.add_node("E", Tensor(np.empty((0, 0)), [Index("i5", 1), indices[3]]))
+        net.add_node("F", Tensor(np.empty((0, 0)), [Index("i1", 1), indices[5]]))
+        net.add_node("G", Tensor(np.empty((0, 0)), [Index("i2", 1), indices[4]]))
+        net.add_edge("A", "B")
+        net.add_edge("A", "F")
+        net.add_edge("A", "G")
+        net.add_edge("B", "C")
+        net.add_edge("B", "D")
+        net.add_edge("B", "E")
+        # print(net)
+        net.cross(tensor_func, 0.1)
+        # print(net)
+
+        validation = []
+        for ind in tensor_func.indices:
+            validation.append(np.random.randint(0, ind.size - 1, size=10000))
+        validation = np.stack(validation, axis=-1)
+        net_val = net.evaluate(validation)
+        real_val = tensor_func(validation)
+        rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
+        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(net.cost(), p**4)
 
 if __name__ == "__main__":
     unittest.main()

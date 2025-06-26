@@ -14,6 +14,7 @@ class TensorFunc:
     def __init__(self, indices: List[Index]):
         self.d = len(indices)
         self.indices = indices
+        self.stats = 0
 
     def _index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized indices to function arguments"""
@@ -47,6 +48,7 @@ class TensorFunc:
         raise NotImplementedError
 
     def __call__(self, indices: np.ndarray):
+        self.stats += indices.shape[0]
         args = self._index_to_args(indices)
         return self.run(args)
 

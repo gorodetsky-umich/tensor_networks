@@ -39,7 +39,7 @@ from .types import (
 )
 from .utils import delta_svd
 
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -1525,55 +1525,58 @@ class TreeNetwork(TensorNetwork):
         free_indices = self.free_indices()
 
         # do the dfs traversal starting from the root
-        def dfs(visited: Set[NodeName], node: NodeName) -> DimTreeNode:
+        def construct(visited: Set[NodeName], node: NodeName) -> DimTreeNode:
             visited.add(node)
+
             children: List[DimTreeNode] = []
-            up_szs, down_szs = [], []
             for nbr in self.network.neighbors(node):
                 if nbr not in visited:
-                    nbr_tree = dfs(visited, nbr)
+                    nbr_tree = construct(visited, nbr)
                     children.append(nbr_tree)
-                    up_szs.extend([ind.size for ind in nbr_tree.info.indices])
 
-            indices = set(ind for c in children for ind in c.info.indices)
-            node_free_indices = []
+            indices, node_free_indices = [], []
+            up_indices, down_indices = [], []
             for ind in self.node_tensor(node).indices:
                 if ind in free_indices:
-                    indices.add(ind)
+                    indices.append(ind)
                     node_free_indices.append(ind)
-                    if len(children) == 0:
-                        up_szs.append(ind.size)
+                    up_indices.append(ind)
 
-            for ind in free_indices:
-                if ind not in indices:
-                    down_szs.append(ind.size)
+            for c in children:
+                up_indices.extend(c.info.indices)
+                indices.extend(c.info.indices)
 
-            # instantiate up_vals with appropriate sizes
             res = DimTreeNode(
                 node=node,
-                indices=list(indices),
+                indices=indices,
                 free_indices=sorted(node_free_indices),
                 children=sorted(children, key=lambda x: x.info.indices),
-                up_vals=[up_szs],
-                down_vals=[down_szs],
+                up_vals=[],
+                down_vals=[],
+                up_indices=up_indices,
+                down_indices=[],
             )
+
             for c in res.conn.children:
                 c.conn.parent = res
-                rank = self.get_contraction_index(c.info.node, node)[0].size
-
-                up_vals = []
-                for sz in c.values.up_vals[0]:
-                    up_vals.append(np.random.randint(0, sz-1, rank))
-                c.values.up_vals = np.stack(up_vals, axis=-1).tolist()
-
-                down_vals = []
-                for sz in c.values.down_vals[0]:
-                    down_vals.append(np.random.randint(0, sz-1, rank))
-                c.values.down_vals = np.stack(down_vals, axis=-1).tolist()
 
             return res
 
-        tree = dfs(set(), root)
+        def assign_indices(tree: DimTreeNode) -> None:
+            if tree.conn.parent is not None:
+                p_info = tree.conn.parent.info
+                tree.info.down_indices = p_info.free_indices[:]
+                tree.info.down_indices.extend(p_info.down_indices)
+                for c in tree.conn.parent.conn.children:
+                    if c.info.node != tree.info.node:
+                        tree.info.down_indices.extend(c.info.up_indices)
+
+            for c in tree.conn.children:
+                assign_indices(c)
+
+
+        tree = construct(set(), root)
+        assign_indices(tree)
         self.canonicalize_indices(tree)
         return tree
 

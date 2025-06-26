@@ -82,6 +82,8 @@ class NodeInfo:
     node: NodeName
     indices: List[Index]
     free_indices: List[Index]
+    up_indices: List[Index]
+    down_indices: List[Index]
 
 class Connection:
     """Node connections including children and parent"""
@@ -103,12 +105,14 @@ class DimTreeNode:
         node: NodeName,
         indices: List[Index],
         free_indices: List[Index],
+        up_indices: List[Index],
+        down_indices: List[Index],
         children: List["DimTreeNode"],
         down_vals: List[List[int]],
         up_vals: List[List[int]],
         parent: Optional["DimTreeNode"] = None,
     ):
-        self.info = NodeInfo(node, indices, free_indices)
+        self.info = NodeInfo(node, indices, free_indices, up_indices, down_indices)
         self.conn = Connection(children, parent)
         self.values = CrossVals(up_vals, down_vals)
 
