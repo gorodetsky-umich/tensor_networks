@@ -162,11 +162,11 @@ class OSplit(Action):
         )
 
     def cross(
-        self, net: TreeNetwork, tensor_func: TensorFunc, restrictions: Dict
+        self, net: TreeNetwork
     ) -> Tuple[NodeName, NodeName]:
         """Execute the split index action with cross approximation"""
         ac = self.to_isplit(net)
-        return ac.cross(net, tensor_func, restrictions)
+        return ac.cross(net)
 
     def svd(
         self,
@@ -220,15 +220,18 @@ class ISplit(Action):
         return True
 
     def cross(
-        self, net: TreeNetwork, tensor_func: TensorFunc, restrictions: Dict
+        self, net: TreeNetwork
     ) -> Tuple[NodeName, NodeName]:
-        u, v, _ = net.cross(
-            tensor_func,
-            restrictions,
+        """Execute the split action with cross approximation."""
+        (u, s, v), _ = net.svd(
             self.node,
             self.left_indices,
-            max_k=self.target_size,
+            SVDConfig(compute_data=False),
         )
+        net.merge(v, s, compute_data=False)
+        if self.target_size is not None:
+            net.get_contraction_index(u, v)[0].with_new_size(self.target_size)
+
         return u, v
 
     def svd(
@@ -530,10 +533,8 @@ class SearchState:
             )
 
             if tensor_func is not None:
-                restrictions = copy.deepcopy(self.restrictions)
                 # print("running cross for", ac)
-                u, v = action.cross(new_net, tensor_func, restrictions)
-                new_state.restrictions = restrictions
+                u, v = action.cross(new_net)
                 # new_err = cross_st.ranks_and_errors[-1][1]
                 # new_state.curr_delta =
                 # np.sqrt(self.curr_delta ** 2 - new_err ** 2)

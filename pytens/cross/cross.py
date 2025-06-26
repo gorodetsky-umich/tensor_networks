@@ -1,17 +1,15 @@
-from typing import Optional, Sequence, Tuple, List, Literal, Dict
-import time
-from itertools import product
 import random
+from itertools import product
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import scipy
 import teneva
-
-from pytens.cross.funcs import TensorFunc, FuncHilbert
-import pytens.algs as pt
-from pytens.types import Index, DimTreeNode
-
 from line_profiler import profile
+
+import pytens.algs as pt
+from pytens.cross.funcs import TensorFunc
+from pytens.types import DimTreeNode
 
 
 def construct_matrix(tensor_func: TensorFunc, rows, cols) -> np.ndarray:
@@ -43,7 +41,7 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         dr_max = 1
 
     q = q[:, :real_rank]
-    return teneva._maxvol(
+    return teneva._maxvol(  # pylint: disable=W0212
         q, tau=1.01, dr_min=dr_min, dr_max=dr_max, tau0=1.01, k0=100
     )
 
@@ -54,7 +52,8 @@ def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
     down_ranges = []
 
     # the indices in the DimTreeNode are up indices
-    # when traversing from root to leaves, we need to consider the down indices of the root and the up indices of the siblings
+    # when traversing from root to leaves, we need to consider
+    # the down indices of the root and the up indices of the siblings
     if node.conn.parent is not None:
         for ind in node.info.down_indices:
             if ind in node.conn.parent.info.free_indices:
@@ -144,7 +143,8 @@ def cross(
     root: "pt.NodeName",
     eps: float = 0.1,
     val_size: int = 10000,
-):
+    max_size: Optional[int] = None,
+) -> Sequence[Tuple[int, float]]:
     """Cross approximation for the given network structure."""
     tree = net.dimension_tree(root)
     init_values(net, tree)
@@ -156,6 +156,7 @@ def cross(
     validation = np.stack(validation, axis=-1)
 
     tree_nodes = tree.preorder()
+    ranks_and_errs = []
     while not converged:
         for n in tree_nodes:
             if n.conn.parent is None:
@@ -185,9 +186,11 @@ def cross(
         estimate = estimate.reshape(-1)
         real = f(validation)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
+        ranks_and_errs.append((len(up_vals), err))
         # print("Error:", err)
-        if err <= eps:
-            return
-        
+        if err <= eps or (max_size is not None and len(up_vals) >= max_size):
+            break
+
         incr_ranks(tree, net)
 
+    return ranks_and_errs

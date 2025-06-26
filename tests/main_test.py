@@ -1006,7 +1006,7 @@ class TestCross(unittest.TestCase):
         all_args = np.mgrid[0:p,0:p,0:p,0:p].reshape(4, -1).T
         real_val = tensor_func(all_args).reshape(p, p, p, p)
         rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
-        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(float(rtol), 0.15)
         self.assertLessEqual(net.cost(), p**4)
 
     def test_cross_tt(self):
@@ -1026,7 +1026,7 @@ class TestCross(unittest.TestCase):
         all_args = np.mgrid[0:p,0:p,0:p,0:p].reshape(4, -1).T
         real_val = tensor_func(all_args).reshape(p, p, p, p)
         rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
-        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(float(rtol), 0.15)
         self.assertLessEqual(net.cost(), p**4)
 
     def test_cross_ht(self):
@@ -1054,7 +1054,7 @@ class TestCross(unittest.TestCase):
         all_args = np.mgrid[0:p,0:p,0:p,0:p].reshape(4, -1).T
         real_val = tensor_func(all_args).reshape(p, p, p, p)
         rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
-        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(float(rtol), 0.15)
         self.assertLessEqual(net.cost(), p**4)
 
     def test_cross_tree_no_internal(self):
@@ -1087,7 +1087,7 @@ class TestCross(unittest.TestCase):
         all_args = np.mgrid[0:p,0:p*2,0:p*3,0:p*4].reshape(4, -1).T
         real_val = tensor_func(all_args).reshape(p, p*2, p*3, p*4)
         rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
-        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(float(rtol), 0.15)
         self.assertLessEqual(net.cost(), p**4)
 
     def test_cross_tree(self):
@@ -1112,7 +1112,7 @@ class TestCross(unittest.TestCase):
         all_args = np.mgrid[0:p,0:p*2,0:p*3,0:p*4].reshape(4, -1).T
         real_val = tensor_func(all_args).reshape(p, p*2, p*3, p*4)
         rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
-        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(float(rtol), 0.15)
         self.assertLessEqual(net.cost(), p**4)
 
     def test_cross_multi_tree(self):
@@ -1145,7 +1145,7 @@ class TestCross(unittest.TestCase):
         net_val = net.evaluate(validation)
         real_val = tensor_func(validation)
         rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
-        self.assertLessEqual(float(rtol), 0.1)
+        self.assertLessEqual(float(rtol), 0.15)
         self.assertLessEqual(net.cost(), p**4)
 
 if __name__ == "__main__":

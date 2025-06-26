@@ -13,12 +13,12 @@ from typing import (
     Callable,
     Dict,
     List,
+    Literal,
     Optional,
     Self,
     Set,
     Tuple,
     Union,
-    Literal,
 )
 
 import matplotlib.pyplot as plt
@@ -29,13 +29,13 @@ import opt_einsum as oe
 from .cross.cross import cross
 from .cross.funcs import TensorFunc
 from .types import (
+    DimTreeNode,
     Index,
     IndexMerge,
     IndexName,
     IndexSplit,
     NodeName,
     SVDConfig,
-    DimTreeNode,
 )
 from .utils import delta_svd
 
@@ -295,52 +295,6 @@ class Tensor:
         r_tensor = Tensor(r, r_indices)
 
         return q_tensor, r_tensor
-
-    def _index_to_args(
-        self,
-        selected_indices: Sequence[Index],
-        index_map: Dict[Index, List[Index]],
-        restrictions: Dict[Index, np.ndarray],
-    ) -> Tuple[np.ndarray, List[Index]]:
-        """
-        index_map: from local indices to global free indices
-        restrictions: from local indices to their restricted global choices
-        """
-        sizes = [i.size for i in selected_indices]
-        # print(sizes, restrictions)
-        local_indices = np.arange(np.prod(sizes))
-        args = np.unravel_index(local_indices, sizes)
-        assert len(args) == len(sizes), (
-            f"unraveled index does not match the given dimensions, "
-            f"expected {len(sizes)}, but get {len(args)}"
-        )
-        global_args: List[np.ndarray] = []
-        order: List[Index] = []
-
-        for iarg, arg in enumerate(args):
-            # print(arg.shape)
-            ind = selected_indices[iarg]
-            global_indices = index_map.get(ind, [ind])
-            order.extend(global_indices)
-
-            # restrict choices of indices if they have been chosen
-            if ind in restrictions:
-                # print("looking for restrictions inside", restrictions[ind])
-                restricted_args = restrictions[ind][arg]
-                # print("expanding", arg, "into", restricted_args)
-                assert len(global_indices) == restricted_args.shape[1], (
-                    f"expected {global_indices}, "
-                    f"but get {restricted_args.shape}"
-                )
-                global_args.append(restricted_args.squeeze())
-            else:
-                # map internal indices to global indices
-                global_sizes = [idx.size for idx in global_indices]
-                unravel_arg = np.unravel_index(arg, global_sizes)
-                global_args.extend(unravel_arg)
-
-        # print([args.shape for args in global_args])
-        return np.stack(global_args, axis=-1), order
 
     def permute(self, target_indices: Sequence[int]) -> "Tensor":
         """Return a new tensor with indices permuted by the specified order."""
@@ -761,10 +715,12 @@ class TensorNetwork:  # pylint: disable=R0904
         x = self.node_tensor(node_name)
         rights = [i for i in range(len(x.indices)) if i not in lefts]
         if not config.compute_data or not config.compute_uv:
-            rl = Index("r_split_l", -1)
-            rr = Index("r_split_r", -1)
-            u = Tensor(np.empty(0), [x.indices[i] for i in lefts] + [rl])
-            v = Tensor(np.empty(0), [rr] + [x.indices[i] for i in rights])
+            rl = Index("r_split_l", 1)
+            rr = Index("r_split_r", 1)
+            u_indices = [x.indices[i] for i in lefts] + [rl]
+            u = Tensor(np.empty([0 for _ in u_indices]), u_indices)
+            v_indices = [rr] + [x.indices[i] for i in rights]
+            v = Tensor(np.empty([0 for _ in v_indices]), v_indices)
             d = config.delta
 
             if config.compute_data:
@@ -867,7 +823,8 @@ class TensorNetwork:  # pylint: disable=R0904
         else:
             l_inds = [ind for ind in t1.indices if ind not in t2.indices]
             r_inds = [ind for ind in t2.indices if ind not in t1.indices]
-            result = Tensor(np.array([]), l_inds + r_inds)
+            inds =  l_inds + r_inds
+            result = Tensor(np.empty([0 for _ in inds]), inds)
 
         n2_nbrs = list(self.network.neighbors(name2))
         self.network.remove_node(name2)
@@ -1437,50 +1394,13 @@ class TreeNetwork(TensorNetwork):
         # reorder the leaves according to the order of the indices
         return [leaves[i] for i in np.argsort(perm)]
 
-    def cross(self, tensor_func: TensorFunc, eps: Optional[float] = None) -> None:
-        """Run cross approximation over the current network structure 
+    def cross(
+        self, tensor_func: TensorFunc, eps: Optional[float] = None
+    ) -> Sequence[Tuple[int, float]]:
+        """Run cross approximation over the current network structure
         until the relative error goes below the prescribed epsilon."""
         root = list(self.network.nodes)[0]
-        cross(tensor_func, self, root, eps)
-
-    # def cross(
-    #     self,
-    #     tensor_func: TensorFunc,
-    #     delta: Optional[float] = None,
-    #     max_k: Optional[int] = None,
-    #     compute_data: bool = True,
-    # ) -> Tuple[NodeName, NodeName, CrossApproxState]:
-    #     """Split a node by cross approximation."""
-    #     logger.debug("running cross")
-
-    #     # reconstruct the dimension tree for the current network
-    #     root = self.node_by_free_index(self.free_indices()[0].name)
-    #     dim_tree = self.dimension_tree(root)
-    #     logger.debug("dimension tree created")
-
-    #     index_values = {} # mapping from index name to its position and values
-
-    #     # walk and update the indices from root to leaves
-
-    #             for ind in indices:
-    #                 if ind in free_indices:
-    #                     ranges.append(range(ind.size))
-    #                     orders.append(free_indices.index(ind))
-
-    #             for cidx, c in enumerate(tree.children):
-    #                 ranges.append(tree.cvals[cidx])
-    #                 orders.extend([free_indices.index(i) for i in c.indices])
-
-    #             args = np.array(list(itertools.product(*ranges)))
-    #             # reorder the args according to the indices
-    #             args = args[:, np.argsort(orders)]
-    #             # evaluate the function
-    #             values = tensor_func(args)
-    #             # update the index values by maxvol
-    #             # first, reshape the values to the proper shape
-    #             # the updating child on one side, and all others on the other
-
-    #             values = values.reshape()
+        return cross(tensor_func, self, root, eps)
 
     def node_by_free_index(self, index: IndexName) -> NodeName:
         """Identify the node in the network containing the given free index"""
@@ -1574,7 +1494,6 @@ class TreeNetwork(TensorNetwork):
             for c in tree.conn.children:
                 assign_indices(c)
 
-
         tree = construct(set(), root)
         assign_indices(tree)
         self.canonicalize_indices(tree)
@@ -1645,9 +1564,7 @@ class TreeNetwork(TensorNetwork):
 
         result_net.add_node(tree1.info.node, res)
 
-        for c1, c2 in zip(
-            tree1.conn.children, tree2.conn.children
-        ):
+        for c1, c2 in zip(tree1.conn.children, tree2.conn.children):
             self._binary_op(other, op, c1, c2, result_net)
             result_net.add_edge(tree1.info.node, c1.info.node)
 

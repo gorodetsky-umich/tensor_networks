@@ -171,45 +171,39 @@ class ConstraintSearch:
         data_tensor: TensorFunc,
         comb: Sequence[Index],
     ):
-        # print(comb)
         net = TreeNetwork()
-        net.add_node("G", Tensor(np.empty(0), data_tensor.indices))
+        net.add_node("G", Tensor(np.empty([0 for _ in data_tensor.indices]), data_tensor.indices))
+        (_, s, v), _ = OSplit(comb).svd(net, compute_data=False)
+        net.merge(v, s, compute_data = False)
+
         bin_size = self.config.synthesizer.bin_size
         err = self.config.engine.eps * bin_size
-        indices = data_tensor.indices
-        lefts = [indices.index(i) for i in comb]
-        _, _, st = net.cross(
-            data_tensor, {}, "G", lefts, err, compute_data=False
-        )
-        sizes, sums = zip(*st.ranks_and_errors)
-        # print(st.ranks_and_errors)
-
-        # for each error, find the smallest rank when there are several close
+        ranks_and_errors = net.cross(data_tensor, err)
+        sizes, sums = zip(*reversed(ranks_and_errors))
+        # print(sizes, sums)
 
         # pick 10 according to the error change
-        sizes = np.array(sizes)
-        sums = np.array(sums)
         bin_num = int(1 / bin_size)
         final_sums, final_sizes = [], []
+        prev_idx = -1
         for bin_idx in range(1, bin_num + 1):
             eps = err * bin_idx
-            deviation = eps - sums
-            # print(eps, deviation)
-            # find the indices where after it the deviation are mostly positive
-            cnts = np.convolve(
-                deviation >= 0,
-                np.ones(min(3, len(deviation)), dtype=int),
-                "same",
-            )
-            pos_cnt = cnts >= 0
-            within_range = np.logical_and(deviation >= 0, deviation <= err)
-            valid_errors = np.where(np.logical_and(within_range, pos_cnt))[0]
-            # print(eps, sums[valid_errors], sizes[valid_errors])
-            if len(valid_errors) > 0:
-                min_idx = np.argmin(sizes[valid_errors])
-                final_sums.append(sums[valid_errors][min_idx] ** 2)
-                final_sizes.append(sizes[valid_errors][min_idx])
-                # print(final_sums, final_sizes)
+            if eps < sums[0] or eps > sums[-1]:
+                continue
+
+            min_idx = np.searchsorted(sums, eps) - 1
+            if min_idx == prev_idx:
+                continue
+
+            final_sums.append(sums[min_idx] ** 2)
+            final_sizes.append(sizes[min_idx])
+            prev_idx = min_idx
+
+        if prev_idx != len(sizes) - 1:
+            final_sums.append(sums[prev_idx + 1] ** 2)
+            final_sizes.append(sizes[prev_idx+1])
+
+        # print(final_sums, final_sizes)
 
         self.split_actions[OSplit(comb)] = (final_sums, final_sizes)
 

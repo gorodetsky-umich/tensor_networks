@@ -37,17 +37,18 @@ class SearchEngine:
         free_indices = data_tensor.free_indices()
         unopt_size = float(np.prod([i.size for i in free_indices]))
         best_size = result.best_state.network.cost()
-        best_val = result.best_state.network.contract().value
 
         if isinstance(data_tensor, TreeNetwork):
+            best_val = result.best_state.network.contract().value
             net_val = data_tensor.contract().value
             start_cost = data_tensor.cost()
         elif isinstance(data_tensor, TensorFunc):
             sizes = [ind.size for ind in data_tensor.indices]
             val_size = 10000
             validation = [np.random.randint(i, size=val_size) for i in sizes]
-            net_val = data_tensor(np.stack(validation, axis=-1))
-            best_val = best_val[*validation]
+            validation = np.stack(validation, axis=-1)
+            net_val = data_tensor(validation)
+            best_val = result.best_state.network.evaluate(validation)
             start_cost = np.prod(sizes)
         else:
             raise TypeError("unknown data tensor type")

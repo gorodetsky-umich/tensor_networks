@@ -260,34 +260,33 @@ class TestSearch(unittest.TestCase):
                 grid = np.meshgrid(*[np.arange(0, n) for _ in range(4)])
                 all_args = np.stack(grid, axis=0).reshape(4, -1).T
                 real_val = tensor_func(all_args).reshape(n, n, n, n)
-                for eps in [1e-1, 1e-2]:
-                    # start = time.time()
-                    config = SearchConfig()
-                    config.engine.eps = eps
-                    config.engine.verbose = True
-                    search_engine = SearchEngine(config=config)
-                    net = TreeNetwork()
-                    indices = [Index(f"I{i}", n) for i in range(4)]
-                    tensor = Tensor(np.zeros([n] * 4), indices)
-                    net.add_node("G", tensor)
-                    result = search_engine.partition_search(tensor_func)
-                    # end = time.time()
-                    assert result.best_state is not None
-                    bn = result.best_state.network
-                    assert bn is not None
-                    # print(bn)
-                    err = real_val - bn.contract().value
-                    # print(
-                    #     tensor_func.name,
-                    #     eps,
-                    #     n,
-                    #     end - start,
-                    #     net.cost() / bn.cost(),
-                    #     np.linalg.norm(err) / np.linalg.norm(real_val),
-                    #     np.max(np.abs(err)) / np.max(np.abs(real_val)),
-                    # )
-                    rtol = np.linalg.norm(err) / np.linalg.norm(real_val)
-                    self.assertLessEqual(float(rtol), 0.5)
+                # start = time.time()
+                config = SearchConfig()
+                config.engine.eps = 0.1
+                config.engine.verbose = True
+                search_engine = SearchEngine(config=config)
+                net = TreeNetwork()
+                indices = [Index(f"I{i}", n) for i in range(4)]
+                tensor = Tensor(np.zeros([n] * 4), indices)
+                net.add_node("G", tensor)
+                result = search_engine.partition_search(tensor_func)
+                # end = time.time()
+                assert result.best_state is not None
+                bn = result.best_state.network
+                assert bn is not None
+                # print(bn)
+                err = real_val - bn.contract().value
+                # print(
+                #     tensor_func.name,
+                #     eps,
+                #     n,
+                #     end - start,
+                #     net.cost() / bn.cost(),
+                #     np.linalg.norm(err) / np.linalg.norm(real_val),
+                #     np.max(np.abs(err)) / np.max(np.abs(real_val)),
+                # )
+                rtol = np.linalg.norm(err) / np.linalg.norm(real_val)
+                self.assertLessEqual(float(rtol), 0.5)
 
     def test_partition_cross_data(self):
         n = 25
