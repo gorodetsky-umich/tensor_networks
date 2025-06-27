@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import opt_einsum as oe
+from line_profiler import profile
 
 from .utils import delta_svd
 from .types import (
@@ -1016,6 +1017,7 @@ class TensorNetwork:  # pylint: disable=R0904
         for u, v in subnet.network.edges:
             self.add_edge(node_subst[u], node_subst[v])
 
+    @profile
     def evaluate(self, indices: np.ndarray) -> np.ndarray:
         """
         Evaluate the tensor network at the given indices.
@@ -1025,8 +1027,7 @@ class TensorNetwork:  # pylint: disable=R0904
         """
         free_indices = self.free_indices()
         assert indices.shape[1] == len(free_indices), (
-            f"the nbr of slices should be equal to the nbr of free indices"
-            f"but get {indices.shape}, free indices {len(free_indices)}"
+            f"Expected {len(free_indices)} indices, got {indices.shape[1]}"
         )
 
         batch_ind = "_batch"
@@ -1051,7 +1052,7 @@ class TensorNetwork:  # pylint: disable=R0904
                         ind_mapping[ind.name] = ind_letter
                     node_str += ind_mapping[ind.name]
 
-            batch_val = tensor.value[*tslices]
+            batch_val = tensor.value[tuple(tslices)]
             node_vals.append(batch_val)
             node_strs.append(node_str)
 
@@ -1595,7 +1596,7 @@ class TreeNetwork(TensorNetwork):
                     children.append(nbr_tree)
 
             indices, node_free_indices = [], []
-            up_indices, down_indices = [], []
+            up_indices = []
             for ind in self.node_tensor(node).indices:
                 if ind in free_indices:
                     indices.append(ind)
@@ -1611,8 +1612,8 @@ class TreeNetwork(TensorNetwork):
                 indices=indices,
                 free_indices=sorted(node_free_indices),
                 children=sorted(children, key=lambda x: x.info.indices),
-                up_vals=[],
-                down_vals=[],
+                up_vals=np.empty(0),
+                down_vals=np.empty(0),
                 up_indices=up_indices,
                 down_indices=[],
             )

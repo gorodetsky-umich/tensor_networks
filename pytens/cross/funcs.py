@@ -143,6 +143,16 @@ class FuncData(CachedFunc):
 
     def _run(self, args: np.ndarray) -> np.ndarray:
         return self.data[*args.astype(int).T]
+    
+class FuncTensorNetwork(TensorFunc):
+    """Class for data tensors as cross approximation targets."""
+
+    def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
+        super().__init__(indices)
+        self.net = net
+
+    def run(self, args: np.ndarray):
+        return self.net.evaluate(args.astype(int))
 
 
 class FuncTensorNetwork(CachedFunc):
