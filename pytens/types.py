@@ -93,7 +93,7 @@ class Connection:
 
 class CrossVals:
     """Values for cross approximation"""
-    def __init__(self, up_vals: List[List[int]], down_vals: List[List[int]]):
+    def __init__(self, up_vals: np.ndarray, down_vals: np.ndarray):
         self.up_vals = up_vals
         self.down_vals = down_vals
 
@@ -108,8 +108,8 @@ class DimTreeNode:
         up_indices: List[Index],
         down_indices: List[Index],
         children: List["DimTreeNode"],
-        down_vals: List[List[int]],
-        up_vals: List[List[int]],
+        down_vals: np.ndarray,
+        up_vals: np.ndarray,
         parent: Optional["DimTreeNode"] = None,
     ):
         self.info = NodeInfo(node, indices, free_indices, up_indices, down_indices)

@@ -6,6 +6,7 @@ from functools import lru_cache
 import numpy as np
 
 from pytens.types import Index
+import pytens.algs as pt
 
 
 class TensorFunc:
@@ -18,6 +19,7 @@ class TensorFunc:
 
     def _index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized indices to function arguments"""
+        indices = indices.astype(int)
         args = np.empty_like(indices, dtype=float)
         for i, ind in enumerate(self.indices):
             args[:, i] = np.array(ind.value_choices)[indices[:, i]]
@@ -62,6 +64,16 @@ class FuncData(TensorFunc):
 
     def run(self, args: np.ndarray):
         return self.data[*args.astype(int).T]
+    
+class FuncTensorNetwork(TensorFunc):
+    """Class for data tensors as cross approximation targets."""
+
+    def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
+        super().__init__(indices)
+        self.net = net
+
+    def run(self, args: np.ndarray):
+        return self.net.evaluate(args.astype(int))
 
 
 class FuncAckley(TensorFunc):
