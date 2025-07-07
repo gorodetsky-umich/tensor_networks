@@ -17,7 +17,7 @@ class TensorFunc:
         self.indices = indices
         self.stats = 0
 
-    def _index_to_args(self, indices: np.ndarray) -> np.ndarray:
+    def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized indices to function arguments"""
         indices = indices.astype(int)
         args = np.empty_like(indices, dtype=float)
@@ -51,7 +51,7 @@ class TensorFunc:
 
     def __call__(self, indices: np.ndarray):
         self.stats += indices.shape[0]
-        args = self._index_to_args(indices)
+        args = self.index_to_args(indices)
         return self.run(args)
 
 
@@ -64,7 +64,8 @@ class FuncData(TensorFunc):
 
     def run(self, args: np.ndarray):
         return self.data[*args.astype(int).T]
-    
+
+
 class FuncTensorNetwork(TensorFunc):
     """Class for data tensors as cross approximation targets."""
 
@@ -74,6 +75,111 @@ class FuncTensorNetwork(TensorFunc):
 
     def run(self, args: np.ndarray):
         return self.net.evaluate(args.astype(int))
+
+
+class NodeFunc(TensorFunc):
+    """Reduce the tensor function from one node to the complete one."""
+
+    def __init__(self, indices, old_func, node_indices, ind_mapping):
+        super().__init__(indices)
+        self.old_func = old_func
+        self.node_indices = node_indices
+        self.ind_mapping = ind_mapping
+
+    def index_to_args(self, indices: np.ndarray) -> np.ndarray:
+        # convert node indices to the network indices
+        old_free = self.old_func.indices
+        indices = indices.astype(int)
+        new_indices = np.empty((len(indices), len(old_free)))
+        for i, ind in enumerate(self.node_indices):
+            # find whether we should use the up_vals or down_vals by
+            # checking whether it is connected with the parent or child
+            # free indices, children, parent
+            if ind not in self.ind_mapping:
+                new_indices[:, old_free.index(ind)] = indices[:, i]
+                continue
+
+            inds, vals = self.ind_mapping[ind]
+            inds_perm = [old_free.index(ind) for ind in inds]
+            new_indices[:, inds_perm] = vals[indices[:, i]]
+
+        return self.old_func.index_to_args(new_indices)
+
+    def run(self, args: np.ndarray) -> np.ndarray:
+        return self.old_func.run(args)
+
+
+class SplitFunc(TensorFunc):
+    """Reduce the tensor function after split into the old one."""
+
+    def __init__(self, indices, old_func, var_mapping):
+        super().__init__(indices)
+        self.old_func = old_func
+        self.var_mapping = var_mapping
+
+    def index_to_args(self, indices: np.ndarray) -> np.ndarray:
+        indices = indices.astype(int)
+        old_free = self.old_func.indices
+        old_indices = np.empty((len(indices), len(old_free)), dtype=int)
+        for i, ind in enumerate(old_free):
+            if i not in self.var_mapping:
+                assert ind in self.indices, "index not found"
+                j = self.indices.index(ind)
+                old_indices[:, i] = indices[:, j]
+            else:
+                split_inds, split_sizes = self.var_mapping[i]
+                old_indices[:, i] = np.ravel_multi_index(tuple(indices[:, split_inds].T), split_sizes)
+        # for split_op in self.split_ops:
+        #     split_out = split_op.result
+        #     if split_out is None:
+        #         continue
+
+        #     split_indices = np.empty((len(indices), len(split_out)), dtype=int)
+        #     split_sizes = []
+        #     for i, ind in enumerate(split_out):
+        #         split_indices[:, i] = indices[:, self.indices.index(ind)]
+        #         split_sizes.append(int(ind.size))
+
+        #     before_split = old_free.index(split_op.index)
+        #     old_indices[:, before_split] = np.ravel_multi_index(
+        #         tuple(split_indices.T), tuple(split_sizes)
+        #     )
+
+        # turn indices into arguments
+        return self.old_func.index_to_args(old_indices)
+
+    def run(self, args: np.ndarray):
+        return self.old_func.run(args)
+
+
+class MergeFunc(TensorFunc):
+    """Tensor function for merged indices."""
+
+    def __init__(self, indices, old_func, var_mapping):
+        super().__init__(indices)
+        self.old_func = old_func
+        self.var_mapping = var_mapping
+
+    def index_to_args(self, indices: np.ndarray):
+        old_free = self.old_func.indices
+        real_indices = np.empty((len(indices), len(old_free)))
+        for i in range(indices.shape[1]):
+            if i in self.var_mapping:
+                sizes, inds = self.var_mapping[i]
+                # replace indices with unraveled indices
+                real_indices[:, inds] = np.stack(
+                    np.unravel_index(indices[:, i], sizes), axis=-1
+                )
+            else:
+                j = old_free.index(self.indices[i])
+                real_indices[:, j] = indices[
+                    :, i
+                ]
+
+        return self.old_func.index_to_args(real_indices)
+
+    def run(self, args: np.ndarray):
+        return self.old_func.run(args)
 
 
 class FuncAckley(TensorFunc):

@@ -1,12 +1,12 @@
+"""Cross Approximation."""
+
 import random
-from itertools import product
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
-import scipy
-import teneva
 from line_profiler import profile
-from tntorch.maxvol import py_maxvol, py_rect_maxvol
+from tntorch.maxvol import py_maxvol
+import scipy
 
 import pytens.algs as pt
 from pytens.cross.funcs import TensorFunc
@@ -45,21 +45,10 @@ def construct_matrix(tensor_func: TensorFunc, rows, cols) -> np.ndarray:
     """
     row_idx, row_vals = rows
     col_idx, col_vals = cols
-    # construct the arguments
-    # print("row_vals", row_vals.shape, "col_vals", col_vals.shape)
-    # row_args = row_vals[None, :, :]
-    # col_args = col_vals[:, None, :]
-
-    # # Broadcasted addition: (m, n, a + b)
-    # args = np.concatenate([np.broadcast_to(col_args, (len(col_vals), len(row_vals), len(col_idx))),
-    #                        np.broadcast_to(row_args, (len(col_vals), len(row_vals), len(row_idx)))], axis=2)
-
-    # # Reshape to (m * n, a + b)
-    # args = args.reshape(-1, len(col_idx + row_idx)).astype(int, copy=False)
     args = cartesian_product_arrays(col_vals, row_vals).astype(int, copy=False)
-    # args = [list(xs) + list(ys) for xs, ys in product(col_vals, row_vals)]
-    # args = np.asarray(args, dtype=int)
-    args = args[:, np.argsort(col_idx + row_idx)]
+    indices = col_idx + row_idx
+    perm = [indices.index(ind) for ind in tensor_func.indices]
+    args = args[:, perm]
     return tensor_func(args).reshape(len(col_vals), len(row_vals))
 
 @profile
@@ -69,22 +58,24 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
     This method takes the value matrix as input.
     """
-    # prev_rank = v.shape[1]
-    # q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
-    # real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-14).sum()
-    # dr_min = dr_max = 0
-    # if real_rank == prev_rank:
-    #     dr_max = 1
-    q, _ = np.linalg.qr(v)
+    q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
+    real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-14).sum()
 
-    # q = q[:, :real_rank]
+    q = q[:, :real_rank]
     return py_maxvol(
         q, max_iters=3
     )
 
+def select_indices_greedy(v: np.ndarray, u: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Select indices by maximum the difference between real and approximation.
+    """
+    diff = np.abs(v - u)
+    np.argmax(diff, axis=1)
+    return (np.empty(0), np.empty(0))
 
 @profile
-def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode, net: "pt.TreeNetwork") -> None:
+def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
     """Update the indices by propagating info from root to leaves."""
     down_ranges = []
 
@@ -104,16 +95,13 @@ def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode, net: "pt.TreeNetw
                 down_ranges.append(c.values.up_vals)
 
         down_vals = cartesian_product_arrays(*down_ranges)
-        down_sizes = [len(r) for r in down_ranges]
         v = construct_matrix(
             tensor_func,
             (node.info.up_indices, node.values.up_vals),
             (node.info.down_indices, down_vals),
         )
-        ind, b = select_indices(v)
+        ind, _ = select_indices(v)
         node.values.down_vals = down_vals[ind, :]
-        # net.node_tensor(node.conn.parent.info.node).update_val_size(b.reshape(*down_sizes, -1))
-        # print("====>", node.values.down_vals.shape)
 
 @profile
 def leaves_to_root(
@@ -139,7 +127,7 @@ def leaves_to_root(
     )
     ind, b = select_indices(v)
     node.values.up_vals = up_vals[ind, :]
-    # print("====>", node.values.up_vals.shape)
+    # print("====>", node.values.up_vals)
     net.node_tensor(node.info.node).update_val_size(b.reshape(*up_sizes, -1))
 
 
@@ -179,6 +167,11 @@ def init_values(net: "pt.TreeNetwork", tree: DimTreeNode) -> None:
 
         init_values(net, c)
 
+class CrossResult:
+    """Class to record cross approximation results."""
+    def __init__(self, dim_tree: DimTreeNode, ranks_and_errors: Sequence[Tuple[int, float]]):
+        self.dim_tree = dim_tree
+        self.ranks_and_errors = ranks_and_errors
 
 @profile
 def cross(
@@ -188,8 +181,10 @@ def cross(
     eps: float = 0.1,
     val_size: int = 10000,
     max_size: Optional[int] = None,
-) -> Sequence[Tuple[int, float]]:
+) -> CrossResult:
     """Cross approximation for the given network structure."""
+    # print("root is", root)
+    # print(net)
     tree = net.dimension_tree(root)
     init_values(net, tree)
     converged = False
@@ -203,13 +198,13 @@ def cross(
     f_vals = cartesian_product_arrays(*[np.arange(sz)[:,None] for sz in f_sizes])
 
     tree_nodes = tree.preorder()
-    ranks_and_errs = []
+    ranks_and_errs = {}
     while not converged:
         for n in tree_nodes:
             if n.conn.parent is None:
                 continue
 
-            root_to_leaves(f, n, net)
+            root_to_leaves(f, n)
 
         for n in reversed(tree_nodes[1:]):
             leaves_to_root(f, n, net)
@@ -224,16 +219,19 @@ def cross(
             (tree.info.free_indices, f_vals),
             (c_indices, up_vals),
         )
+        # print(c_indices, up_vals)
         root_val = root_matrix.T.reshape(*f_sizes, *c_sizes)
         net.node_tensor(tree.info.node).update_val_size(root_val)
 
         estimate = net.evaluate(validation).reshape(-1)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
-        ranks_and_errs.append((len(up_vals), err))
-        # print("Error:", err)
+        ranks_and_errs[len(up_vals)] = err
+        print("Error:", err, eps)
         if err <= eps or (max_size is not None and len(up_vals) >= max_size):
             break
 
         incr_ranks(tree, net)
 
-    return ranks_and_errs
+    # print(net)
+    ranks_and_errs = sorted(list(ranks_and_errs.items()))
+    return CrossResult(tree, ranks_and_errs)

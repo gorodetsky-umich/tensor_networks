@@ -351,17 +351,13 @@ class SearchState:
         self,
         net: TreeNetwork,
         delta: float,
-        threshold: float = 0.1,
         max_ops: int = 5,
     ):
         self.network = net
         self.curr_delta = delta
         self.past_actions = []  # How we reach this state
         self.max_ops = max_ops
-        self.threshold = threshold
-        self.is_noop = False
         self.links: List[IndexName] = []
-        self.restrictions = {}
 
     def count_actions_of_size(self, k: int = 2):
         """Count the number of actions of the given size in the history."""
@@ -430,84 +426,6 @@ class SearchState:
 
         return actions
 
-    # def truncate(
-    #     self,
-    #     new_net: TreeNetwork,
-    #     usv: Tuple[Tuple[NodeName, NodeName, NodeName], int],
-    #     config: SearchConfig,
-    #     target_size: Optional[int] = None,
-    # ) -> Generator["SearchState", None, None]:
-    #     """Truncate the node u, s, v in the specified tensor network."""
-    #     [u, s, v], max_sz = usv
-    #     u_val = new_net.network.nodes[u]["tensor"].value
-    #     v_val = new_net.network.nodes[v]["tensor"].value
-    #     s_val = np.diag(new_net.network.nodes[s]["tensor"].value)
-
-    #     split_errors = config.rank_search.error_split_stepsize
-    #     if target_size is not None:
-    #         target_trunc = max(len(s_val) - target_size + split_errors // 2, 0)
-    #         truncpost = truncpost[:target_trunc]
-
-    #     if len(truncpost) == 0:
-    #         if config.heuristics.prune_full_rank and max_sz == len(s_val):
-    #             return
-
-    #         tmp_net = copy.deepcopy(new_net)
-    #         tmp_net.merge(v, s)
-
-    #         remaining_delta = self.curr_delta
-    #         new_state = SearchState(
-    #             tmp_net,
-    #             remaining_delta,
-    #             max_ops=self.max_ops,
-    #             threshold=self.threshold,
-    #         )
-    #         new_state.links.append(tmp_net.get_contraction_index(u, v)[0].name)
-
-    #         yield new_state
-    #         return
-
-    #     # print("len of singular values", len(s_val),
-    #     # "target size", target_size)
-    #     # print("remaining truncpost", len(truncpost))
-
-    #     if split_errors == 0:
-    #         split_num = 1
-    #     else:
-    #         split_num = min(split_errors, len(truncpost))
-
-    #     for idx, elem in enumerate(truncpost[-split_num:]):
-    #         truncation_rank = max(
-    #             len(s_val) - len(truncpost) + split_num - idx - 1, 1
-    #         )
-    #         used_delta = truncpost[-1] if len(truncpost) > 0 else 0
-
-    #         # it is possible to do the truncation at this point
-    #         tmp_net = copy.deepcopy(new_net)
-    #         # truncate u, s, v according to idx
-
-    #         tmp_net.network.nodes[u]["tensor"].update_val_size(
-    #             u_val[..., :truncation_rank]
-    #         )
-    #         tmp_net.network.nodes[s]["tensor"].update_val_size(
-    #             np.diag(s_val[:truncation_rank])
-    #         )
-    #         tmp_net.network.nodes[v]["tensor"].update_val_size(
-    #             v_val[:truncation_rank, ...]
-    #         )
-    #         tmp_net.merge(v, s)
-
-    #         remaining_delta = float(np.sqrt(self.curr_delta**2 - used_delta))
-    #         new_state = SearchState(
-    #             tmp_net,
-    #             remaining_delta,
-    #             max_ops=self.max_ops,
-    #             threshold=self.threshold,
-    #         )
-    #         new_state.links.append(tmp_net.get_contraction_index(u, v)[0].name)
-
-    #         yield new_state
-
     def take_action(
         self,
         action: Action,
@@ -529,7 +447,6 @@ class SearchState:
                 new_net,
                 self.curr_delta,
                 max_ops=self.max_ops,
-                threshold=self.threshold,
             )
 
             if tensor_func is not None:
@@ -559,7 +476,6 @@ class SearchState:
                 new_net,
                 self.curr_delta,
                 max_ops=self.max_ops,
-                threshold=self.threshold,
             )
             new_state.past_actions = self.past_actions + [action]
             return new_state
@@ -579,17 +495,6 @@ class SearchState:
         assert root is not None
         root = self.network.orthonormalize(root)
         _, self.curr_delta = self.network.round(root, self.curr_delta)
-
-    def is_terminal(self) -> bool:
-        """Whether the current state is a terminal state."""
-        return self.is_noop or len(self.network.network.nodes) >= self.max_ops
-
-    def get_result(self, total_cost: float) -> float:
-        """Whether the current state succeeds or not."""
-        if self.is_noop:
-            return 0
-
-        return float(self.network.cost() <= self.threshold * total_cost)
 
     def __lt__(self, other: Self) -> bool:
         # return (self.curr_delta**2 / self.network.cost()) < (

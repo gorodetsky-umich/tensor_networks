@@ -1,11 +1,12 @@
 """Type definitions."""
 
-from typing import Union, Sequence, Self, Optional, Tuple, List
+import copy
+import itertools
 from dataclasses import dataclass
+from typing import Dict, List, Optional, Self, Sequence, Union, Tuple
 
-import pydantic
 import numpy as np
-import pytens.algs as algs
+import pydantic
 
 IntOrStr = Union[str, int]
 NodeName = IntOrStr
@@ -76,26 +77,58 @@ class IndexSplit(pydantic.BaseModel):
     def __hash__(self) -> int:
         return hash((type(self),) + tuple(self.__dict__.values()))
 
+
 @dataclass
 class NodeInfo:
     """Node name and the corresponding indices"""
+
     node: NodeName
     indices: List[Index]
     free_indices: List[Index]
     up_indices: List[Index]
     down_indices: List[Index]
 
+
 class Connection:
     """Node connections including children and parent"""
-    def __init__(self, children: List["DimTreeNode"], parent: Optional["DimTreeNode"] = None):
+
+    def __init__(
+        self,
+        children: List["DimTreeNode"],
+        parent: Optional["DimTreeNode"] = None,
+    ):
         self.children = children
         self.parent = parent
 
+
 class CrossVals:
     """Values for cross approximation"""
+
     def __init__(self, up_vals: np.ndarray, down_vals: np.ndarray):
         self.up_vals = up_vals
         self.down_vals = down_vals
+
+
+def split_index(
+    ind: Index, indices: List[Index], vals: np.ndarray, split_op: IndexSplit
+) -> Tuple[List[Index], np.ndarray]:
+    assert split_op.result is not None
+
+    pos = indices.index(ind)
+    split_sizes = [i.size for i in split_op.result]
+    new_vals = np.empty(
+        (vals.shape[0], vals.shape[1] - 1 + len(split_sizes)), dtype=int
+    )
+    new_vals[:, : vals.shape[1] - 1] = np.hstack(
+        [vals[:, :pos], vals[:, pos + 1 :]]
+    )
+    new_vals[:, -len(split_sizes) :] = np.vstack(
+        np.unravel_index(vals[:, pos], split_sizes)
+    ).T
+    indices.remove(ind)
+    indices.extend(split_op.result)
+    return indices, new_vals
+
 
 class DimTreeNode:
     """Class for a dimension tree node"""
@@ -112,17 +145,43 @@ class DimTreeNode:
         up_vals: np.ndarray,
         parent: Optional["DimTreeNode"] = None,
     ):
-        self.info = NodeInfo(node, indices, free_indices, up_indices, down_indices)
+        self.info = NodeInfo(
+            node, indices, free_indices, up_indices, down_indices
+        )
         self.conn = Connection(children, parent)
         self.values = CrossVals(up_vals, down_vals)
 
     def __lt__(self, other: Self) -> bool:
         return sorted(self.info.indices) < sorted(other.info.indices)
 
-    def preorder(self) -> List["DimTreeNode"]:
+    def preorder(self) -> Sequence["DimTreeNode"]:
         """Get the list of tree nodes in the pre-order traversal."""
         results = [self]
         for c in self.conn.children:
-            results.extend(c.preorder())
+            results = itertools.chain(results, c.preorder())
+
+        return list(results)
+
+    def locate(self, node: NodeName) -> Optional["DimTreeNode"]:
+        """Locate a node by its name."""
+        if node == self.info.node:
+            return self
+
+        for c in self.conn.children:
+            res = c.locate(node)
+            if res is not None:
+                return res
+
+        return None
+
+    def leaves(self) -> Sequence["DimTreeNode"]:
+        """Get the leaf nodes in the current tree."""
+        results = []
+        if len(self.conn.children) == 0:
+            results.append(self)
+            return results
+
+        for c in self.conn.children:
+            results.extend(c.leaves())
 
         return results

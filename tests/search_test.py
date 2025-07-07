@@ -311,4 +311,31 @@ class TestSearch(unittest.TestCase):
 
 
 class TestTopDownSearch(unittest.TestCase):
-    pass
+    def test_top_down_cross(self):
+        n = 15
+        grid = np.meshgrid(*[np.arange(0, n) for _ in range(4)])
+        all_args = np.stack(grid, axis=0).reshape(4, -1).T
+        real_val = 1.0 / np.sum(all_args + 1, axis=1)
+        real_val = real_val.reshape(n, n, n, n)
+        indices = [Index(f"I{i}", n, range(n)) for i in range(4)]
+        tensor_func = FuncData(indices, real_val)
+
+        config = SearchConfig()
+        config.engine.eps = 1e-1
+        config.engine.verbose = True
+        config.engine.decomp_algo = "cross"
+        config.cross.init_eps = 0.1
+        config.cross.init_struct = "tucker"
+        config.topdown.search_algo = "correlation"
+        search_engine = SearchEngine(config=config)
+        result = search_engine.top_down(tensor_func)
+        assert result.best_state is not None
+        err = result.stats.re_f
+        print(result.best_state.network)
+        print(err)
+        self.assertLessEqual(float(err), 1e-1)
+        
+
+if __name__ == "__main__":
+    test = TestTopDownSearch()
+    test.test_top_down_cross()

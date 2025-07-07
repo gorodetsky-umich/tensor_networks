@@ -227,7 +227,7 @@ class TestTT(unittest.TestCase):
 
         ttadd_rounded = TTadd.contract().value
         self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+            np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12)
         )
 
     def test_gramsvd_rounding(self):

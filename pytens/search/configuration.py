@@ -72,7 +72,6 @@ class ProgramSearchConfig(pydantic.BaseModel):
         description="Config to replay a series of splits from a pickle file",
     )
 
-
 class SearchEngineConfig(pydantic.BaseModel):
     """Configuration for the search engine"""
 
@@ -87,6 +86,10 @@ class SearchEngineConfig(pydantic.BaseModel):
     timeout: Optional[float] = pydantic.Field(
         default=None,
         description="The maximum amount of time used for search",
+    )
+    decomp_algo: Literal["svd", "cross"] = pydantic.Field(
+        default="svd",
+        description="Configure the decomposition algorithm",
     )
     verbose: bool = pydantic.Field(
         default=False,
@@ -113,6 +116,18 @@ class PreprocessConfig(pydantic.BaseModel):
     force_recompute: bool = pydantic.Field(
         default=True,
         description="Enable recomputation and ignore the stored SVD results",
+    )
+
+class CrossConfig(pydantic.BaseModel):
+    """Configuration for cross approximation"""
+
+    init_eps: float = pydantic.Field(
+        default=0.1,
+        description="Initial error setting for cross approximation",
+    )
+    init_struct: Literal["tucker", "ht", "tt"] = pydantic.Field(
+        default="tucker",
+        description="Choice of the initial network structure before cross",
     )
 
 
@@ -158,7 +173,7 @@ class TopDownConfig(pydantic.BaseModel):
         description="Configure the temperature schedule for SA",
     )
     alpha: float = pydantic.Field(
-        default=0.01,
+        default=10,
         description="Configure the error distribution between steps",
     )
 
@@ -194,17 +209,18 @@ class SearchConfig(pydantic.BaseModel):
         default_factory=TopDownConfig,
         description="Configurations for top down hierarchical search",
     )
+    cross: CrossConfig = pydantic.Field(
+        default_factory=CrossConfig,
+        description="Configurations for cross approximation",
+    )
 
     @staticmethod
     def load(json_str: str) -> "SearchConfig":
         """Load configurations from JSON strings"""
-        try:
-            return SearchConfig.model_validate_json(json_str)
-        except pydantic.ValidationError as e:
-            print(e)
+        return SearchConfig.model_validate_json(json_str)
 
     @staticmethod
     def load_file(json_file: str) -> "SearchConfig":
         """Load configuration from JSON files"""
-        with open(json_file, "r", encoding="utf-8") as json_file:
-            return SearchConfig.load(json_file.read())
+        with open(json_file, "r", encoding="utf-8") as f:
+            return SearchConfig.load(f.read())

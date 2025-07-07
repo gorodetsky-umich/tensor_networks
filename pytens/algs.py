@@ -27,7 +27,7 @@ import numpy as np
 import opt_einsum as oe
 from line_profiler import profile
 
-from .cross.cross import cross
+from .cross.cross import cross, CrossResult
 from .cross.funcs import TensorFunc
 from .types import (
     DimTreeNode,
@@ -332,7 +332,7 @@ class Tensor:
             new_data = new_tensor.value.reshape(-1, *unmerged_sizes)
 
             new_size = math.prod(merged_sizes)
-            new_index = Index(new_ind, new_size)
+            new_index = Index(new_ind, new_size, range(0, new_size))
             return Tensor(new_data, [new_index] + unmerged_indices)
 
         return self
@@ -345,7 +345,7 @@ class Tensor:
             if ind == split_into.index:
                 for sz in split_into.shape:
                     new_ind = f"_fresh_index_{next_index}"
-                    new_indices.append(Index(new_ind, sz))
+                    new_indices.append(Index(new_ind, sz, range(0, sz)))
                     next_index += 1
             else:
                 new_indices.append(ind)
@@ -694,11 +694,11 @@ class TensorNetwork:  # pylint: disable=R0904
 
     def fresh_node(self) -> NodeName:
         """Generate a node name that does not appear in the current network."""
-        i = 0
+        i = self.get_next_id()
         node = f"n{i}"
         while node in self.network.nodes:
-            i += 1
             node = f"n{i}"
+            i = self.get_next_id()
 
         return node
 
@@ -895,20 +895,25 @@ class TensorNetwork:  # pylint: disable=R0904
 
             self.set_node_tensor(n, tensor)
 
+    #TODO: refactor this implementation
     def replace_with(
         self,
         name: NodeName,
         subnet: "TensorNetwork",
         split_info: Optional[List[Union[IndexSplit, IndexMerge]]] = None,
-    ) -> None:
+        root: Optional[NodeName] = None,
+    ) -> Tuple[Dict[NodeName, NodeName], Dict[IndexName, IndexName]]:
         """Replace a node with a sub-tensor network."""
         if name not in self.network.nodes:
-            return
+            return {}, {}
+        
+        if root is not None:
+            assert root in subnet.network.nodes
 
         ind_names = [ind.name for ind in self.all_indices()]
         subnet_free_indices = subnet.free_indices()
         index_subst: Dict[IndexName, IndexName] = {}
-        node_subst = {}
+        node_subst: Dict[NodeName, NodeName] = {}
         for m in subnet.network.nodes:
             m_tensor = subnet.node_tensor(m)
             if m in self.network.nodes:
@@ -962,6 +967,8 @@ class TensorNetwork:  # pylint: disable=R0904
         for u, v in subnet.network.edges:
             self.add_edge(node_subst[u], node_subst[v])
 
+        return node_subst, index_subst
+
     @profile
     def evaluate(self, indices: np.ndarray) -> np.ndarray:
         """
@@ -970,7 +977,7 @@ class TensorNetwork:  # pylint: disable=R0904
         Assumes indices are provided in the order retrieved by
         TensorNetwork.free_indices()
         """
-        free_indices = self.free_indices()
+        free_indices = sorted(self.free_indices())
         assert indices.shape[1] == len(free_indices), (
             f"Expected {len(free_indices)} indices, got {indices.shape[1]}"
         )
@@ -1396,13 +1403,17 @@ class TreeNetwork(TensorNetwork):
         return [leaves[i] for i in np.argsort(perm)]
 
     def cross(
-        self, tensor_func: TensorFunc, eps: Optional[float] = None
-    ) -> Sequence[Tuple[int, float]]:
+        self, tensor_func: TensorFunc, eps: Optional[float] = None, parent_ind: Optional[Index] = None,
+    ) -> CrossResult:
         """Run cross approximation over the current network structure
         until the relative error goes below the prescribed epsilon."""
         root = None
         free_indices = self.free_indices()
         for node in self.network.nodes:
+            if parent_ind is not None and parent_ind in self.node_tensor(node).indices:
+                root = node
+                break
+
             if root is None:
                 root = node
                 continue
@@ -1417,7 +1428,7 @@ class TreeNetwork(TensorNetwork):
                 if ind in free_indices:
                     node_free *= ind.size
 
-            if node_free < root_free:
+            if node_free > root_free:
                 root = node
 
         return cross(tensor_func, self, root, eps)
@@ -1482,7 +1493,8 @@ class TreeNetwork(TensorNetwork):
                     node_free_indices.append(ind)
                     up_indices.append(ind)
 
-            for c in children:
+            sorted_children = sorted(children, key=lambda x: x.info.indices)
+            for c in sorted_children:
                 up_indices.extend(c.info.indices)
                 indices.extend(c.info.indices)
 
@@ -1490,7 +1502,7 @@ class TreeNetwork(TensorNetwork):
                 node=node,
                 indices=indices,
                 free_indices=sorted(node_free_indices),
-                children=sorted(children, key=lambda x: x.info.indices),
+                children=sorted_children,
                 up_vals=np.empty(0),
                 down_vals=np.empty(0),
                 up_indices=up_indices,
@@ -1518,6 +1530,22 @@ class TreeNetwork(TensorNetwork):
         assign_indices(tree)
         self.canonicalize_indices(tree)
         return tree
+    
+    @staticmethod
+    def tucker(indices: Sequence[Index]) -> "TreeNetwork":
+        """Create a Tucker with the given indices."""
+        net = TreeNetwork()
+        core_indices = [Index(f"s{i}", 1) for i in range(len(indices))]
+        core_size = [ind.size for ind in core_indices]
+        core = Tensor(np.empty(core_size), core_indices)
+        net.add_node("G", core)
+        for i, ind in enumerate(indices):
+            t_indices = [Index(f"s{i}", 1), ind]
+            t_size = [1, ind.size]
+            net.add_node(f"n{i}", Tensor(np.empty(t_size), t_indices))
+            net.add_edge("G", f"n{i}")
+
+        return net
 
     def __add__(self, other: Any) -> Self:
         """Add two tree networks."""
