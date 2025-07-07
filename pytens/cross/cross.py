@@ -226,7 +226,7 @@ def cross(
         estimate = net.evaluate(validation).reshape(-1)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        print("Error:", err, eps)
+        # print("Error:", err, eps)
         if err <= eps or (max_size is not None and len(up_vals) >= max_size):
             break
 

@@ -661,11 +661,11 @@ class TestGeneralOps(unittest.TestCase):
         self.assertListEqual(
             sorted(net.free_indices()),
             [
-                Index("s_5", 2),
-                Index("s_6", 2),
-                Index("s_7", 8),
+                Index("s_10", 2),
+                Index("s_11", 6),
+                Index("s_7", 2),
                 Index("s_8", 2),
-                Index("s_9", 6),
+                Index("s_9", 8),
             ],
         )
 

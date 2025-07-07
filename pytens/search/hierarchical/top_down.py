@@ -250,10 +250,10 @@ class TopDownSearch:
         unused_delta = result.unused_delta**2 + st.unused_delta
         best_st = HSearchState(st.free_indices, st.reshape_history, bn, 0)
 
-        print(bn)
+        # print(bn)
         # enumerate nodes in the order of their scores
         for node in next_nodes:
-            print(node)
+            # print(node)
 
             optimize_res = self._optimize_node(
                 best_st, node, remaining_delta, None
@@ -269,8 +269,8 @@ class TopDownSearch:
             if best_res is not None:
                 best_st.network = best_res[0]
                 best_sn_st = best_res[1]
-                print("best subnet for", node)
-                print(best_sn_st.network)
+                # print("best subnet for", node)
+                # print(best_sn_st.network)
                 best_st.network.replace_with(
                     node, best_sn_st.network, best_sn_st.reshape_history
                 )

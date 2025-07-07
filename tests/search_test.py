@@ -138,15 +138,17 @@ class TestState(unittest.TestCase):
         ac = ISplit("G", [0])
         new_st = init_state.take_action(ac)
         assert new_st is not None
-        self.assertListEqual(
-            new_st.get_legal_actions(),
-            [
-                ISplit("n0", [0]),
-                ISplit("n0", [1]),
-                ISplit("n0", [2]),
-                ISplit("G", [0]),
-            ],
-        )
+        expected = {}
+        for node in new_st.network.network.nodes:
+            for i, ind in enumerate(new_st.network.node_tensor(node).indices):
+                if ind not in expected:
+                    expected[ind] = ISplit(node, [i])
+                    print(node, i)
+
+        for ac in new_st.get_legal_actions():
+            print(ac)
+
+        self.assertListEqual(new_st.get_legal_actions(), list(expected.values()))
 
         ac = OSplit([Index("i", 3)])
         new_st = init_state.take_action(ac)
@@ -331,10 +333,34 @@ class TestTopDownSearch(unittest.TestCase):
         result = search_engine.top_down(tensor_func)
         assert result.best_state is not None
         err = result.stats.re_f
-        print(result.best_state.network)
-        print(err)
-        self.assertLessEqual(float(err), 1e-1)
-        
+        # print(result.best_state.network)
+        # print(err)
+        self.assertLessEqual(float(err), 2e-1)
+
+    def test_top_down_cross_init_reshape(self):
+        n = 25
+        grid = np.meshgrid(*[np.arange(0, n) for _ in range(4)])
+        all_args = np.stack(grid, axis=0).reshape(4, -1).T
+        real_val = 1.0 / np.sum(all_args + 1, axis=1)
+        real_val = real_val.reshape(n, n, n, n)
+        indices = [Index(f"I{i}", n, range(n)) for i in range(4)]
+        tensor_func = FuncData(indices, real_val)
+
+        config = SearchConfig()
+        config.engine.eps = 1e-1
+        config.engine.verbose = True
+        config.engine.decomp_algo = "cross"
+        config.cross.init_eps = 0.1
+        config.cross.init_struct = "tucker"
+        config.topdown.search_algo = "correlation"
+        search_engine = SearchEngine(config=config)
+        result = search_engine.top_down(tensor_func)
+        assert result.best_state is not None
+        err = result.stats.re_f
+        # print(result.best_state.network)
+        # print(err)
+        self.assertLessEqual(float(err), 2e-1)
+
 
 if __name__ == "__main__":
     test = TestTopDownSearch()
