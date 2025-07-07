@@ -1,20 +1,20 @@
 """Linear constraints for finding best rank assignment."""
 
-from typing import List, Sequence, Union, Optional
-import itertools
-import os
 import copy
+import itertools
+import logging
+import os
+from typing import List, Optional, Sequence
 
 import gurobipy as gp
-from gurobipy import GRB
 import numpy as np
+from gurobipy import GRB
 
-from pytens.algs import Tensor, Index, TreeNetwork
+from pytens.algs import Index, Tensor, TreeNetwork
+from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import OSplit, SearchState
-from pytens.cross.cross import TensorFunc
-
-import logging
+from pytens.search.utils import DataTensor
 
 BAD_SCORE = 9999999999999
 
@@ -170,6 +170,7 @@ class ConstraintSearch:
         self,
         data_tensor: TensorFunc,
         comb: Sequence[Index],
+        parent_ind: Optional[Index] = None,
     ):
         net = TreeNetwork()
         net.add_node("G", Tensor(np.empty([0 for _ in data_tensor.indices]), data_tensor.indices))
@@ -177,8 +178,8 @@ class ConstraintSearch:
         net.merge(v, s, compute_data = False)
 
         bin_size = self.config.synthesizer.bin_size
-        err = self.config.engine.eps * bin_size
-        ranks_and_errors = net.cross(data_tensor, err)
+        err = self.delta * bin_size
+        ranks_and_errors = net.cross(data_tensor, err, parent_ind).ranks_and_errors
         sizes, sums = zip(*reversed(ranks_and_errors))
         # print(sizes, sums)
 
@@ -209,15 +210,16 @@ class ConstraintSearch:
 
     def preprocess_comb(
         self,
-        data_tensor: Union[TreeNetwork, TensorFunc],
+        data_tensor: DataTensor,
         comb: Sequence[Index],
         compute_uv: bool = False,
+        parent_ind: Optional[Index] = None,
     ):
         """Precompute the singluar values for a given index combination."""
         logger.debug("preprocess %s", comb)
 
         if isinstance(data_tensor, TensorFunc):
-            self._preprocess_cross(data_tensor, comb)
+            self._preprocess_cross(data_tensor, comb, parent_ind)
             return
 
         ac = OSplit(comb)
@@ -274,7 +276,9 @@ class ConstraintSearch:
         # st.network.draw()
         # plt.show()
         # print(st.network.all_indices())
+        rerange_map = {}
         for ind in indices:
+            rerange_map[ind.name] = ind.value_choices
             if ind not in free_indices:
                 var_indices.append(ind)
                 solver.add_var(ind)
@@ -289,13 +293,11 @@ class ConstraintSearch:
             solver.env.dispose()
             return None
 
-        relabel_map, rerange_map = {}, {}
+        relabel_map = {}
         for ind in var_indices:
             for j in ind.value_choices:
                 if solver.vars[(ind.name, j)].x == 1:
                     relabel_map[ind.name] = int(j)
-
-            rerange_map[ind.name] = tuple()
 
         st.network.relabel_indices(relabel_map)
         st.network.rerange_indices(rerange_map)

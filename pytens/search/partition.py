@@ -1,25 +1,27 @@
 """Structure search with output-directed splits."""
 
-from typing import List, Optional, Sequence, Union
-import time
-import copy
-import pickle
 import atexit
+import copy
 import heapq
+import pickle
+import time
+from typing import List, Optional, Sequence
 
 import numpy as np
 
-from pytens.algs import TreeNetwork, SVDConfig, Tensor
+from pytens.algs import TreeNetwork
 from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
-from pytens.search.state import SearchState, Action, OSplit, ISplit
 from pytens.search.constraint import ConstraintSearch
+from pytens.search.state import Action, ISplit, OSplit, SearchState
 from pytens.search.utils import (
-    remove_temp_dir,
-    SearchStats,
+    DataTensor,
     SearchResult,
+    SearchStats,
     init_state,
+    remove_temp_dir,
 )
+from pytens.types import Index
 
 
 class PartitionSearch:
@@ -40,7 +42,7 @@ class PartitionSearch:
 
     def get_cost(
         self,
-        data_tensor: Union[TreeNetwork, TensorFunc],
+        data_tensor: DataTensor,
         new_st: SearchState,
         best_costs: List[int],
     ) -> Optional[SearchState]:
@@ -82,7 +84,7 @@ class PartitionSearch:
         return new_st
 
     def _enumerate(
-        self, data_tensor: Union[TreeNetwork, TensorFunc]
+        self, data_tensor: DataTensor, exclusions: Optional[Sequence[Index]],
     ) -> Sequence[SearchState]:
         """Enumerate all possible splits up to the maximum number of ops."""
         sts = [init_state(data_tensor, self._delta)]
@@ -93,6 +95,9 @@ class PartitionSearch:
             for curr_st in curr_sts:
                 is_osplit = self.config.synthesizer.action_type == "osplit"
                 for action in curr_st.get_legal_actions(is_osplit):
+                    if is_osplit and exclusions is not None and len(action.indices) == 1 and action.indices[0] in exclusions:
+                        continue
+
                     new_st = self._sketch_execution(curr_st, action)
                     next_sts.append(new_st)
                     self.stats.count += 1
@@ -126,7 +131,7 @@ class PartitionSearch:
 
     def _top_k(
         self,
-        data_tensor: Union[TreeNetwork, TensorFunc],
+        data_tensor: DataTensor,
         sts: Sequence[SearchState],
     ) -> SearchResult:
         result = SearchResult()
@@ -151,9 +156,11 @@ class PartitionSearch:
     ) -> SearchResult:
         res = SearchResult()
         if tensor_func is not None:
-            _ = st.network.cross(tensor_func, self.config.engine.eps)
+            cross_res = st.network.cross(tensor_func, self._delta)
             # st.curr_delta = self.config.engine.eps * st.network.norm()
             res.best_state = st
+            res.best_dim_tree = cross_res.dim_tree
+            res.unused_delta = np.sqrt(self.config.engine.eps**2 - cross_res.ranks_and_errors[-1][1]**2)
             return res
 
         best_state = st
@@ -200,7 +207,7 @@ class PartitionSearch:
 
     def replay(
         self,
-        data_tensor: Union[TreeNetwork, TensorFunc],
+        data_tensor: DataTensor,
         actions: List[Action],
         first_iter: bool = False,
     ) -> SearchResult:
@@ -215,7 +222,7 @@ class PartitionSearch:
         raise TypeError("unsupported data tensor type")
 
     def rank_search(
-        self, data_tensor: Union[TreeNetwork, TensorFunc], acs: List[Action]
+        self, data_tensor: DataTensor, acs: List[Action]
     ) -> Optional[SearchState]:
         """Search for ranks for the given set of split actions."""
         st = init_state(data_tensor, self._delta)
@@ -226,47 +233,7 @@ class PartitionSearch:
 
         return self.get_cost(data_tensor, st, [data_tensor.cost()])
 
-    # def rank_search_and_replay(
-    #     self,
-    #     net: TreeNetwork,
-    #     acs: List[Action],
-    #     delta: Optional[float] = None,
-    # ) -> SearchResult:
-    #     """Replay actions on the given tensor network."""
-    #     preprocess_end = time.time()
-    #     if delta is None:
-    #         delta = net.norm() * self.config.engine.eps
-    #     self._delta = delta
-
-    #     init_st = SearchState(net, delta)
-    #     new_st = init_st
-    #     for ac in acs:
-    #         ac.target_size = None
-    #         new_st = self.pseudo_action_execution(new_st, ac)
-
-    #     _ = self.get_cost(init_st, new_st, [net.cost()], None)
-
-    #     self.best_network = net
-    #     # get the smallest
-    #     costs = sorted([(v, k) for k, v in self._costs.items()])
-    #     for _, actions in costs[:1]:
-    #         for k, ac in enumerate(actions):
-    #             ac.target_size = self._ranks[actions][k]
-
-    #         self.best_acs = actions
-    #         self.replay(init_st, actions, True)
-
-    #     result = SearchResult(
-    #         stats=self.stats,
-    #         best_network=self.best_network,
-    #         best_actions=self.best_acs,
-    #     )
-    #     result.stats.time = time.time() - self._tic
-    #     result.stats.preprocess_time = preprocess_end - self._tic
-    #     result.unused_delta = self.unused_delta
-    #     return result
-
-    def preprocess(self, data_tensor: Union[TreeNetwork, TensorFunc]) -> float:
+    def preprocess(self, data_tensor: DataTensor, exclusions: Optional[Sequence[Index]], parent_ind: Optional[Index]) -> float:
         """Precompute the pair of ranks and errors for the given data tensor"""
         preprocess_start = time.time()
         if self.config.synthesizer.replay_from is not None:
@@ -278,10 +245,14 @@ class PartitionSearch:
             ind_combs = SearchState.all_index_combs(data_tensor.free_indices())
 
         for comb in ind_combs:
+            if exclusions is not None and len(comb) == 1 and comb[0] in exclusions:
+                continue
+
             self.constraint_engine.preprocess_comb(
                 data_tensor,
                 comb,
                 compute_uv=self.config.rank_search.search_mode == "all",
+                parent_ind=parent_ind,
             )
 
         if self.config.output.remove_temp_after_run:
@@ -295,25 +266,28 @@ class PartitionSearch:
 
     def search(
         self,
-        data_tensor: Union[TreeNetwork, TensorFunc],
+        data_tensor: DataTensor,
         delta: Optional[float] = None,
+        exclusions: Optional[Sequence[Index]] = None,
+        parent_ind: Optional[Index] = None,
     ) -> SearchResult:
         """Start the search from a given network.
         Only support single core now.
         """
         result = SearchResult()
 
-        if isinstance(data_tensor, TreeNetwork):
-            if delta is None:
+        if delta is None:
+            if isinstance(data_tensor, TreeNetwork):
                 self._delta = data_tensor.norm() * self.config.engine.eps
-        elif isinstance(data_tensor, TensorFunc):
-            if delta is None:
+            elif isinstance(data_tensor, TensorFunc):
                 self._delta = self.config.engine.eps
+            else:
+                raise TypeError("Unsupported data tensor type")
         else:
-            raise TypeError("Unsupported data tensor type")
+            self._delta = delta
 
         self.constraint_engine.delta = self._delta
-        self.stats.preprocess_time = self.preprocess(data_tensor)
+        self.stats.preprocess_time = self.preprocess(data_tensor, exclusions, parent_ind)
         self.stats.search_start = time.time()
 
         if self.config.synthesizer.replay_from is not None:
@@ -336,7 +310,7 @@ class PartitionSearch:
             search_res = self.replay(data_tensor, acs, True)
         else:
             self.unused_delta = self._delta
-            sts = self._enumerate(data_tensor)
+            sts = self._enumerate(data_tensor, exclusions)
             search_res = self._top_k(data_tensor, sts)
 
         result = result.update_best_state(search_res)

@@ -1,15 +1,17 @@
 """Utility function for structure search."""
 
 import os
-from typing import Tuple, List, Dict, Optional, Self, Union, Literal
+from typing import Dict, List, Literal, Optional, Self, Tuple, Union
 
 import numpy as np
 import pydantic
 
-from pytens.search.state import SearchState
-from pytens.algs import TreeNetwork, Tensor
+from pytens.algs import Tensor, TreeNetwork
 from pytens.cross.funcs import TensorFunc
-from pytens.types import IndexSplit, IndexMerge
+from pytens.search.state import SearchState
+from pytens.types import DimTreeNode, IndexMerge, IndexSplit
+
+DataTensor = Union[TreeNetwork, TensorFunc]
 
 
 class SearchStats(pydantic.BaseModel):
@@ -42,6 +44,7 @@ class SearchResult:
     stats: SearchStats
     unused_delta: float = 0.0
     best_state: Optional[SearchState] = None
+    best_dim_tree: Optional[DimTreeNode] = None
     best_solver_cost: int = -1
 
     def __init__(
@@ -75,6 +78,7 @@ class SearchResult:
         if other < self:
             self.best_state = other.best_state
             self.unused_delta = other.unused_delta
+            self.best_dim_tree = other.best_dim_tree
 
         return self
 
@@ -201,8 +205,8 @@ def reshape_indices(reshape_ops, indices, data):
                             *(prev_perm + curr_perm + next_perm)
                         )
                         break
-                    else:
-                        new_ind_group.append(ind)
+
+                    new_ind_group.append(ind)
 
                 new_sizes.extend([ind.size for ind in new_ind_group])
                 new_indices.append(new_ind_group)
@@ -212,18 +216,157 @@ def reshape_indices(reshape_ops, indices, data):
 
     return indices, data
 
+def unravel_indices(reshape_ops, indices, data):
+    """Get corresponding indices after splitting"""
+    indices = [[ind] for ind in indices]
+    data = [[col] for col in data.T]
+    for reshape_op in reshape_ops:
+        new_indices = []
+        new_data = []
+        if isinstance(reshape_op, IndexSplit):
+            
+            for group_idx, ind_group in enumerate(indices):
+                new_ind_group = []
+                new_data_group = []
+                for i, ind in enumerate(ind_group):
+                    if ind == reshape_op.index:
+                        assert reshape_op.result is not None
+                        new_ind_group.extend(reshape_op.result)
+                        new_sizes = [ind.size for ind in reshape_op.result]
+                        new_data_group.extend(np.unravel_index(data[group_idx][i], new_sizes))
+                    else:
+                        new_ind_group.append(ind)
+                        new_data_group.append(data[group_idx][i])
 
-def init_state(
-    data_tensor: Union[TreeNetwork, TensorFunc], delta
-) -> SearchState:
+                new_indices.append(new_ind_group)
+                new_data.append(new_data_group)
+
+        elif isinstance(reshape_op, IndexMerge):
+            for group_idx, ind_group in enumerate(indices):
+                new_ind_group = []
+                for ind in ind_group:
+                    if ind in reshape_op.indices:
+                        unchanged = [
+                            ind
+                            for ind in ind_group
+                            if ind not in reshape_op.indices
+                        ]
+                        assert reshape_op.result is not None
+                        new_ind_group = [reshape_op.result] + unchanged
+                        # we want to permute these indices before comparison
+                        cnt_before = sum(len(g) for g in indices[:group_idx])
+                        cnt_after = sum(
+                            len(g) for g in indices[group_idx + 1 :]
+                        )
+                        curr_perm = [
+                            ind_group.index(ind) + cnt_before
+                            for ind in reshape_op.indices
+                        ] + [
+                            ind_group.index(ind) + cnt_before
+                            for ind in unchanged
+                        ]
+                        prev_perm = list(range(cnt_before))
+                        next_perm = [
+                            cnt_before + len(curr_perm) + i
+                            for i in range(cnt_after)
+                        ]
+                        data = data[:, *(prev_perm + curr_perm + next_perm)]
+                        break
+
+                    new_ind_group.append(ind)
+
+                # new_sizes.extend([ind.size for ind in new_ind_group])
+                new_indices.append(new_ind_group)
+
+        data = new_data
+        indices = new_indices
+
+    # print(indices)
+    data = np.hstack([np.stack(g, axis=-1) for g in data])
+    return data[:, np.argsort([i for inds in indices for i in inds])]
+
+def ravel_indices(reshape_ops, indices, data):
+    """Get corresponding indices before splitting"""
+    indices = [[ind] for ind in indices]
+    all_funcs = []
+    for reshape_op in reshape_ops:
+        new_indices = []
+        funcs = []
+        if isinstance(reshape_op, IndexSplit):
+            for group_idx, ind_group in enumerate(indices):
+                new_ind_group = []
+                for ind in ind_group:
+                    if ind == reshape_op.index:
+                        assert reshape_op.result is not None
+                        new_ind_group.extend(reshape_op.result)
+                    else:
+                        new_ind_group.append(ind)
+
+                new_indices.append(new_ind_group)
+                new_sizes = [ind.size for ind in new_ind_group]
+                funcs.append(new_sizes)
+
+        elif isinstance(reshape_op, IndexMerge):
+            for group_idx, ind_group in enumerate(indices):
+                new_ind_group = []
+                for ind in ind_group:
+                    if ind in reshape_op.indices:
+                        unchanged = [
+                            ind
+                            for ind in ind_group
+                            if ind not in reshape_op.indices
+                        ]
+                        assert reshape_op.result is not None
+                        new_ind_group = [reshape_op.result] + unchanged
+                        # we want to permute these indices before comparison
+                        cnt_before = sum(len(g) for g in indices[:group_idx])
+                        cnt_after = sum(
+                            len(g) for g in indices[group_idx + 1 :]
+                        )
+                        curr_perm = [
+                            ind_group.index(ind) + cnt_before
+                            for ind in reshape_op.indices
+                        ] + [
+                            ind_group.index(ind) + cnt_before
+                            for ind in unchanged
+                        ]
+                        prev_perm = list(range(cnt_before))
+                        next_perm = [
+                            cnt_before + len(curr_perm) + i
+                            for i in range(cnt_after)
+                        ]
+                        data = data[:, *(prev_perm + curr_perm + next_perm)]
+                        break
+
+                    new_ind_group.append(ind)
+
+                # new_sizes.extend([ind.size for ind in new_ind_group])
+                new_indices.append(new_ind_group)
+
+        indices = new_indices
+        all_funcs.append(funcs)
+
+    # print(indices)
+
+    return data[:, np.argsort([i for inds in indices for i in inds])]
+
+
+def init_state(data_tensor: DataTensor, delta) -> SearchState:
+    """Create initial search state for the input data tensor."""
     if isinstance(data_tensor, TreeNetwork):
         return SearchState(data_tensor, delta)
 
     if isinstance(data_tensor, TensorFunc):
         net = TreeNetwork()
-        net.add_node("G0", Tensor(np.empty(0), data_tensor.indices))
+        net.add_node(
+            "G0",
+            Tensor(
+                np.empty([0 for _ in data_tensor.indices]), data_tensor.indices
+            ),
+        )
         return SearchState(net, delta)
 
     raise TypeError(
-        f"Expect data tensors to have types TreeNetwork or TensorFunc, but get {type(data_tensor)}"
+        f"Expect data tensors to have types TreeNetwork or TensorFunc, "
+        f"but get {type(data_tensor)}"
     )

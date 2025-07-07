@@ -1,20 +1,20 @@
 """Utility functions for hierarchical search"""
 
-from typing import List, Literal, Dict, Sequence, Tuple, Optional
 import math
+from typing import Dict, List, Literal, Sequence, Tuple
 
 import numpy as np
 
+from pytens.algs import TreeNetwork
 from pytens.search.configuration import SearchConfig
-from pytens.types import Index
+from pytens.types import DimTreeNode, NodeName
+from pytens.cross.cross import construct_matrix, cartesian_product_arrays
 
 
-def trigger_merge(
-    config: SearchConfig, parent_indices: Optional[List[Index]]
-) -> bool:
+def trigger_merge(config: SearchConfig, is_top: bool) -> bool:
     """Determine whether to trigger the index merge operation before search"""
     return (config.topdown.search_algo == "correlation") and (
-        parent_indices is not None or config.topdown.merge_mode == "all"
+        not is_top or config.topdown.merge_mode == "all"
     )
 
 
@@ -106,3 +106,7 @@ def select_factors(
                 results.append(chunk_factors)
 
     return results
+
+def update_dim_tree(net: TreeNetwork, root: NodeName, node_tree: DimTreeNode) -> bool:
+    """Update the dimension tree with the updated network"""
+    

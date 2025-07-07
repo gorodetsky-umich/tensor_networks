@@ -1,23 +1,25 @@
 """Search algorithsm for tensor networks."""
 
-from typing import Union
-import time
 import itertools
+import time
 
 import numpy as np
 
 from pytens.algs import TreeNetwork
 from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
-from pytens.search.exhaustive import DFSSearch, BFSSearch
-from pytens.search.partition import PartitionSearch
-from pytens.search.hierarchical.top_down import TopDownSearch
+from pytens.search.exhaustive import BFSSearch, DFSSearch
 from pytens.search.hierarchical.error_dist import AlphaErrorDist
+from pytens.search.hierarchical.top_down import TopDownSearch
+from pytens.search.partition import PartitionSearch
+from pytens.search.state import SearchState
 from pytens.search.utils import (
-    approx_error,
+    DataTensor,
     SearchResult,
+    approx_error,
     reshape_indices,
     rtol,
+    unravel_indices,
 )
 
 
@@ -27,7 +29,7 @@ class SearchEngine:
     def __init__(self, config: SearchConfig):
         self.config = config
 
-    def partition_search(self, data_tensor: Union[TreeNetwork, TensorFunc]):
+    def partition_search(self, data_tensor: DataTensor):
         """Perform an search with output-directed splits + constraint solve."""
 
         engine = PartitionSearch(self.config)
@@ -101,54 +103,56 @@ class SearchEngine:
 
         return result
 
-    def top_down(self, net: TreeNetwork):
+    def top_down(self, data_tensor: DataTensor):
         """Start point of a top down hierarchical search."""
 
         top_down_runner = TopDownSearch(self.config)
+        top_down_runner.error_dist = AlphaErrorDist(alpha=self.config.topdown.alpha)
         start = time.time()
         if self.config.topdown.random_algorithm == "random":
-            error_dist = AlphaErrorDist(alpha=self.config.topdown.alpha)
-            best_network, best_st = top_down_runner.search(net, error_dist)
+            best_st = top_down_runner.search(data_tensor)
         else:
             raise ValueError("Random search algorithm not implemented yet.")
         end = time.time()
 
-        best_network.compress()
+        assert best_st is not None
+        best_st.network.compress()
+        best_network = best_st.network
         result = SearchResult()
-        result.best_network = best_network
-        result.stats.time = end - start
-        result.stats.cr_start = net.cost() / best_network.cost()
-        unopt_size = float(np.prod([i.size for i in net.free_indices()]))
+        result.best_state = SearchState(best_network, 0)
+        result.stats.search_start = start
+        result.stats.search_end = end
+
+        if isinstance(data_tensor, TreeNetwork):
+            free_indices = data_tensor.free_indices()
+            unopt_size = float(np.prod([i.size for i in free_indices]))
+            init_size = data_tensor.cost()
+            data_val = data_tensor.contract().value
+            approx_val = best_network.contract().value
+            reordered_indices, data_val = reshape_indices(
+                best_st.reshape_history, free_indices, data_val
+            )
+            reordered_indices = list(itertools.chain(*reordered_indices))
+            approx_val = approx_val.transpose(
+                [free_indices.index(ind) for ind in reordered_indices]
+            )
+        elif isinstance(data_tensor, TensorFunc):
+            free_indices = data_tensor.indices
+            unopt_size = float(np.prod([i.size for i in free_indices]))
+            init_size = unopt_size
+
+            valid = []
+            for ind in free_indices:
+                valid.append(np.random.randint(0, ind.size - 1, size=10000))
+            valid = np.stack(valid, axis=-1)
+            approx_val = best_network.evaluate(unravel_indices(best_st.reshape_history, free_indices, valid))
+            data_val = data_tensor(valid)
+        else:
+            raise TypeError("unsupported data tensor type")
+
+        result.stats.cr_start = init_size / best_network.cost()
         result.stats.cr_core = unopt_size / best_network.cost()
-        approx_tensor = best_network.contract()
-        data_val = net.contract().value
-        # print(best_st.network)
-        # print(best_st.reshape_history)
-        reordered_indices, data_val = reshape_indices(
-            best_st.reshape_history, net.free_indices(), data_val
-        )
-        # print(best_st.reshape_history)
-        # free_indices_name = [ind.name for ind in net.free_indices()]
-        # approx_net = undo_reshape(top_down_runner.reshape_info, best_network)
-
-        # print(reordered_indices)
-        reordered_indices = list(itertools.chain(*reordered_indices))
-        # print(list(reordered_indices))
-        # print(approx_tensor.indices)
-        # print(approx_tensor.value.shape)
-        approx_tensor = approx_tensor.permute_by_name(
-            [ind.name for ind in reordered_indices]
-        )
-        approx_val = approx_tensor.value
-        # for reshape_op in top_down_runner.reshape_info:
-        #     if isinstance(reshape_op, IndexSplit):
-        #         net.reshape(index_split=[reshape_op])
-        #     elif isinstance(reshape_op, IndexMerge):
-        #         net.reshape(index_merge=[reshape_op])
-        # print(best_network.free_indices())
-        # print(net.free_indices())
-
-        result.stats.re = float(
+        result.stats.re_f = float(
             np.linalg.norm(approx_val - data_val) / np.linalg.norm(data_val)
         )
         return result
