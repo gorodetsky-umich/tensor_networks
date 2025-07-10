@@ -62,7 +62,7 @@ class FuncData(TensorFunc):
         super().__init__(indices)
         self.data = data
 
-    def run(self, args: np.ndarray):
+    def run(self, args: np.ndarray) -> np.ndarray:
         return self.data[*args.astype(int).T]
 
 
@@ -73,8 +73,8 @@ class FuncTensorNetwork(TensorFunc):
         super().__init__(indices)
         self.net = net
 
-    def run(self, args: np.ndarray):
-        return self.net.evaluate(args.astype(int))
+    def run(self, args: np.ndarray) -> np.ndarray:
+        return self.net.evaluate(self.indices, args.astype(int))
 
 
 class NodeFunc(TensorFunc):

@@ -167,19 +167,21 @@ class ConstraintSearch:
         )
 
     def _preprocess_cross(
-        self,
-        data_tensor: TensorFunc,
-        comb: Sequence[Index],
-        parent_ind: Optional[Index] = None,
+        self, data_tensor: TensorFunc, comb: Sequence[Index]
     ):
         net = TreeNetwork()
-        net.add_node("G", Tensor(np.empty([0 for _ in data_tensor.indices]), data_tensor.indices))
+        net.add_node(
+            "G",
+            Tensor(
+                np.empty([0 for _ in data_tensor.indices]), data_tensor.indices
+            ),
+        )
         (_, s, v), _ = OSplit(comb).svd(net, compute_data=False)
-        net.merge(v, s, compute_data = False)
+        net.merge(v, s, compute_data=False)
 
         bin_size = self.config.synthesizer.bin_size
         err = self.delta * bin_size
-        ranks_and_errors = net.cross(data_tensor, err, parent_ind).ranks_and_errors
+        ranks_and_errors = net.cross(data_tensor, err).ranks_and_errors
         sizes, sums = zip(*reversed(ranks_and_errors))
         # print(sizes, sums)
 
@@ -202,7 +204,7 @@ class ConstraintSearch:
 
         if prev_idx != len(sizes) - 1:
             final_sums.append(sums[prev_idx + 1] ** 2)
-            final_sizes.append(sizes[prev_idx+1])
+            final_sizes.append(sizes[prev_idx + 1])
 
         # print(final_sums, final_sizes)
 
@@ -213,13 +215,12 @@ class ConstraintSearch:
         data_tensor: DataTensor,
         comb: Sequence[Index],
         compute_uv: bool = False,
-        parent_ind: Optional[Index] = None,
     ):
         """Precompute the singluar values for a given index combination."""
         logger.debug("preprocess %s", comb)
 
         if isinstance(data_tensor, TensorFunc):
-            self._preprocess_cross(data_tensor, comb, parent_ind)
+            self._preprocess_cross(data_tensor, comb)
             return
 
         ac = OSplit(comb)

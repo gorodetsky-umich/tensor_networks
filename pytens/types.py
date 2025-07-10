@@ -83,6 +83,7 @@ class NodeInfo:
     """Node name and the corresponding indices"""
 
     node: NodeName
+    level: int
     indices: List[Index]
     free_indices: List[Index]
     up_indices: List[Index]
@@ -136,6 +137,7 @@ class DimTreeNode:
     def __init__(
         self,
         node: NodeName,
+        level: int,
         indices: List[Index],
         free_indices: List[Index],
         up_indices: List[Index],
@@ -146,7 +148,7 @@ class DimTreeNode:
         parent: Optional["DimTreeNode"] = None,
     ):
         self.info = NodeInfo(
-            node, indices, free_indices, up_indices, down_indices
+            node, level, indices, free_indices, up_indices, down_indices
         )
         self.conn = Connection(children, parent)
         self.values = CrossVals(up_vals, down_vals)
@@ -185,3 +187,41 @@ class DimTreeNode:
             results.extend(c.leaves())
 
         return results
+    
+    def height(self) -> int:
+        """Get the height of the tree."""
+        max_c = 0
+        for c in self.conn.children:
+            max_c = max(max_c, c.height())
+
+        return max_c + 1
+    
+    def distance(self, node1: NodeName, node2: NodeName) -> int:
+        """Get the distance between the two indices."""
+        n1 = self.locate(node1)
+        assert n1 is not None
+        n2 = self.locate(node2)
+        assert n2 is not None
+        # find the common ancestor that subsumes both n1 and n2
+        p = n1
+        dist1 = 0
+        while p is not None:
+            if all(ind in p.info.indices for ind in n1.info.indices + n2.info.indices):
+                break
+
+            p = p.conn.parent
+            dist1 += 1
+
+        if p is None:
+            raise RuntimeError("not a valid tree")
+        
+        p2 = n2
+        dist2 = 0
+        while p2 is not None and p2 != p:
+            p2 = p2.conn.parent
+            dist2 += 1
+
+        if p2 is None:
+            raise RuntimeError("not a valid tree")
+        
+        return dist1 + dist2

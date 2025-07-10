@@ -153,14 +153,14 @@ def init_values(net: "pt.TreeNetwork", tree: DimTreeNode) -> None:
 
         up_vals = []
         for ind in c.info.up_indices:
-            up_vals.append(np.random.randint(0, ind.size - 1, rank))
+            up_vals.append(np.random.randint(0, ind.size, rank))
         c.values.up_vals = np.stack(up_vals, axis=-1)
         if len(c.values.up_vals.shape) == 1:
             c.values.up_vals = c.values.up_vals[:, None]
 
         down_vals = []
         for ind in c.info.down_indices:
-            down_vals.append(np.random.randint(0, ind.size - 1, rank))
+            down_vals.append(np.random.randint(0, ind.size, rank))
         c.values.down_vals = np.stack(down_vals, axis=-1)
         if len(c.values.down_vals.shape) == 1:
             c.values.down_vals = c.values.down_vals[:, None]
@@ -191,7 +191,7 @@ def cross(
 
     validation = []
     for ind in f.indices:
-        validation.append(np.random.randint(0, ind.size - 1, size=val_size))
+        validation.append(np.random.randint(0, ind.size, size=val_size))
     validation = np.stack(validation, axis=-1)
     real = f(validation)
     f_sizes = [ind.size for ind in tree.info.free_indices]
@@ -223,7 +223,7 @@ def cross(
         root_val = root_matrix.T.reshape(*f_sizes, *c_sizes)
         net.node_tensor(tree.info.node).update_val_size(root_val)
 
-        estimate = net.evaluate(validation).reshape(-1)
+        estimate = net.evaluate(net.free_indices(), validation).reshape(-1)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
         # print("Error:", err, eps)

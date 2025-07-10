@@ -327,12 +327,15 @@ class TestTopDownSearch(unittest.TestCase):
         config.engine.verbose = True
         config.engine.decomp_algo = "cross"
         config.cross.init_eps = 0.1
-        config.cross.init_struct = "tucker"
+        config.cross.init_struct = "tt"
         config.topdown.search_algo = "correlation"
+        config.topdown.merge_mode = "all"
         search_engine = SearchEngine(config=config)
         result = search_engine.top_down(tensor_func)
         assert result.best_state is not None
         err = result.stats.re_f
+        # print("final cost", result.best_state.network.cost())
+        # print(result.stats.search_end - result.stats.search_start)
         # print(result.best_state.network)
         # print(err)
         self.assertLessEqual(float(err), 2e-1)
@@ -351,12 +354,15 @@ class TestTopDownSearch(unittest.TestCase):
         config.engine.verbose = True
         config.engine.decomp_algo = "cross"
         config.cross.init_eps = 0.1
-        config.cross.init_struct = "tucker"
+        config.cross.init_struct = "tt"
         config.topdown.search_algo = "correlation"
+        config.topdown.merge_mode = "all"
         search_engine = SearchEngine(config=config)
         result = search_engine.top_down(tensor_func)
         assert result.best_state is not None
         err = result.stats.re_f
+        # print("final cost", result.best_state.network.cost())
+        # print(result.stats.search_end - result.stats.search_start)
         # print(result.best_state.network)
         # print(err)
         self.assertLessEqual(float(err), 2e-1)
@@ -364,4 +370,4 @@ class TestTopDownSearch(unittest.TestCase):
 
 if __name__ == "__main__":
     test = TestTopDownSearch()
-    test.test_top_down_cross()
+    test.test_top_down_cross_init_reshape()

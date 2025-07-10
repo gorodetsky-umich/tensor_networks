@@ -5,10 +5,9 @@ from typing import Dict, List, Literal, Sequence, Tuple
 
 import numpy as np
 
-from pytens.algs import TreeNetwork
 from pytens.search.configuration import SearchConfig
-from pytens.types import DimTreeNode, NodeName
-from pytens.cross.cross import construct_matrix, cartesian_product_arrays
+from pytens.types import IndexSplit, Index
+from pytens.cross.funcs import TensorFunc, SplitFunc
 
 
 def trigger_merge(config: SearchConfig, is_top: bool) -> bool:
@@ -107,6 +106,26 @@ def select_factors(
 
     return results
 
-def update_dim_tree(net: TreeNetwork, root: NodeName, node_tree: DimTreeNode) -> bool:
-    """Update the dimension tree with the updated network"""
-    
+
+def split_func(
+    old_func: TensorFunc,
+    free_indices: Sequence[Index],
+    split_ops: Sequence[IndexSplit],
+) -> SplitFunc:
+    """Get the tensor function for the sequence of split operations."""
+    old_free = old_func.indices
+    var_mapping = {}
+    for split_op in split_ops:
+        split_out = split_op.result
+        if split_out is None:
+            continue
+
+        split_inds, split_sizes = [], []
+        for ind in split_out:
+            split_inds.append(free_indices.index(ind))
+            split_sizes.append(int(ind.size))
+
+        before_split = old_free.index(split_op.index)
+        var_mapping[before_split] = (split_inds, split_sizes)
+
+    return SplitFunc(free_indices, old_func, var_mapping)

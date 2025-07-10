@@ -218,72 +218,46 @@ def reshape_indices(reshape_ops, indices, data):
 
 def unravel_indices(reshape_ops, indices, data):
     """Get corresponding indices after splitting"""
-    indices = [[ind] for ind in indices]
-    data = [[col] for col in data.T]
     for reshape_op in reshape_ops:
         new_indices = []
         new_data = []
         if isinstance(reshape_op, IndexSplit):
-            
-            for group_idx, ind_group in enumerate(indices):
-                new_ind_group = []
-                new_data_group = []
-                for i, ind in enumerate(ind_group):
-                    if ind == reshape_op.index:
-                        assert reshape_op.result is not None
-                        new_ind_group.extend(reshape_op.result)
-                        new_sizes = [ind.size for ind in reshape_op.result]
-                        new_data_group.extend(np.unravel_index(data[group_idx][i], new_sizes))
-                    else:
-                        new_ind_group.append(ind)
-                        new_data_group.append(data[group_idx][i])
-
-                new_indices.append(new_ind_group)
-                new_data.append(new_data_group)
+            for ind_idx, ind in enumerate(indices):
+                if ind == reshape_op.index:
+                    assert reshape_op.result is not None
+                    new_indices.extend(reshape_op.result)
+                    new_sizes = [i.size for i in reshape_op.result]
+                    new_data.extend(np.unravel_index(data[:, ind_idx], new_sizes))
+                else:
+                    new_indices.append(ind)
+                    new_data.append(data[:, ind_idx])
 
         elif isinstance(reshape_op, IndexMerge):
-            for group_idx, ind_group in enumerate(indices):
-                new_ind_group = []
-                for ind in ind_group:
-                    if ind in reshape_op.indices:
-                        unchanged = [
-                            ind
-                            for ind in ind_group
-                            if ind not in reshape_op.indices
-                        ]
-                        assert reshape_op.result is not None
-                        new_ind_group = [reshape_op.result] + unchanged
-                        # we want to permute these indices before comparison
-                        cnt_before = sum(len(g) for g in indices[:group_idx])
-                        cnt_after = sum(
-                            len(g) for g in indices[group_idx + 1 :]
-                        )
-                        curr_perm = [
-                            ind_group.index(ind) + cnt_before
-                            for ind in reshape_op.indices
-                        ] + [
-                            ind_group.index(ind) + cnt_before
-                            for ind in unchanged
-                        ]
-                        prev_perm = list(range(cnt_before))
-                        next_perm = [
-                            cnt_before + len(curr_perm) + i
-                            for i in range(cnt_after)
-                        ]
-                        data = data[:, *(prev_perm + curr_perm + next_perm)]
-                        break
+            idxs = []
+            sizes = []
+            for ind in reshape_op.indices:
+                idxs.append(indices.index(ind))
+                sizes.append(ind.size)
 
-                    new_ind_group.append(ind)
+            assert reshape_op.result is not None
+            new_indices.append(reshape_op.result)
+            merged_data = [data[:, idx] for idx in idxs]
+            new_data.append(np.ravel_multi_index(merged_data, sizes))
 
-                # new_sizes.extend([ind.size for ind in new_ind_group])
-                new_indices.append(new_ind_group)
+            for ind in indices:
+                if ind in reshape_op.indices:
+                    continue
 
-        data = new_data
+                new_indices.append(ind)
+                new_data.append(data[:, indices.index(ind)])
+
+        data = np.stack(new_data, axis=-1)
         indices = new_indices
 
     # print(indices)
-    data = np.hstack([np.stack(g, axis=-1) for g in data])
-    return data[:, np.argsort([i for inds in indices for i in inds])]
+    # data = np.hstack([np.stack(g, axis=-1) for g in data])
+    # return data[:, np.argsort([i for inds in indices for i in inds])]
+    return indices, data
 
 def ravel_indices(reshape_ops, indices, data):
     """Get corresponding indices before splitting"""

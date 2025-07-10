@@ -129,6 +129,10 @@ class CrossConfig(pydantic.BaseModel):
         default="tucker",
         description="Choice of the initial network structure before cross",
     )
+    init_dim: int = pydantic.Field(
+        default=100,
+        description="Configure the number of initial cross dimensions",
+    )
 
 
 class TopDownConfig(pydantic.BaseModel):

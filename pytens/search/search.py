@@ -143,9 +143,11 @@ class SearchEngine:
 
             valid = []
             for ind in free_indices:
-                valid.append(np.random.randint(0, ind.size - 1, size=10000))
+                valid.append(np.random.randint(0, ind.size, size=10000))
             valid = np.stack(valid, axis=-1)
-            approx_val = best_network.evaluate(unravel_indices(best_st.reshape_history, free_indices, valid))
+            indices, new_valid = unravel_indices(best_st.reshape_history, free_indices, valid)
+            perm = [indices.index(ind) for ind in best_network.free_indices()]
+            approx_val = best_network.evaluate(best_network.free_indices(), new_valid[:, perm])
             data_val = data_tensor(valid)
         else:
             raise TypeError("unsupported data tensor type")
