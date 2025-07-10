@@ -126,24 +126,28 @@ class OSplit(Action):
 
             return True, results
 
-        for n in net.network.nodes:
-            # postorder traversal from each node and
-            # if we find each index
-            visited = set()
-            # print("postordering", n)
-            ok, results = postorder(visited, n)
-            if ok:
-                lca_node = n
-                for i in self.indices:
-                    for e, inds in results:
-                        if i in inds:
-                            lca_indices.append(e)
-                            break
+        while lca_node is None:
+            for n in net.network.nodes:
+                # postorder traversal from each node and
+                # if we find each index
+                visited = set()
+                # print("postordering", n)
+                ok, results = postorder(visited, n)
+                if ok:
+                    lca_node = n
+                    for i in self.indices:
+                        for e, inds in results:
+                            if i in inds:
+                                lca_indices.append(e)
+                                break
 
-                break
+                    break
 
-        if lca_node is None:
-            raise ValueError("Cannot find the lca for indices", self.indices)
+            if lca_node is None:
+                print("Cannot find the lca for indices", self.indices, "try swap indices")
+                # swap indices until they are in the same subtree
+                net = net.swap(self.indices)
+
         # net.draw()
         # plt.show()
         # Once we find the node and indices, we perform the split

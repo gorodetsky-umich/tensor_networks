@@ -84,7 +84,9 @@ class PartitionSearch:
         return new_st
 
     def _enumerate(
-        self, data_tensor: DataTensor, exclusions: Optional[Sequence[Index]],
+        self,
+        data_tensor: DataTensor,
+        exclusions: Optional[Sequence[Index]],
     ) -> Sequence[SearchState]:
         """Enumerate all possible splits up to the maximum number of ops."""
         sts = [init_state(data_tensor, self._delta)]
@@ -95,7 +97,12 @@ class PartitionSearch:
             for curr_st in curr_sts:
                 is_osplit = self.config.synthesizer.action_type == "osplit"
                 for action in curr_st.get_legal_actions(is_osplit):
-                    if is_osplit and exclusions is not None and len(action.indices) == 1 and action.indices[0] in exclusions:
+                    if (
+                        is_osplit
+                        and exclusions is not None
+                        and len(action.indices) == 1
+                        and action.indices[0] in exclusions
+                    ):
                         continue
 
                     new_st = self._sketch_execution(curr_st, action)
@@ -160,7 +167,10 @@ class PartitionSearch:
             # st.curr_delta = self.config.engine.eps * st.network.norm()
             res.best_state = st
             res.best_dim_tree = cross_res.dim_tree
-            res.unused_delta = np.sqrt(self.config.engine.eps**2 - cross_res.ranks_and_errors[-1][1]**2)
+            res.unused_delta = np.sqrt(
+                self.config.engine.eps**2
+                - cross_res.ranks_and_errors[-1][1] ** 2
+            )
             return res
 
         best_state = st
@@ -233,7 +243,9 @@ class PartitionSearch:
 
         return self.get_cost(data_tensor, st, [data_tensor.cost()])
 
-    def preprocess(self, data_tensor: DataTensor, exclusions: Optional[Sequence[Index]], parent_ind: Optional[Index]) -> float:
+    def preprocess(
+        self, data_tensor: DataTensor, exclusions: Optional[Sequence[Index]]
+    ) -> float:
         """Precompute the pair of ranks and errors for the given data tensor"""
         preprocess_start = time.time()
         if self.config.synthesizer.replay_from is not None:
@@ -245,14 +257,17 @@ class PartitionSearch:
             ind_combs = SearchState.all_index_combs(data_tensor.free_indices())
 
         for comb in ind_combs:
-            if exclusions is not None and len(comb) == 1 and comb[0] in exclusions:
+            if (
+                exclusions is not None
+                and len(comb) == 1
+                and comb[0] in exclusions
+            ):
                 continue
 
             self.constraint_engine.preprocess_comb(
                 data_tensor,
                 comb,
                 compute_uv=self.config.rank_search.search_mode == "all",
-                parent_ind=parent_ind,
             )
 
         if self.config.output.remove_temp_after_run:
@@ -269,7 +284,6 @@ class PartitionSearch:
         data_tensor: DataTensor,
         delta: Optional[float] = None,
         exclusions: Optional[Sequence[Index]] = None,
-        parent_ind: Optional[Index] = None,
     ) -> SearchResult:
         """Start the search from a given network.
         Only support single core now.
@@ -287,7 +301,7 @@ class PartitionSearch:
             self._delta = delta
 
         self.constraint_engine.delta = self._delta
-        self.stats.preprocess_time = self.preprocess(data_tensor, exclusions, parent_ind)
+        self.stats.preprocess_time = self.preprocess(data_tensor, exclusions)
         self.stats.search_start = time.time()
 
         if self.config.synthesizer.replay_from is not None:

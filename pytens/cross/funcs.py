@@ -2,7 +2,6 @@
 
 from abc import abstractmethod
 from typing import List
-from functools import lru_cache
 
 import numpy as np
 
@@ -152,18 +151,7 @@ class FuncTensorNetwork(TensorFunc):
         super().__init__(indices)
         self.net = net
 
-    def run(self, args: np.ndarray):
-        return self.net.evaluate(args.astype(int))
-
-
-class FuncTensorNetwork(CachedFunc):
-    """Tensor networks as cross approximation input."""
-
-    def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
-        super().__init__(indices)
-        self.net = net
-
-    def _run(self, args: np.ndarray) -> np.ndarray:
+    def run(self, args: np.ndarray) -> np.ndarray:
         return self.net.evaluate(self.indices, args.astype(int))
 
     def cost(self) -> int:
