@@ -12,6 +12,7 @@ import pytens.algs as pt
 from pytens.cross.funcs import TensorFunc
 from pytens.types import DimTreeNode
 
+
 def cartesian_product_arrays(*arrays):
     """
     Compute the Cartesian product of multiple arrays of shape (ni, di),
@@ -32,10 +33,11 @@ def cartesian_product_arrays(*arrays):
         shape[i] = arr.shape[0]
         reshaped_arr = arr.reshape(shape)
         reshaped.append(np.broadcast_to(reshaped_arr, ns + [ds[i]]))
-    
+
     # Concatenate along last axis and reshape
     stacked = np.concatenate(reshaped, axis=-1)
     return stacked.reshape(total_n, sum(ds))
+
 
 @profile
 def construct_matrix(tensor_func: TensorFunc, rows, cols) -> np.ndarray:
@@ -49,7 +51,9 @@ def construct_matrix(tensor_func: TensorFunc, rows, cols) -> np.ndarray:
     indices = col_idx + row_idx
     perm = [indices.index(ind) for ind in tensor_func.indices]
     args = args[:, perm]
+    # print("constructing", len(args))
     return tensor_func(args).reshape(len(col_vals), len(row_vals))
+
 
 @profile
 def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -58,21 +62,23 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
     This method takes the value matrix as input.
     """
-    q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
-    real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-14).sum()
+    # q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
+    # real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-14).sum()
+    q, _ = np.linalg.qr(v)
+    # q = q[:, :real_rank]
+    return py_maxvol(q)
 
-    q = q[:, :real_rank]
-    return py_maxvol(
-        q, max_iters=3
-    )
 
-def select_indices_greedy(v: np.ndarray, u: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def select_indices_greedy(
+    v: np.ndarray, u: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Select indices by maximum the difference between real and approximation.
     """
     diff = np.abs(v - u)
     np.argmax(diff, axis=1)
     return (np.empty(0), np.empty(0))
+
 
 @profile
 def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
@@ -102,6 +108,7 @@ def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
         )
         ind, _ = select_indices(v)
         node.values.down_vals = down_vals[ind, :]
+
 
 @profile
 def leaves_to_root(
@@ -134,13 +141,19 @@ def leaves_to_root(
 def incr_ranks(tree: DimTreeNode, net):
     """Increment the ranks for all edges"""
     if tree.conn.parent is not None:
-        new_up = [random.randint(0, ind.size - 1) for ind in tree.info.up_indices]
-        new_up = np.asarray(new_up)[None,:]
+        new_up = [
+            np.random.randint(0, ind.size) for ind in tree.info.up_indices
+        ]
+        new_up = np.asarray(new_up)[None, :]
         tree.values.up_vals = np.append(tree.values.up_vals, new_up, axis=0)
 
-        new_down = [random.randint(0, ind.size - 1) for ind in tree.info.down_indices]
-        new_down = np.asarray(new_down)[None,:]
-        tree.values.down_vals = np.append(tree.values.down_vals, new_down, axis=0)
+        new_down = [
+            np.random.randint(0, ind.size) for ind in tree.info.down_indices
+        ]
+        new_down = np.asarray(new_down)[None, :]
+        tree.values.down_vals = np.append(
+            tree.values.down_vals, new_down, axis=0
+        )
 
     for c in tree.conn.children:
         incr_ranks(c, net)
@@ -167,11 +180,18 @@ def init_values(net: "pt.TreeNetwork", tree: DimTreeNode) -> None:
 
         init_values(net, c)
 
+
 class CrossResult:
     """Class to record cross approximation results."""
-    def __init__(self, dim_tree: DimTreeNode, ranks_and_errors: Sequence[Tuple[int, float]]):
+
+    def __init__(
+        self,
+        dim_tree: DimTreeNode,
+        ranks_and_errors: Sequence[Tuple[int, float]],
+    ):
         self.dim_tree = dim_tree
         self.ranks_and_errors = ranks_and_errors
+
 
 @profile
 def cross(
@@ -195,7 +215,9 @@ def cross(
     validation = np.stack(validation, axis=-1)
     real = f(validation)
     f_sizes = [ind.size for ind in tree.info.free_indices]
-    f_vals = cartesian_product_arrays(*[np.arange(sz)[:,None] for sz in f_sizes])
+    f_vals = cartesian_product_arrays(
+        *[np.arange(sz)[:, None] for sz in f_sizes]
+    )
 
     tree_nodes = tree.preorder()
     ranks_and_errs = {}
@@ -210,7 +232,9 @@ def cross(
             leaves_to_root(f, n, net)
 
         # get the value for the root node
-        c_indices = [ind for c in tree.conn.children for ind in c.info.up_indices]
+        c_indices = [
+            ind for c in tree.conn.children for ind in c.info.up_indices
+        ]
         c_vals = [c.values.up_vals for c in tree.conn.children]
         up_vals = cartesian_product_arrays(*c_vals)
         c_sizes = [len(v) for v in c_vals]

@@ -11,7 +11,7 @@ import numpy as np
 from gurobipy import GRB
 
 from pytens.algs import Index, Tensor, TreeNetwork
-from pytens.cross.cross import TensorFunc
+from pytens.cross.funcs import TensorFunc, FuncTensorNetwork
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import OSplit, SearchState
 from pytens.search.utils import DataTensor
@@ -169,19 +169,37 @@ class ConstraintSearch:
     def _preprocess_cross(
         self, data_tensor: TensorFunc, comb: Sequence[Index]
     ):
-        net = TreeNetwork()
-        net.add_node(
-            "G",
-            Tensor(
-                np.empty([0 for _ in data_tensor.indices]), data_tensor.indices
-            ),
-        )
-        (_, s, v), _ = OSplit(comb).svd(net, compute_data=False)
-        net.merge(v, s, compute_data=False)
-
         bin_size = self.config.synthesizer.bin_size
         err = self.delta * bin_size
-        ranks_and_errors = net.cross(data_tensor, err).ranks_and_errors
+        if isinstance(data_tensor, FuncTensorNetwork):
+            net = TreeNetwork()
+            net.network = copy.deepcopy(data_tensor.net.network)
+            net = net.swap(comb)
+            # reset the network internal indices to 1
+            free_indices = list(net.free_indices())
+            for node in net.network:
+                tensor = net.node_tensor(node)
+                shape = []
+                for ind in tensor.indices:
+                    if ind in free_indices:
+                        shape.append(ind.size)
+                    else:
+                        shape.append(1)
+                tensor.update_val_size(np.zeros(shape))
+
+            ranks_and_errors = net.cross(data_tensor, err).ranks_and_errors
+        else:
+            net = TreeNetwork()
+            net.add_node(
+                "G",
+                Tensor(
+                    np.empty([0 for _ in data_tensor.indices]), data_tensor.indices
+                ),
+            )
+            (_, s, v), _ = OSplit(comb).svd(net, compute_data=False)
+            net.merge(v, s, compute_data=False)
+            ranks_and_errors = net.cross(data_tensor, err).ranks_and_errors
+
         sizes, sums = zip(*reversed(ranks_and_errors))
         # print(sizes, sums)
 

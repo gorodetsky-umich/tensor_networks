@@ -2,6 +2,7 @@
 
 import copy
 import itertools
+import functools
 import logging
 import math
 import typing
@@ -480,9 +481,9 @@ class TensorNetwork:  # pylint: disable=R0904
         """Get the free indices."""
         icount = self.all_indices()
         free_indices = sorted([i for i, v in icount.items() if v == 1])
-        for i in icount:
-            if "_batch" in i.name:
-                free_indices.append(i)
+        # for i in icount:
+        #     if "_batch" in i.name:
+        #         free_indices.append(i)
 
         return free_indices
 
@@ -574,7 +575,7 @@ class TensorNetwork:  # pylint: disable=R0904
                 try:
                     dim = free_indices.index(local_ind)
                     ix.append(ind[dim])
-                    if not isinstance(ind[dim], int):
+                    if not isinstance(ind[dim], int) and not ind[dim].is_integer():
                         new_indices.append(local_ind)
 
                 except ValueError:  # no dimension is in a free index
@@ -878,7 +879,7 @@ class TensorNetwork:  # pylint: disable=R0904
                         new_ind = split_op.result[used_results_cnt].name
                         used_results_cnt += 1
                     else:
-                        new_ind = self.fresh_index()
+                        new_ind = f"{split_op.index.name}_{ind.name[13:]}"
                     rename_map[ind.name] = new_ind
                     new_indices.append(new_ind)
             # print(rename_map)
@@ -974,44 +975,68 @@ class TensorNetwork:  # pylint: disable=R0904
         Assumes indices are provided in the order retrieved by
         TensorNetwork.free_indices()
         """
-        free_indices = sorted(self.free_indices())
+        free_indices = self.free_indices()
         assert values.shape[1] == len(indices), (
             f"Expected {len(free_indices)} indices, got {values.shape[1]}"
         )
+        perm = [indices.index(i) for i in free_indices]
+        values = values[:, perm]
 
-        batch_ind = Index("_batch", values.shape[0])
-        ind_mapping = {batch_ind: "a"}
-        node_vals = []
-        node_strs = []
-        for node in self.network.nodes:
-            tensor = self.node_tensor(node)
-            tslices = []
-            has_batch = False
-            node_str = ""
-            for ind in tensor.indices:
-                ind_letter = chr(97 + len(ind_mapping))
-                if ind in indices:
-                    tslices.append(values[:, indices.index(ind)])
-                    if not has_batch:
-                        has_batch = True
-                        node_str += ind_mapping[batch_ind]
+        # # divide the values into small chunks
+        chunk_size = 50000
+        chunk_start = 0
+        results = np.empty(values.shape[0])
+        # for i, v in enumerate(values):
+        #     results[i] = self[tuple(v)].value
+        while chunk_start < values.shape[0]:
+            batch_size = min(chunk_size, values.shape[0] - chunk_start)
+            batch_ind = Index("_batch", batch_size)
+            ind_mapping = {batch_ind: "a"}
+            node_vals = []
+            node_strs = []
+            for node in self.network.nodes:
+                tensor = self.node_tensor(node)
+                tslices = []
+                node_str = ""
+                
+                for ii, ind in enumerate(tensor.indices):
+                    ind_letter = chr(97 + len(ind_mapping))
+                    if ind in indices:
+                        tslices.append((ii, values[chunk_start:chunk_start+batch_size, indices.index(ind)]))
+                    else:
+                        if ind not in ind_mapping:
+                            ind_mapping[ind] = ind_letter
+                        node_str += ind_mapping[ind]
+
+                    # print(ind, node_str)
+                
+                # swap batch to the front
+                if len(tslices) > 0:
+                    perm, pslices = zip(*tslices)
+                    perm = list(perm)
+                    # add other indices to the end of perm
+                    for i in range(len(tensor.indices)):
+                        if i not in perm:
+                            perm.append(i)
+                    node_str = ind_mapping[batch_ind] + node_str
+                    batch_val = tensor.value.transpose(perm)[tuple(pslices)]
                 else:
-                    tslices.append(slice(None))
-                    if ind not in ind_mapping:
-                        ind_mapping[ind] = ind_letter
-                    node_str += ind_mapping[ind]
+                    batch_val = tensor.value
+                
+                # print(node, tensor.indices, tslices, tensor.value.shape, batch_val.shape)
+                node_vals.append(batch_val)
+                node_strs.append(node_str)
 
-            batch_val = tensor.value[tuple(tslices)]
-            node_vals.append(batch_val)
-            node_strs.append(node_str)
+            estr = ",".join(node_strs) + "->" + ind_mapping[batch_ind]
+            logger.debug(
+                "contraction args: %s, shapes: %s",
+                estr,
+                [n.shape for n in node_vals],
+            )
+            results[chunk_start:chunk_start+batch_size] = oe.contract(estr, *node_vals, optimize="auto")
+            chunk_start += batch_size
 
-        estr = ",".join(node_strs) + "->" + ind_mapping[batch_ind]
-        logger.debug(
-            "contraction args: %s, shapes: %s",
-            estr,
-            [n.shape for n in node_vals],
-        )
-        return oe.contract(estr, *node_vals, optimize="auto")
+        return results
 
     def __lt__(self, other: Self) -> bool:
         return self.cost() < other.cost()
@@ -1034,12 +1059,14 @@ class TensorNetwork:  # pylint: disable=R0904
         return out
 
     @typing.no_type_check
-    def draw(self, ax=None):
+    def draw(self, ax=None, node_label=False):
         """Draw a networkx representation of the network."""
+
+        _ = plt.figure(1, figsize=(12, 6), dpi=100)
 
         # Define color and shape maps
         shape_map = {"A": "o", "B": "s"}
-        size_map = {"A": 300, "B": 100}
+        size_map = {"A": 800, "B": 100}
         node_groups = {"A": [], "B": []}
 
         # with_label = {'A': True, 'B': False}
@@ -1067,8 +1094,8 @@ class TensorNetwork:  # pylint: disable=R0904
         # you need to install both graphviz and pygraphviz.
         pos = nx.drawing.nx_agraph.graphviz_layout(
             new_graph,
-            prog="neato",
-            args="-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy",
+            prog="dot",
+            # args="-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy",
         )
         # pos = nx.planar_layout(new_graph)
 
@@ -1085,29 +1112,35 @@ class TensorNetwork:  # pylint: disable=R0904
                     pos,
                     ax=ax,
                     nodelist=nodes,
-                    node_color="lightblue",
+                    node_color="tab:blue",
                     node_shape=shape_map[group],
                     node_size=size_map[group],
+                    linewidths=2.0,
+                    edgecolors='k',
                 )
-                node_labels = {node: node for node in node_groups["A"]}
-                nx.draw_networkx_labels(
-                    new_graph, pos, ax=ax, labels=node_labels, font_size=12
-                )
+                
+                if node_label:
+                    node_labels = {node: node for node in node_groups["A"]}
+                    nx.draw_networkx_labels(
+                        new_graph, pos, ax=ax, labels=node_labels, font_size=12
+                    )
             else:
                 nx.draw_networkx_nodes(
                     new_graph,
                     pos,
                     ax=ax,
                     nodelist=nodes,
-                    node_color=range(1, len(nodes) + 1),
+                    node_color='w',
+                    # node_color=range(1, len(nodes) + 1),
                     node_shape=shape_map[group],
                     node_size=size_map[group],
-                    cmap=plt.get_cmap("Accent"),
+                    # cmap=plt.get_cmap("tab20"),
                     # with_label=with_label[group]
                 )
+                
                 node_labels = {node: node for node in nodes}
                 nx.draw_networkx_labels(
-                    new_graph, pos, ax=ax, labels=node_labels, font_size=12
+                    new_graph, pos, ax=ax, labels=node_labels, font_size=12, verticalalignment='top'
                 )
 
         edge_labels = {}
@@ -1116,7 +1149,7 @@ class TensorNetwork:  # pylint: disable=R0904
             labels = [f"{i.size}" for i in indices]
             label = "-".join(labels)
             edge_labels[(u, v)] = label
-        nx.draw_networkx_edges(new_graph, pos, ax=ax)
+        nx.draw_networkx_edges(new_graph, pos, ax=ax, width=2.0)
         nx.draw_networkx_edge_labels(
             new_graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
         )
@@ -1529,11 +1562,12 @@ class TreeNetwork(TensorNetwork):
         """Merge specified free indices"""
         # if the indices are scatter on several nodes, swap and merge them
         self.network = self.swap(merge_op.indices).network
-        nodes = []
+        nodes = set()
         for ind in merge_op.indices:
-            nodes.append(self.node_by_free_index(ind.name))
+            nodes.add(self.node_by_free_index(ind.name))
 
         if len(nodes) >= 2:
+            nodes = list(nodes)
             n = self.merge(nodes[0], nodes[1])
             for m in nodes[2:]:
                 n = self.merge(n, m)
@@ -1543,7 +1577,7 @@ class TreeNetwork(TensorNetwork):
 
             new_ind: IndexName = ""
             if merge_op.result is None:
-                new_ind = self.fresh_index()
+                new_ind = "_".join(str(ind.name) for ind in merge_op.indices)
             else:
                 new_ind = merge_op.result.name
             tensor = tensor.merge_indices(merge_op.indices, new_ind)

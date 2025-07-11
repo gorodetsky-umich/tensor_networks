@@ -338,6 +338,8 @@ class TestTopDownSearch(unittest.TestCase):
         # print(result.stats.search_end - result.stats.search_start)
         # print(result.best_state.network)
         # print(err)
+        # print(result.stats.init_cross_evals)
+        # print(result.stats.search_cross_evals)
         self.assertLessEqual(float(err), 2e-1)
 
     def test_top_down_cross_init_reshape(self):
@@ -361,10 +363,12 @@ class TestTopDownSearch(unittest.TestCase):
         result = search_engine.top_down(tensor_func)
         assert result.best_state is not None
         err = result.stats.re_f
-        # print("final cost", result.best_state.network.cost())
-        # print(result.stats.search_end - result.stats.search_start)
-        # print(result.best_state.network)
-        # print(err)
+        print("final cost", result.best_state.network.cost())
+        print(result.stats.search_end - result.stats.search_start)
+        print(result.best_state.network)
+        print(err)
+        print(result.stats.init_cross_evals)
+        print(result.stats.search_cross_evals)
         self.assertLessEqual(float(err), 2e-1)
 
 

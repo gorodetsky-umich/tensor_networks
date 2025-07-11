@@ -51,6 +51,7 @@ class TensorFunc:
 
     def __call__(self, indices: np.ndarray):
         self.stats += indices.shape[0]
+        # print("recording", indices.shape[0])
         args = self.index_to_args(indices)
         return self.run(args)
 
@@ -186,9 +187,11 @@ class FuncAckley(TensorFunc):
     """Source: https://www.sfu.ca/~ssurjano/ackley.html"""
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
-        # self.low = -32.768
-        # self.range = 32.768 * 2
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-32.768, 32.768, ind.size))
+            inds.append(new_ind)
+        super().__init__(inds)
         self.name = "Ackley"
 
     def run(self, args: np.ndarray):
