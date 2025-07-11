@@ -32,10 +32,16 @@ class SearchStats(pydantic.BaseModel):
     cr_start: float = 0.0
     re_f: float = 0.0
     re_max: float = 0.0
+    init_cross_evals: int = 0
+    search_cross_evals: int = 0
 
     def incr_unique(self, key: int):
         """Increment the unique counter."""
         self.unique[key] = self.unique.get(key, 0) + 1
+
+    def merge(self, other: "SearchStats") -> None:
+        """Merge the other search stats into the current one."""
+        self.search_cross_evals += other.search_cross_evals
 
 
 class SearchResult:

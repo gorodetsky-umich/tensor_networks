@@ -50,7 +50,7 @@ class SearchEngine:
             validation = [np.random.randint(i, size=val_size) for i in sizes]
             validation = np.stack(validation, axis=-1)
             net_val = data_tensor(validation)
-            best_val = result.best_state.network.evaluate(validation)
+            best_val = result.best_state.network.evaluate(result.best_state.network.free_indices(), validation)
             start_cost = np.prod(sizes)
         else:
             raise TypeError("unknown data tensor type")
@@ -120,6 +120,7 @@ class SearchEngine:
         best_network = best_st.network
         result = SearchResult()
         result.best_state = SearchState(best_network, 0)
+        result.stats = top_down_runner.stats
         result.stats.search_start = start
         result.stats.search_end = end
 

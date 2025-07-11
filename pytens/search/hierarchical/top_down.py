@@ -20,7 +20,7 @@ from pytens.search.hierarchical.utils import (
     split_func,
 )
 from pytens.search.partition import PartitionSearch
-from pytens.search.utils import DataTensor, init_state
+from pytens.search.utils import DataTensor, init_state, SearchStats
 from pytens.types import Index, IndexMerge, IndexSplit, NodeName
 
 
@@ -131,6 +131,7 @@ class TopDownSearch:
     def __init__(self, config: SearchConfig):
         self.config = config
         self.error_dist = BaseErrorDist()
+        self.stats = SearchStats()
 
     def search(
         self,
@@ -173,8 +174,9 @@ class TopDownSearch:
                 raise NotImplementedError
 
             net.cross(f, eps=init_eps)
-            print("initial cost", net.cost())
+            # print("initial cost", net.cost())
             init_st = HSearchState(split_indices[:], splits, net, 0)
+            self.stats.init_cross_evals = f.stats
 
         else:
             raise ValueError("unknown decomposition algorithm")
@@ -202,7 +204,8 @@ class TopDownSearch:
         # decrease the delta budget exponentially
         delta, remaining_delta = self.error_dist.split_delta(remaining_delta)
 
-        merge_ops, split_ops = self._merge_by_corr(st.network, is_top)
+        before_split = st.network.free_indices()
+        merge_ops, split_ops = self._merge_by_corr(st, is_top)
         for merge_op in merge_ops:
             st = st.merge_index(merge_op)
             # st.network.merge_index(merge_op)
@@ -227,46 +230,50 @@ class TopDownSearch:
             return st
 
         bn = result.best_state.network
+        # print(result.stats.search_cross_evals)
+        self.stats.merge(result.stats)
 
-        # for split_op in split_ops:
-        #     bn.split_index(split_op)
+        tmp_bn = copy.deepcopy(bn)
+        for split_op in split_ops:
+            tmp_bn.split_index(split_op)
 
+        after_split = tmp_bn.free_indices()
+        
         next_nodes = list(bn.network.nodes)
         # distribute delta equally to all subnets
         remaining_delta = remaining_delta / math.sqrt(len(next_nodes))
         unused_delta = result.unused_delta**2 + st.unused_delta
         best_st = HSearchState(st.free_indices, st.reshape_history, bn, 0)
 
-        # print(bn)
-        # if len(next_nodes) == 1 and self.config.engine.decomp_algo == "cross":
-        #     unused_delta += remaining_delta**2
-        # else:
-        # enumerate nodes in the order of their scores
-        for node in next_nodes:
-            # print(node)
+        if sorted(before_split) == sorted(after_split) and len(next_nodes) == 1:
+            unused_delta += remaining_delta ** 2
+        else:
+            # enumerate nodes in the order of their scores
+            for node in next_nodes:
+                # print(node)
 
-            optimize_res = self._optimize_node(best_st, node, remaining_delta)
-            best_res = None
-            for res in optimize_res:
-                if (
-                    best_res is None
-                    or res[1].network.cost() < best_res[1].network.cost()
-                ):
-                    best_res = res
+                optimize_res = self._optimize_node(best_st, node, remaining_delta)
+                best_res = None
+                for res in optimize_res:
+                    if (
+                        best_res is None
+                        or res[1].network.cost() < best_res[1].network.cost()
+                    ):
+                        best_res = res
 
-            if best_res is not None:
-                best_st.network = best_res[0]
-                best_sn_st = best_res[1]
-                # print("best subnet for", node)
-                # print(best_sn_st.network)
-                best_st.network.replace_with(
-                    node, best_sn_st.network, best_sn_st.reshape_history
-                )
-                best_st.free_indices = best_sn_st.free_indices
-                best_st.reshape_history = best_sn_st.reshape_history
-                unused_delta += best_sn_st.unused_delta
-            else:
-                unused_delta += remaining_delta**2
+                if best_res is not None:
+                    best_st.network = best_res[0]
+                    best_sn_st = best_res[1]
+                    # print("best subnet for", node)
+                    # print(best_sn_st.network)
+                    best_st.network.replace_with(
+                        node, best_sn_st.network, best_sn_st.reshape_history
+                    )
+                    best_st.free_indices = best_sn_st.free_indices
+                    best_st.reshape_history = best_sn_st.reshape_history
+                    unused_delta += best_sn_st.unused_delta
+                else:
+                    unused_delta += remaining_delta**2
 
         best_st.unused_delta = unused_delta
         # self.memoization[tuple(st.network.free_indices())] = best_st
@@ -274,7 +281,7 @@ class TopDownSearch:
 
     def _merge_by_corr(
         self,
-        net: TreeNetwork,
+        st: HSearchState,
         is_top: bool = False,
         threshold: int = 4,
     ) -> Tuple[Sequence[IndexMerge], Sequence[IndexSplit]]:
@@ -287,14 +294,16 @@ class TopDownSearch:
         if not trigger_merge(self.config, is_top):
             return [], []
 
+        net = st.network
         indices = net.free_indices()
 
         if len(indices) <= threshold:
             return [], []
 
-        shape = [ind.size for ind in indices]
+        mergable_indices = [ind for ind in indices if ind in st.free_indices]
+
         comb_corr = {}
-        for comb in itertools.combinations(indices, 2):
+        for comb in itertools.combinations(mergable_indices, 2):
             # rights = [x for x in range(len(indices)) if x not in comb]
             # value_perm = value.transpose(list(comb) + rights)
             # others = [x for i, x in enumerate(shape) if i not in comb]
@@ -320,7 +329,7 @@ class TopDownSearch:
             m_indices = comb
             m_shape = [ind.size for ind in m_indices]
             m_ind_size = np.prod(m_shape, dtype=int)
-            m_ind = Index(f"tmp_merge_{groups}", m_ind_size)
+            m_ind = Index("_".join(str(ind.name) for ind in comb), m_ind_size)
 
             merge_op = IndexMerge(indices=m_indices, result=m_ind)
             merge_ops.append(merge_op)
@@ -458,7 +467,7 @@ class TopDownSearch:
             return []
 
         if self.config.topdown.search_algo == "random":
-            k = random.randint(0, len(factors))
+            k = np.random.randint(0, len(factors))
             selected = random.sample(factors, k=k)
             shape = _create_split_target(factors, selected)
             return [IndexSplit(index=index, shape=shape)]

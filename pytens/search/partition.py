@@ -164,6 +164,7 @@ class PartitionSearch:
         res = SearchResult()
         if tensor_func is not None:
             cross_res = st.network.cross(tensor_func, self._delta)
+            self.stats.search_cross_evals += tensor_func.stats
             # st.curr_delta = self.config.engine.eps * st.network.norm()
             res.best_state = st
             res.best_dim_tree = cross_res.dim_tree
@@ -277,6 +278,10 @@ class PartitionSearch:
                 self.constraint_engine.temp_files,
             )
         preprocess_end = time.time()
+
+        if isinstance(data_tensor, TensorFunc):
+            self.stats.search_cross_evals += data_tensor.stats
+
         return preprocess_end - preprocess_start
 
     def search(
