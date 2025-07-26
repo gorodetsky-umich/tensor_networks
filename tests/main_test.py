@@ -11,6 +11,7 @@ import networkx as nx
 
 from pytens.algs import (
     TensorNetwork,
+    TensorTrain,
     TreeNetwork,
     Tensor,
     Index,
@@ -1083,7 +1084,7 @@ class TestGeneralOps(unittest.TestCase):
             Index("k", 20),
             Index("l", 20),
         ]
-        net = TreeNetwork.tt(indices, [5, 8, 10])
+        net = TensorTrain.rand_tt(indices, [5, 8, 10])
         for n in net.network.nodes:
             s = net.node_tensor(n).value.shape
             val = np.random.randn(*s)
@@ -1093,6 +1094,7 @@ class TestGeneralOps(unittest.TestCase):
 
         net2 = net.swap([indices[0], indices[3]])
         val2 = net2.contract().value
+        print(net2)
         net2.merge(
             net2.node_by_free_index(indices[0].name),
             net2.node_by_free_index(indices[3].name),
@@ -1101,12 +1103,12 @@ class TestGeneralOps(unittest.TestCase):
 
         net2 = net.swap([indices[1], indices[3]])
         val2 = net2.contract().value
+        print(net2)
         net2.merge(
             net2.node_by_free_index(indices[1].name),
             net2.node_by_free_index(indices[3].name),
         )
         self.assertTrue(np.allclose(val, val2))
-
 
 class TestCross(unittest.TestCase):
     def test_cross_err(self):
@@ -1378,8 +1380,82 @@ class TestCross(unittest.TestCase):
         self.assertLessEqual(float(rtol), 0.15)
         self.assertLessEqual(net.cost(), p**4)
 
+class TestHTT(unittest.TestCase):
+    def test_htt_construct(self):
+        indices = [
+            Index("i", 10),
+            Index("j", 15),
+            Index("k", 20),
+            Index("l", 20),
+        ]
+        tt = TensorTrain.rand_tt(indices, [5, 8, 10])
+        htt1 = tt.merge_index(IndexMerge(indices=[indices[0], indices[1]]))
+        assert htt1 is not None
+        self.assertEqual(len(htt1.network.nodes), 3)
+
+        htt2 = htt1.merge_index(IndexMerge(indices=[indices[1], indices[3]]))
+        assert htt2 is not None
+        self.assertEqual(len(htt2.network.nodes), 2)
+        print(htt2)
+        print(htt2.tt)
+        print(htt2.tt.tt)
+
+    def test_tt_svals(self):
+        indices = [
+            Index("i", 10),
+            Index("j", 15),
+            Index("k", 20),
+            Index("l", 20),
+        ]
+        tt = TensorTrain.rand_tt(indices, [5, 8, 10])
+        svals = tt.svals([indices[0], indices[1]])
+        real_val = tt.contract().value
+        real_svals = np.linalg.svdvals(real_val.reshape(10*15, -1))
+        min_len = min(len(svals), len(real_svals))
+        self.assertTrue(
+            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-10, atol=1e-10)
+        )
+
+        svals = tt.svals([indices[0], indices[2]])
+        real_svals = np.linalg.svdvals(real_val.transpose(0, 2, 1, 3).reshape(10*20, -1))
+        min_len = min(len(svals), len(real_svals))
+        self.assertTrue(
+            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-10, atol=1e-10)
+        )
+
+    def test_htt_svals(self):
+        indices = [
+            Index("i", 10),
+            Index("j", 15),
+            Index("k", 20),
+            Index("l", 20),
+            Index("m", 12),
+            Index("n", 13),
+        ]
+        tt = TensorTrain.rand_tt(indices, [5, 8, 10, 11, 12])
+        svals = tt.svals([indices[0], indices[1]])
+        real_val = tt.contract().value
+        real_svals = np.linalg.svdvals(real_val.reshape(10*15, -1))
+        min_len = min(len(svals), len(real_svals))
+        self.assertTrue(
+            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+        )
+
+        svals = tt.svals([indices[0], indices[2]])
+        real_svals = np.linalg.svdvals(real_val.transpose(0, 2, 1, 3, 4, 5).reshape(10*20, -1))
+        min_len = min(len(svals), len(real_svals))
+        self.assertTrue(
+            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+        )
+
+        htt = tt.merge_index(IndexMerge(indices=[indices[1], indices[3]]))
+        svals = htt.svals([indices[1]])
+        real_svals = np.linalg.svdvals(real_val.transpose(1, 3, 0, 2, 4, 5).reshape(15*20, -1))
+        min_len = min(len(svals), len(real_svals))
+        self.assertTrue(
+            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+        )
+
 
 if __name__ == "__main__":
-    # unittest.main()
-    test = TestGeneralOps()
-    test.test_swap()
+    unittest.main()

@@ -1558,20 +1558,8 @@ class TreeNetwork(TensorNetwork):
         self.canonicalize_indices(tree)
         return tree
     
-    def merge_index(self, merge_op: IndexMerge) -> None:
+    def merge_index(self, merge_op: IndexMerge) -> Optional["HTensorTrain"]:
         """Merge specified free indices"""
-        # if the indices are scatter on several nodes, swap and merge them
-        self.network = self.swap(merge_op.indices).network
-        nodes = set()
-        for ind in merge_op.indices:
-            nodes.add(self.node_by_free_index(ind.name))
-
-        if len(nodes) >= 2:
-            nodes = list(nodes)
-            n = self.merge(nodes[0], nodes[1])
-            for m in nodes[2:]:
-                n = self.merge(n, m)
-
         for n in self.network.nodes:
             tensor = self.node_tensor(n)
 
@@ -1590,35 +1578,13 @@ class TreeNetwork(TensorNetwork):
         net = TreeNetwork()
         core_indices = [Index(f"s{i}", 1) for i in range(len(indices))]
         core_size = [ind.size for ind in core_indices]
-        core = Tensor(np.empty(core_size), core_indices)
+        core = Tensor(np.random.random(core_size), core_indices)
         net.add_node("G", core)
         for i, ind in enumerate(indices):
             t_indices = [Index(f"s{i}", 1), ind]
             t_size = [1, ind.size]
             net.add_node(f"n{i}", Tensor(np.empty(t_size), t_indices))
             net.add_edge("G", f"n{i}")
-
-        return net
-
-    @staticmethod
-    def tt(indices: Sequence[Index], ranks: Optional[Sequence[int]] = None) -> "TreeNetwork":
-        """Create a tensor train with the given indices."""
-        net = TreeNetwork()
-        if ranks is None:
-            ranks = [1] * (len(indices) - 1)
-        for i, ind in enumerate(indices):
-            if i == 0:
-                core_indices = [ind, Index(f"s{i+1}", ranks[i])]
-            elif i == len(indices) - 1:
-                core_indices = [Index(f"s{i}", ranks[i-1]), ind]
-            else:
-                core_indices = [Index(f"s{i}", ranks[i-1]), ind, Index(f"s{i+1}", ranks[i])]
-            core_size = [ind.size for ind in core_indices]
-            core_tensor = Tensor(np.empty(core_size), core_indices)
-            net.add_node(f"G{i}", core_tensor)
-
-            if i != 0:
-                net.add_edge(f"G{i}", f"G{i - 1}")
 
         return net
 
@@ -1665,8 +1631,32 @@ class TreeNetwork(TensorNetwork):
         corr[denom == 0] = 0
         return samples, corr
 
+    def swap_nbr(self, node1: NodeName, node2: NodeName):
+        """Swap two neighbor nodes."""
+        common_ind = self.get_contraction_index(node1, node2)[0]
+        node_indices = []
+        for ind in self.node_tensor(node1).indices:
+            if ind == common_ind or ind in self.free_indices():
+                continue
+
+            node_indices.append(ind)
+
+        for ind in self.node_tensor(node2).indices:
+            if ind in self.free_indices():
+                node_indices.append(ind)
+
+        name = self.merge(node1, node2)
+        new_indices = self.node_tensor(name).indices
+        lefts = [new_indices.index(ind) for ind in node_indices]
+        # we need to record the singular values in tensor train
+        self.orthonormalize(name)
+        (u, s, v), _ = self.svd(name, lefts, SVDConfig(delta=1e-6))
+        # svals = np.diag(self.node_tensor(s).value)
+        v = self.merge(v, s)
+        nx.relabel_nodes(self.network, {u: node2, v: node1}, copy=False)
+
     def swap(self, indices: Sequence[Index]) -> Self:
-        """Swap the indices so that the osplit can be applied."""
+        """Swap the indices so that the target indices are adjacent."""
         net = copy.deepcopy(self)
 
         root = list(net.network.nodes)[0]
@@ -1697,63 +1687,40 @@ class TreeNetwork(TensorNetwork):
             # going from other to the lowest common ancestor
             node = net.node_by_free_index(other.name)
             n = tree.locate(node)
+            # print("moving", node, "to", anchor_node)
             while n is not None:
                 if all(ind in n.info.indices for ind in indices):
                     break
 
                 # swap the p with its parent
-                assert n.conn.parent is not None
                 p = n.conn.parent
-                common_ind = net.get_contraction_index(n.info.node, p.info.node)[0]
-                node_indices = net.node_tensor(n.info.node).indices[:]
-                node_indices.remove(common_ind)
-                for ind in net.node_tensor(n.info.node).indices:
-                    if ind in net.free_indices():
-                        node_indices.remove(ind)
+                assert p is not None
+                # we swap the two nodes even if p is the anchor node
+                # because we want to compute the svals
+                net.swap_nbr(n.info.node, p.info.node)
+                n = p
 
-                for ind in net.node_tensor(p.info.node).indices:
-                    if ind in net.free_indices():
-                        node_indices.append(ind)
-                name = net.merge(n.info.node, p.info.node)
-                new_indices = net.node_tensor(name).indices
-                lefts = [new_indices.index(ind) for ind in node_indices]
-                (u, s, v), _ = net.svd(name, lefts, SVDConfig(delta=1e-12))
-                v = net.merge(v, s)
-                nx.relabel_nodes(net.network, {u: n.info.node, v: p.info.node}, copy=False)
-                n = n.conn.parent
+                if p.info.node == anchor_node:
+                    return net
 
             assert n is not None
 
             # going from p down to the anchor node
-            while n.info.node != anchor_node:
+            while True:
                 # choose the child that contains the target index
                 for c in n.conn.children:
                     if best_anchor in c.info.indices:
+                        # print(c.info.node)
                         # print(net)
-                        common_ind = net.get_contraction_index(n.info.node, c.info.node)[0]
-                        node_indices = net.node_tensor(n.info.node).indices[:]
-                        node_indices.remove(common_ind)
-                        for ind in net.node_tensor(n.info.node).indices:
-                            if ind in net.free_indices():
-                                node_indices.remove(ind)
-
-                        for ind in net.node_tensor(c.info.node).indices:
-                            if ind in net.free_indices():
-                                node_indices.append(ind)
-
-                        name = net.merge(n.info.node, c.info.node)
-                        new_indices = net.node_tensor(name).indices
-                        lefts = [new_indices.index(ind) for ind in node_indices]
-                        (u, s, v), _ = net.svd(name, lefts, SVDConfig(delta=1e-8))
-                        v = net.merge(v, s)
-                        # print(u, v, n.info.node, c.info.node)
-                        nx.relabel_nodes(net.network, {u: n.info.node, v: c.info.node}, copy=False)
+                        net.swap_nbr(n.info.node, c.info.node)
                         # print(net)
                         n = c
+                        if c.info.node == anchor_node:
+                            return net
+
                         break
 
         return net
-
 
     def __add__(self, other: Any) -> Self:
         """Add two tree networks."""
@@ -1827,6 +1794,181 @@ class TreeNetwork(TensorNetwork):
 
 class TensorTrain(TreeNetwork):
     """Class for tensor trains"""
+    @staticmethod
+    def rand_tt(indices: Sequence[Index], ranks: Optional[Sequence[int]] = None) -> "TensorTrain":
+        """Create a tensor train with the given indices."""
+        net = TensorTrain()
+        if ranks is None:
+            ranks = [1] * (len(indices) - 1)
+        for i, ind in enumerate(indices):
+            if i == 0:
+                core_indices = [ind, Index(f"s{i+1}", ranks[i])]
+            elif i == len(indices) - 1:
+                core_indices = [Index(f"s{i}", ranks[i-1]), ind]
+            else:
+                core_indices = [Index(f"s{i}", ranks[i-1]), ind, Index(f"s{i+1}", ranks[i])]
+            core_size = [ind.size for ind in core_indices]
+            core_tensor = Tensor(np.random.random(core_size), core_indices)
+            net.add_node(f"G{i}", core_tensor)
+
+            if i != 0:
+                net.add_edge(f"G{i}", f"G{i - 1}")
+
+        return net
+
+    def merge_index(self, merge_op: IndexMerge) -> "HTensorTrain":
+        """After index merge, we create a hierarchical tensor train to 
+        represent such virtual index merging.
+        """
+
+        # (1) take the merging indices and swap the nodes
+        tt = self.swap(merge_op.indices)
+        # print("after swap")
+        # print(tt)
+        # print("========")
+
+        # (2) create an abstract layers to mark several nodes are merged
+        new_node = ""
+        node_mapping = {}
+        reverse_mapping = {}
+        # (2.1) extract the swapped nodes and their corresponding indices
+        for node in tt.network.nodes:
+            tensor = tt.node_tensor(node)
+            merge_indices = set(merge_op.indices)
+            tensor_indices = set(tensor.indices)
+            
+            if merge_indices & tensor_indices:
+                tmp_res = node_mapping.pop(new_node, [])
+                new_node += "_" + node
+                for n in tmp_res:
+                    reverse_mapping.pop(n)
+                node_mapping[new_node] = tmp_res + [node]
+                for n in node_mapping[new_node]:
+                    reverse_mapping[n] = new_node
+            else:
+                node_mapping[node] = [node]
+                reverse_mapping[node] = node
+
+        htt = HTensorTrain(tt, node_mapping)
+        all_indices = Counter()
+        # (2.2) create the fake nodes for the hierarchical tensor train
+        for new_node, old_nodes in node_mapping.items():
+            counter = Counter()
+            for n in old_nodes:
+                # extract the indices but remove the contraction indices
+                counter.update(tt.node_tensor(n).indices)
+
+            indices = [ind for ind, count in counter.items() if count == 1]
+            all_indices.update(indices)
+            shape = [0 for _ in indices]
+            htt.add_node(new_node, Tensor(np.empty(shape), indices))
+
+        for u, v in tt.network.edges:
+            ind = tt.get_contraction_index(u, v)[0]
+            if ind in all_indices:
+                htt.add_edge(reverse_mapping[u], reverse_mapping[v])
+
+        return htt
+    
+    def distance(self, node1: NodeName, node2: NodeName) -> int:
+        """Compute the distance between two nodes without creating dimension trees."""
+        if node1 == node2:
+            return 0
+        
+        visited = set()
+        queue = [(node1, 0)]
+        while queue:
+            curr, dist = queue.pop(0)
+            if curr == node2:
+                return dist
+            
+            if curr in visited:
+                continue
+
+            visited.add(curr)
+            for nbr in self.network.neighbors(curr):
+                if nbr not in visited:
+                    queue.append((nbr, dist + 1))
+            
+        raise ValueError(f"Cannot find a path between {node1} and {node2} in the tensor train.")
+    
+    def linear_nodes(self, start: NodeName) -> Sequence[NodeName]:
+        """Get the nodes in the tensor train in linear order."""
+        visited = set()
+        queue = [start]
+        linear_order = []
+        while queue:
+            curr = queue.pop(0)
+            if curr in visited:
+                continue
+
+            visited.add(curr)
+            linear_order.append(curr)
+            for nbr in self.network.neighbors(curr):
+                if nbr not in visited:
+                    queue.append(nbr)
+
+        return linear_order
+
+    def swap_to_end(self, indices: Sequence[Index]) -> Tuple[Self, NodeName, NodeName]:
+        """Swap the indices to the end of the tensor train."""
+        # first, we need to find the end of the current tensor train
+        # end node is the one with one neighbor or whose value is 2D
+        end_nodes = []
+        for node in self.network.nodes:
+            tensor = self.node_tensor(node)
+            if len(tensor.indices) == 2:
+                end_nodes.append(node)
+
+        if len(end_nodes) < 2:
+            raise ValueError("Cannot find enough end nodes, please check the tensor train structure.")
+        
+        # check the distance between the given indices and the end nodes
+        # pick the end node that is closest to all given indices
+        min_dist = float('inf')
+        best_end_node = None
+        for end_node in end_nodes:
+            all_dist = 0
+            for node in self.network.nodes:
+                tensor = self.node_tensor(node)
+                if any(ind in tensor.indices for ind in indices):
+                    # TODO: we can use a different score function here to evaluate the cost of swaps
+                    dist = self.distance(end_node, node)
+                    all_dist += dist
+
+            if all_dist < min_dist:
+                best_end_node = end_node
+                min_dist = all_dist
+
+        assert best_end_node is not None
+        # print("Best end node:", best_end_node)
+
+        # swap the given indices to the best end node
+        net = copy.deepcopy(self)
+        # collect the list of nodes start from the best_end_node
+        nodes = net.linear_nodes(best_end_node)
+        # print("list of nodes", nodes)
+        for ind_idx, ind in enumerate(indices):
+            node = net.node_by_free_index(ind.name)
+            if node == best_end_node:
+                continue
+
+            # print("moving", node)
+            # swap the node with neighbors until it reaches the end node
+            node_idx = nodes.index(node)
+            # print("node index", node_idx, "ind_idx", ind_idx)
+            while node_idx > ind_idx:
+                # print("swapping", nodes[node_idx], nodes[node_idx - 1])
+                net.swap_nbr(nodes[node_idx], nodes[node_idx - 1])
+                # print("after swap")
+                # print(net)
+                nodes[node_idx], nodes[node_idx - 1] = nodes[node_idx - 1], nodes[node_idx]
+                node_idx -= 1
+
+        # print("After swapping indices to the end node:")
+        # print(net)
+        return net, nodes[len(indices) - 1], nodes[len(indices)]
+
 
     def __add__(self, other: Any) -> Self:
         """Add two tensor trains.
@@ -1883,6 +2025,103 @@ class TensorTrain(TreeNetwork):
             new_tens.set_node_tensor(node1, tens1.mult(tens2, free_indices))
 
         return new_tens
+    
+    def svals(self, indices: Sequence[Index]) -> np.ndarray:
+        """Compute the singular values for a tensor train."""
+        # move the indices to one side of the tensor train
+        net, best_end_node, target_nbr = self.swap_to_end(indices)
+        # # new we can compute the svd for the middle two nodes
+        # # find the neighbor of the end node and choose the one containing the given indices
+        # target_nbr = None
+        # best_end_indices = net.node_tensor(best_end_node).indices
+        # best_side = any(ind in indices for ind in best_end_indices)
+        # for nbr in net.network.neighbors(best_end_node):
+        #     tensor = net.node_tensor(nbr)
+        #     if best_side != any(ind in tensor.indices for ind in indices):
+        #         target_nbr = nbr
+        #         break
+
+        # if target_nbr is None:
+        #     raise ValueError(f"Cannot find a neighbor of {best_end_node} containing the indices {indices}")
+        
+        # print(net)
+        # print("best end node", best_end_node)
+        # print("target neighbor", target_nbr)
+        # now we merge the end node and its target neighbor, and compute svals
+        nbr_indices = net.node_tensor(target_nbr).indices
+        merged_node = net.merge(best_end_node, target_nbr)
+        # print("merging", best_end_node, target_nbr)
+        # print(net)
+        merged_indices = net.node_tensor(merged_node).indices
+        # print(nbr_indices, merged_indices)
+        lefts = [merged_indices.index(ind) for ind in nbr_indices if ind in merged_indices]
+        net.orthonormalize(merged_node)
+        (_, s, _), _ = net.svd(merged_node, lefts, SVDConfig(delta=0))
+        # print("after svd")
+        # print(net)
+        svals = np.diag(net.node_tensor(s).value)
+        # restore the structure to before svd
+        # net.merge(v, s)
+        return svals
+
+class HTensorTrain(TensorTrain):
+    """Hierarchical tensor trains."""
+
+    def __init__(self, tt: TensorTrain, node_mapping: Dict[NodeName, Sequence[NodeName]]):
+        super().__init__()
+        self.tt = tt
+        self.node_mapping = node_mapping
+
+    def swap_nbr(self, node1: NodeName, node2: NodeName):
+        """Swap two neighbor nodes in a hierarchical tensor train."""
+
+        # For hierarchical tensor trains, we don't perform svd but
+        # delegate this operation until we reach the lowest hierarchy.
+        common_ind = self.get_contraction_index(node1, node2)[0]
+        node_indices = []
+        for ind in self.node_tensor(node1).indices:
+            if ind == common_ind or ind in self.free_indices():
+                continue
+
+            node_indices.append(ind)
+
+        for ind in self.node_tensor(node2).indices:
+            if ind in self.free_indices():
+                node_indices.append(ind)
+
+        name = self.merge(node1, node2, compute_data=False)
+        new_indices = self.node_tensor(name).indices
+        lefts = [new_indices.index(ind) for ind in node_indices]
+        # we need to record the singular values in tensor train
+        (u, s, v), _ = self.svd(name, lefts, SVDConfig(compute_data=False))
+        v = self.merge(v, s, compute_data=False)
+        nx.relabel_nodes(self.network, {u: node2, v: node1}, copy=False)
+        
+        # We need to recursively swap the nodes in the underlying TTs
+        # These nodes should be moved in a chunk
+        # So before moving the nodes, we need to sort the underlying nodes.
+        tt_tree = self.tt.dimension_tree(list(self.tt.network.nodes)[0])
+        n1_nodes = self.node_mapping[node1]
+        n2_nodes = self.node_mapping[node2]
+        n1_nodes_sorted = sorted(n1_nodes, key=lambda n: tt_tree.distance(n, n2_nodes[0]))
+        n2_nodes_sorted = sorted(n2_nodes, key=lambda n: tt_tree.distance(n, n1_nodes[0]))
+
+        # print("sorted n1", n1_nodes_sorted)
+        # print("sorted n2", n2_nodes_sorted)
+        for n2 in n2_nodes_sorted:
+            for n1 in n1_nodes_sorted:
+                # print("swapping", n2, n1, "in the subnet")
+                # print(self.tt)
+                self.tt.swap_nbr(n2, n1)
+
+
+    # def merge_index(self, merge_op: IndexMerge) -> Optional["HTensorTrain"]:
+    #     # (1) swap the operand indices so that they are neighbors
+    #     # But we will need to propagate this swap until the bottom layer
+    #     # where the actual data is stored
+    #     htt = self.swap(merge_op.indices)
+        
+    #     # (2) create another abstract layer over the current one
 
 
 def vector(
