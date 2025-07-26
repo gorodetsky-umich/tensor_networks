@@ -9,12 +9,43 @@ import pickle
 import numpy as np
 import networkx as nx
 
+<<<<<<< HEAD
 from pytens.algs import *
 from pytens.cross.cross import (
     CrossAlgo,
     CrossApproximation,
     CrossConfig,
     ConvergenceCheck,
+=======
+from pytens.algs import (
+    TensorNetwork,
+    TensorTrain,
+    TreeNetwork,
+    Tensor,
+    Index,
+    gmres,
+    rand_tt,
+    rand_tree,
+    tt_gramsvd_round,
+    tt_randomized_round,
+    tt_right_orth,
+    tt_sum,
+    tt_sum_gramsvd_round,
+    tt_sum_randomized_round,
+    tt_svd_round,
+    ttop_apply,
+    ttop_rank1,
+    ttop_rank2,
+    ttop_sum_apply,
+)
+from pytens.cross.funcs import FuncHilbert
+from tests.search_test import (
+    TestConfig,  # noqa: F401
+    TestAction,  # noqa: F401
+    TestSearch,  # noqa: F401
+    TestState,  # noqa: F401
+    TestTopDownSearch,  # noqa: F401
+>>>>>>> b664b70 (svals for tt)
 )
 from pytens.types import Index
 from pytens.cross.funcs import CachedFunc
@@ -1786,7 +1817,7 @@ class TestGeneralOps(unittest.TestCase):
             Index("k", 20),
             Index("l", 20),
         ]
-        net = TreeNetwork.tt(indices, [5, 8, 10])
+        net = TensorTrain.rand_tt(indices, [5, 8, 10])
         for n in net.network.nodes:
             s = net.node_tensor(n).value.shape
             val = np.random.randn(*s)
@@ -1796,6 +1827,7 @@ class TestGeneralOps(unittest.TestCase):
 
         net2 = net.swap([indices[0], indices[3]])
         val2 = net2.contract().value
+        print(net2)
         net2.merge(
             net2.node_by_free_index(indices[0].name),
             net2.node_by_free_index(indices[3].name),
@@ -1804,6 +1836,7 @@ class TestGeneralOps(unittest.TestCase):
 
         net2 = net.swap([indices[1], indices[3]])
         val2 = net2.contract().value
+        print(net2)
         net2.merge(
             net2.node_by_free_index(indices[1].name),
             net2.node_by_free_index(indices[3].name),
@@ -1812,6 +1845,4 @@ class TestGeneralOps(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    # unittest.main()
-    test = TestGeneralOps()
-    test.test_swap()
+    unittest.main()
