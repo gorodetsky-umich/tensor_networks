@@ -2,14 +2,16 @@
 
 import os
 from typing import Dict, List, Literal, Optional, Self, Tuple, Union
+import random
 
 import numpy as np
 import pydantic
+import torch
 
 from pytens.algs import Tensor, TreeNetwork
-from pytens.cross.funcs import TensorFunc
-from pytens.search.state import SearchState
-from pytens.types import DimTreeNode, IndexMerge, IndexSplit
+from pytens.cross.funcs import TensorFunc, SplitFunc, MergeFunc
+from pytens.search.state import SearchState, OSplit
+from pytens.types import DimTreeNode, IndexMerge, IndexSplit, Index, NodeName
 
 DataTensor = Union[TreeNetwork, TensorFunc]
 
@@ -26,6 +28,8 @@ class SearchStats(pydantic.BaseModel):
     # results
     count: int = 0
     preprocess_time: float = 0.0
+    merge_corr_time: float = 0.0
+    cross_time: float = 0.0
     search_start: float = 0.0
     search_end: float = 0.0
     cr_core: float = 0.0
@@ -33,6 +37,7 @@ class SearchStats(pydantic.BaseModel):
     re_f: float = 0.0
     re_max: float = 0.0
     init_cross_evals: int = 0
+    init_cross_size: int = 0
     search_cross_evals: int = 0
 
     def incr_unique(self, key: int):
@@ -159,68 +164,149 @@ def remove_temp_dir(temp_dir, temp_files):
         pass
 
 
+# def reshape_indices(reshape_ops, indices, data):
+#     """Get corresponding indices after splitting"""
+#     indices = [[ind] for ind in indices]
+#     for reshape_op in reshape_ops:
+#         new_indices = []
+#         new_sizes = []
+#         if isinstance(reshape_op, IndexSplit):
+#             for ind_group in indices:
+#                 new_ind_group = []
+#                 for ind in ind_group:
+#                     if ind == reshape_op.index:
+#                         assert reshape_op.result is not None
+#                         new_ind_group.extend(reshape_op.result)
+#                     else:
+#                         new_ind_group.append(ind)
+
+#                 new_indices.append(new_ind_group)
+#                 new_sizes.extend([ind.size for ind in new_ind_group])
+
+#         elif isinstance(reshape_op, IndexMerge):
+#             for group_idx, ind_group in enumerate(indices):
+#                 new_ind_group = []
+#                 for ind in ind_group:
+#                     # we should not assume that all merging indices are on the same node
+#                     if ind in reshape_op.indices:
+#                         unchanged = [
+#                             ind
+#                             for ind in ind_group
+#                             if ind not in reshape_op.indices
+#                         ]
+#                         assert reshape_op.result is not None
+#                         new_ind_group = [reshape_op.result] + unchanged
+#                         # we want to permute these indices before comparison
+#                         cnt_before = sum(len(g) for g in indices[:group_idx])
+#                         cnt_after = sum(
+#                             len(g) for g in indices[group_idx + 1 :]
+#                         )
+#                         curr_perm = [
+#                             ind_group.index(ind) + cnt_before
+#                             for ind in reshape_op.indices
+#                         ] + [
+#                             ind_group.index(ind) + cnt_before
+#                             for ind in unchanged
+#                         ]
+#                         prev_perm = list(range(cnt_before))
+#                         next_perm = [
+#                             cnt_before + len(curr_perm) + i
+#                             for i in range(cnt_after)
+#                         ]
+#                         data = data.transpose(
+#                             *(prev_perm + curr_perm + next_perm)
+#                         )
+#                         break
+
+#                     new_ind_group.append(ind)
+
+#                 new_sizes.extend([ind.size for ind in new_ind_group])
+#                 new_indices.append(new_ind_group)
+
+#         data = data.reshape(*new_sizes)
+#         indices = new_indices
+
+#     return indices, data
+
 def reshape_indices(reshape_ops, indices, data):
-    """Get corresponding indices after splitting"""
-    indices = [[ind] for ind in indices]
+    """Reshape the data tensor according to the operations."""
     for reshape_op in reshape_ops:
         new_indices = []
-        new_sizes = []
-        if isinstance(reshape_op, IndexSplit):
-            for ind_group in indices:
-                new_ind_group = []
-                for ind in ind_group:
-                    if ind == reshape_op.index:
-                        assert reshape_op.result is not None
-                        new_ind_group.extend(reshape_op.result)
-                    else:
-                        new_ind_group.append(ind)
+        assert reshape_op.result is not None
 
-                new_indices.append(new_ind_group)
-                new_sizes.extend([ind.size for ind in new_ind_group])
+        if isinstance(reshape_op, IndexSplit):
+            for ind in indices:
+                if ind == reshape_op.index:
+                    new_indices.extend(reshape_op.result)
+                else:
+                    new_indices.append(ind)
 
         elif isinstance(reshape_op, IndexMerge):
-            for group_idx, ind_group in enumerate(indices):
-                new_ind_group = []
-                for ind in ind_group:
-                    if ind in reshape_op.indices:
-                        unchanged = [
-                            ind
-                            for ind in ind_group
-                            if ind not in reshape_op.indices
-                        ]
-                        assert reshape_op.result is not None
-                        new_ind_group = [reshape_op.result] + unchanged
-                        # we want to permute these indices before comparison
-                        cnt_before = sum(len(g) for g in indices[:group_idx])
-                        cnt_after = sum(
-                            len(g) for g in indices[group_idx + 1 :]
-                        )
-                        curr_perm = [
-                            ind_group.index(ind) + cnt_before
-                            for ind in reshape_op.indices
-                        ] + [
-                            ind_group.index(ind) + cnt_before
-                            for ind in unchanged
-                        ]
-                        prev_perm = list(range(cnt_before))
-                        next_perm = [
-                            cnt_before + len(curr_perm) + i
-                            for i in range(cnt_after)
-                        ]
-                        data = data.transpose(
-                            *(prev_perm + curr_perm + next_perm)
-                        )
-                        break
+            # find all indices and swap them to the front
+            swap_pos = []
+            other_pos = []
+            for ind in reshape_op.indices:
+                swap_pos.append(indices.index(ind))
 
-                    new_ind_group.append(ind)
+            for i, ind in enumerate(indices):
+                if ind not in reshape_op.indices:
+                    new_indices.append(ind)
+                    other_pos.append(i)
 
-                new_sizes.extend([ind.size for ind in new_ind_group])
-                new_indices.append(new_ind_group)
+            new_indices = [reshape_op.result] + new_indices
+            data = data.transpose(swap_pos + other_pos)
 
-        data = data.reshape(*new_sizes)
+        else:
+            raise TypeError("unknown reshape operation")
+        
+        data = data.reshape([ind.size for ind in new_indices])
         indices = new_indices
 
     return indices, data
+
+
+def reshape_func(reshape_ops, indices, func):
+    """Reshape the function inputs according to the operations."""
+    old_func = func
+    for reshape_op in reshape_ops:
+        if isinstance(reshape_op, IndexSplit):
+            # find the source index and replace with result indices
+            split_indices = []
+            ind_mapping = {}
+            for i, ind in enumerate(indices):
+                if ind == reshape_op.index:
+                    assert reshape_op.result is not None
+                    split_indices.extend(reshape_op.result)
+
+                    result_start = len(split_indices) - len(reshape_op.result)
+                    result_end = len(split_indices)
+                    split_pos = range(result_start, result_end)
+                    split_sizes = [x.size for x in reshape_op.result]
+                    ind_mapping[i] = (split_pos, split_sizes)
+                else:
+                    split_indices.append(ind)
+
+            old_func = SplitFunc(split_indices, old_func, ind_mapping)
+            indices = split_indices
+        
+        elif isinstance(reshape_op, IndexMerge):
+            assert reshape_op.result is not None
+            merge_indices = [reshape_op.result]
+            ind_mapping = {0: []}
+            for ind in reshape_op.indices:
+                ind_mapping[0].append((indices.index(ind), ind.size))
+            for i, ind in enumerate(indices):
+                if ind not in reshape_op.indices:
+                    merge_indices.append(ind)
+
+            ind_mapping[0] = list(zip(*ind_mapping[0]))
+            old_func = MergeFunc(merge_indices, old_func, ind_mapping)
+            indices = merge_indices
+
+        else:
+            raise TypeError("Unknown operation type")
+        
+    return old_func
 
 def unravel_indices(reshape_ops, indices, data):
     """Get corresponding indices after splitting"""
@@ -333,6 +419,7 @@ def ravel_indices(reshape_ops, indices, data):
 
 def init_state(data_tensor: DataTensor, delta) -> SearchState:
     """Create initial search state for the input data tensor."""
+    print(type(data_tensor))
     if isinstance(data_tensor, TreeNetwork):
         return SearchState(data_tensor, delta)
 
@@ -350,3 +437,78 @@ def init_state(data_tensor: DataTensor, delta) -> SearchState:
         f"Expect data tensors to have types TreeNetwork or TensorFunc, "
         f"but get {type(data_tensor)}"
     )
+
+def index_partition(net: TreeNetwork, node1: NodeName, node2: NodeName) -> Tuple[List[Index], List[Index]]:
+    """Compute the partition of the index by the given edge."""
+    def indices_of(start: NodeName, exclude: NodeName):
+        visited = set()
+        queue = [start]
+        indices = []
+        while len(queue) > 0:
+            n = queue.pop(0)
+            if n == exclude:
+                continue
+
+            visited.add(n)
+            for ind in net.node_tensor(n).indices:
+                if ind in net.free_indices():
+                    indices.append(ind)
+
+            for nbr in net.network.neighbors(n):
+                if nbr not in visited:
+                    queue.append(nbr)
+
+        return indices
+
+    return indices_of(node1, node2), indices_of(node2, node1)
+
+def to_splits(net: TreeNetwork) -> List[OSplit]:
+    """Convert a tree network into a list of OSplits."""
+    actions = []
+    for n1, n2 in net.network.edges:
+        inds1, inds2 = index_partition(net, n1, n2)
+        ac1 = OSplit(inds1, reversible=True, reverse_edge=(n1, n2))
+        ac2 = OSplit(inds2, reversible=True, reverse_edge=(n1, n2))
+        actions.append(min(ac1, ac2))
+
+    return actions
+
+def get_conflicts(ac: OSplit, past_acs: List[OSplit]) -> List[OSplit]:
+    """Get the list of conflict actions."""
+    ac_indices = set(ac.indices)
+    conflicts = []
+    for past_ac in past_acs:
+        past_indices = set(past_ac.indices)
+        if len(ac_indices.intersection(past_indices)) > 0 and not ac_indices.issubset(past_indices) and not ac_indices.issuperset(past_indices):
+            if past_ac.reversible:
+                conflicts.append(past_ac)
+            else:
+                print("Warning: the action", past_ac, "conflicts with", ac, "but it is not reversible")
+
+    return conflicts
+
+def seed_all(seed_value: int) -> None:
+    """
+    Sets the random seed for reproducibility across Python's random module,
+    NumPy, and PyTorch (both CPU and CUDA).
+    Also sets the PYTHONHASHSEED environment variable.
+    """
+
+    # Set Python's built-in random seed
+    random.seed(seed_value)
+
+    # Set NumPy's random seed
+    np.random.seed(seed_value)
+
+    # Set PyTorch's random seed for all devices (CPU and CUDA)
+    torch.manual_seed(seed_value)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed_value)
+        torch.cuda.manual_seed_all(seed_value) # For multi-GPU setups
+
+    # Set PYTHONHASHSEED environment variable for hash-based operations
+    os.environ['PYTHONHASHSEED'] = str(seed_value)
+
+    # Ensure deterministic behavior for cuDNN
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False

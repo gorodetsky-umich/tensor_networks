@@ -113,22 +113,22 @@ class NodeFunc(TensorFunc):
 class SplitFunc(TensorFunc):
     """Reduce the tensor function after split into the old one."""
 
-    def __init__(self, indices, old_func, var_mapping):
+    def __init__(self, indices, old_func, ind_mapping):
         super().__init__(indices)
         self.old_func = old_func
-        self.var_mapping = var_mapping
+        self.ind_mapping = ind_mapping
 
     def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         indices = indices.astype(int)
         old_free = self.old_func.indices
         old_indices = np.empty((len(indices), len(old_free)), dtype=int)
         for i, ind in enumerate(old_free):
-            if i not in self.var_mapping:
+            if i not in self.ind_mapping:
                 assert ind in self.indices, "index not found"
                 j = self.indices.index(ind)
                 old_indices[:, i] = indices[:, j]
             else:
-                split_inds, split_sizes = self.var_mapping[i]
+                split_inds, split_sizes = self.ind_mapping[i]
                 old_indices[:, i] = np.ravel_multi_index(tuple(indices[:, split_inds].T), split_sizes)
         # for split_op in self.split_ops:
         #     split_out = split_op.result
@@ -156,28 +156,28 @@ class SplitFunc(TensorFunc):
 class MergeFunc(TensorFunc):
     """Tensor function for merged indices."""
 
-    def __init__(self, indices, old_func, var_mapping):
+    def __init__(self, indices, old_func, ind_mapping):
         super().__init__(indices)
         self.old_func = old_func
-        self.var_mapping = var_mapping
+        self.ind_mapping = ind_mapping
 
     def index_to_args(self, indices: np.ndarray):
         old_free = self.old_func.indices
-        real_indices = np.empty((len(indices), len(old_free)))
+        old_indices = np.empty((len(indices), len(old_free)), dtype=int)
         for i in range(indices.shape[1]):
-            if i in self.var_mapping:
-                sizes, inds = self.var_mapping[i]
+            if i in self.ind_mapping:
+                inds, sizes = self.ind_mapping[i]
                 # replace indices with unraveled indices
-                real_indices[:, inds] = np.stack(
+                old_indices[:, inds] = np.stack(
                     np.unravel_index(indices[:, i], sizes), axis=-1
                 )
             else:
                 j = old_free.index(self.indices[i])
-                real_indices[:, j] = indices[
+                old_indices[:, j] = indices[
                     :, i
                 ]
 
-        return self.old_func.index_to_args(real_indices)
+        return self.old_func.index_to_args(old_indices)
 
     def run(self, args: np.ndarray):
         return self.old_func.run(args)
@@ -216,9 +216,12 @@ class FuncAlpine(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
-        # self.low = -10
-        # self.range = 10 * 2
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-10, 10, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         self.name = "Alpine"
 
     def run(self, args: np.ndarray):
@@ -235,9 +238,14 @@ class FuncChung(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
         # self.low = -10
         # self.range = 10 * 2
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-10, 10, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         self.name = "Chung"
 
     def run(self, args: np.ndarray):
@@ -250,7 +258,12 @@ class FuncDixon(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-10, 10, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -10
         # self.range = 10 * 2
         self.name = "Dixon"
@@ -270,7 +283,12 @@ class FuncGriewank(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-100, 100, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -100
         # self.range = 100 * 2
         self.name = "Griewank"
@@ -297,7 +315,12 @@ class FuncPathological(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-100, 100, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -100
         # self.range = 100 * 2
         self.name = "Pathological"
@@ -322,7 +345,12 @@ class FuncPinter(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-10, 10, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -10
         # self.range = 10 * 2
         self.name = "Pinter"
@@ -353,7 +381,12 @@ class FuncQing(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(0, 500, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = 0
         # self.range = 500
         self.name = "Qing"
@@ -369,7 +402,12 @@ class FuncRastrigin(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-5.12, 5.12, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -5.12
         # self.range = 5.12 * 2
         self.name = "Rastrigin"
@@ -390,7 +428,12 @@ class FuncSchaffer(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-100, 100, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -100
         # self.range = 100 * 2
         self.name = "Schaffer"
@@ -411,7 +454,12 @@ class FuncSchwefel(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(0, 500, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = 0
         # self.range = 500
         self.name = "Schwefel"
@@ -426,7 +474,12 @@ class FuncSphere(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-5.12, 5.12, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -5.12
         # self.range = 5.12 * 2
         self.name = "Sphere"
@@ -441,7 +494,12 @@ class FuncSquares(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-10, 10, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -10
         # self.range = 10 * 2
         self.name = "Squares"
@@ -461,7 +519,12 @@ class FuncTrigonometric(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(0, np.pi, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = 0
         # self.range = np.pi
         self.name = "Trigonometric"
@@ -487,7 +550,12 @@ class FuncWavy(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.linspace(-np.pi, np.pi, ind.size))
+            inds.append(new_ind)
+
+        super().__init__(inds)
         # self.low = -np.pi
         # self.range = np.pi * 2
         self.name = "Wavy"
@@ -503,11 +571,16 @@ class FuncHilbert(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.arange(ind.size) + 1)
+            inds.append(new_ind)
+
+        super().__init__(inds)
         self.name = "Hilbert"
 
     def run(self, args: np.ndarray):
-        return 1.0 / np.sum(args, axis=1)
+        return 1.0 / np.sum(args + 1, axis=1)
 
 
 class FuncSqSum(TensorFunc):
@@ -516,7 +589,12 @@ class FuncSqSum(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.arange(ind.size) + 1)
+            inds.append(new_ind)
+
+        super().__init__(inds)
         self.name = "SqSum"
 
     def run(self, args: np.ndarray):
@@ -529,7 +607,12 @@ class FuncExpSum(TensorFunc):
     """
 
     def __init__(self, indices: List[Index]):
-        super().__init__(indices)
+        inds = []
+        for ind in indices:
+            new_ind = ind.with_new_rng(np.arange(ind.size) + 1)
+            inds.append(new_ind)
+
+        super().__init__(inds)
         self.name = "ExpSum"
 
     def run(self, args: np.ndarray):

@@ -1047,7 +1047,7 @@ class TestGeneralOps(unittest.TestCase):
 
     def test_corr(self):
         indices = [Index("i", 10), Index("j", 15), Index("k", 20)]
-        net = TreeNetwork.tt(indices, [5, 5])
+        net = TensorTrain.rand_tt(indices, [5, 5])
         for n in net.network.nodes:
             s = net.node_tensor(n).value.shape
             val_s = s[0], int(np.prod(s[1:]))
@@ -1068,8 +1068,9 @@ class TestGeneralOps(unittest.TestCase):
         inds1 = [indices[0], indices[1]]
         samples, corr = net.corrcoef(inds1)
         expected = np.corrcoef(val[*samples.T].reshape(len(samples), -1))
-        # print(corr)
-        # print(expected)
+        print(corr)
+        print(expected)
+        print(np.cov(val[*samples.T].reshape(len(samples), -1)))
         self.assertTrue(np.allclose(corr, expected))
 
         inds2 = [indices[0], indices[2]]
@@ -1448,9 +1449,37 @@ class TestHTT(unittest.TestCase):
             np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
         )
 
-        htt = tt.merge_index(IndexMerge(indices=[indices[1], indices[3]]))
-        svals = htt.svals([indices[1]])
+        htt = tt.merge_index(IndexMerge(indices=[indices[3], indices[1]]))
+        htt_indices = htt.free_indices()
+        # print(htt_indices)
+        svals = htt.svals([htt_indices[2]])
         real_svals = np.linalg.svdvals(real_val.transpose(1, 3, 0, 2, 4, 5).reshape(15*20, -1))
+        min_len = min(len(svals), len(real_svals))
+        self.assertTrue(
+            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+        )
+
+        svals = htt.svals([htt_indices[2], htt_indices[3]])
+        real_svals = np.linalg.svdvals(real_val.transpose(1, 3, 4, 0, 2, 5).reshape(15*20*12, -1))
+        min_len = min(len(svals), len(real_svals))
+        self.assertTrue(
+            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+        )
+
+        # print("*****Starting merge_index*****")
+        htt1 = htt.merge_index(IndexMerge(indices=[indices[5], indices[2]]))
+        htt1_indices = htt1.free_indices()
+        # print(htt1_indices)
+        # print("*****Starting svals*****")
+        svals = htt1.svals([htt1_indices[2], htt1_indices[3]])
+        real_svals = np.linalg.svdvals(real_val.transpose(2, 5, 4, 0, 1, 3).reshape(20*13*12, -1))
+        min_len = min(len(svals), len(real_svals))
+        self.assertTrue(
+            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+        )
+
+        svals = htt1.svals([htt1_indices[1], htt1_indices[3]])
+        real_svals = np.linalg.svdvals(real_val.transpose(2, 5, 1, 3, 4, 0).reshape(15*20*20*13, -1))
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
             np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)

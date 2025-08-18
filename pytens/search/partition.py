@@ -6,10 +6,12 @@ import heapq
 import pickle
 import time
 from typing import List, Optional, Sequence
+import logging
 
 import numpy as np
+from line_profiler import profile
 
-from pytens.algs import TreeNetwork
+from pytens.algs import TreeNetwork, Tensor
 from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
 from pytens.search.constraint import ConstraintSearch
@@ -20,9 +22,13 @@ from pytens.search.utils import (
     SearchStats,
     init_state,
     remove_temp_dir,
+    to_splits,
+    get_conflicts,
 )
 from pytens.types import Index
 
+# logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class PartitionSearch:
     """Search by partitions free indices"""
@@ -150,6 +156,7 @@ class PartitionSearch:
                             ac.target_size = ind.size
                             break
 
+                # print([str(ac) for ac in st.past_actions])
                 replay_res = self.replay(data_tensor, st.past_actions, True)
                 result = result.update_best_state(replay_res)
             else:
@@ -178,7 +185,7 @@ class PartitionSearch:
         unused_delta = 0.0
         for n in st.network.network.nodes:
             tmp_st = copy.deepcopy(st)
-            _, unused_delta = tmp_st.network.round(n, st.curr_delta)
+            # _, unused_delta = tmp_st.network.round(n, st.curr_delta)
             if tmp_st.network.cost() < best_state.network.cost():
                 best_state = tmp_st
 
@@ -197,6 +204,12 @@ class PartitionSearch:
             return self._round(st, tensor_func)
 
         ac = actions[0]
+        conflict_acs = get_conflicts(ac, to_splits(st.network))
+        st = copy.deepcopy(st)
+        for conflict_ac in conflict_acs:
+            assert conflict_ac.reverse_edge is not None
+            st.network.merge(*conflict_ac.reverse_edge)
+
         svd = None
         if first_iter and self.config.rank_search.search_mode == "all":
             svd_file = self.constraint_engine.first_steps.get(ac, None)
@@ -206,6 +219,8 @@ class PartitionSearch:
             svd_data = np.load(svd_file)
             svd = (svd_data["u"], svd_data["s"], svd_data["v"])
 
+        # print(st.network)
+        # print(ac, ac.target_size)
         new_st = st.take_action(ac, svd=svd, tensor_func=tensor_func)
         if new_st is None:
             raise RuntimeError("cannot replay the given actions")
@@ -223,7 +238,9 @@ class PartitionSearch:
         first_iter: bool = False,
     ) -> SearchResult:
         """Apply the given actions around the given ranks."""
-        st = init_state(data_tensor, self._delta)
+        flat_data = data_tensor.flatten()
+        st = init_state(flat_data, self._delta)
+        # print(data_tensor)
         if isinstance(data_tensor, TreeNetwork):
             return self._replay_impl(st, actions, first_iter)
 
@@ -284,6 +301,7 @@ class PartitionSearch:
 
         return preprocess_end - preprocess_start
 
+    @profile
     def search(
         self,
         data_tensor: DataTensor,
@@ -305,6 +323,7 @@ class PartitionSearch:
         else:
             self._delta = delta
 
+        logger.debug("**delta: %s, data norm: %s", self._delta, data_tensor.norm())
         self.constraint_engine.delta = self._delta
         self.stats.preprocess_time = self.preprocess(data_tensor, exclusions)
         self.stats.search_start = time.time()
@@ -329,7 +348,9 @@ class PartitionSearch:
             search_res = self.replay(data_tensor, acs, True)
         else:
             self.unused_delta = self._delta
-            sts = self._enumerate(data_tensor, exclusions)
+            empty_net = TreeNetwork()
+            empty_net.add_node("G", Tensor(np.empty(0), data_tensor.free_indices()))
+            sts = self._enumerate(empty_net, exclusions)
             search_res = self._top_k(data_tensor, sts)
 
         result = result.update_best_state(search_res)

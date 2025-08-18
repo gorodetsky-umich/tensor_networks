@@ -7,7 +7,8 @@ import copy
 import numpy as np
 import networkx as nx
 
-from pytens.algs import NodeName, TreeNetwork, Index, SVDConfig, IndexName
+from pytens.algs import NodeName, TensorTrain, TreeNetwork, Index, SVDConfig, IndexName
+from pytens.types import IndexMerge
 from pytens.cross.cross import TensorFunc
 
 
@@ -38,11 +39,15 @@ class OSplit(Action):
         indices: Sequence[Index],
         target_size: Optional[int] = None,
         delta: Optional[float] = None,
+        reversible: bool = False,
+        reverse_edge: Optional[Tuple[NodeName, NodeName]] = None,
     ):
         super().__init__()
         self.indices = sorted(indices)
         self.target_size = target_size
         self.delta = delta
+        self.reversible = reversible
+        self.reverse_edge = reverse_edge
 
     def __str__(self) -> str:
         return f"OSplit({[i.name for i in self.indices]})"
@@ -101,6 +106,9 @@ class OSplit(Action):
                     ok, finds = postorder(visited, m)
                     if not ok:
                         return False, []
+                    
+                    if ok == -1:
+                        return -1, []
 
                     # print("get", finds, "for", m, "with parent", node)
                     inds = []
@@ -113,6 +121,9 @@ class OSplit(Action):
                     # print(desired, undesired)
                     if len(desired) > 0 and len(undesired) > 0:
                         return False, []
+
+                    if len(undesired) == 0 and len(desired) == len(self.indices):
+                        return -1, []
 
                     results.append(
                         (net.get_contraction_index(m, node)[0], inds)
@@ -133,6 +144,8 @@ class OSplit(Action):
                 visited = set()
                 # print("postordering", n)
                 ok, results = postorder(visited, n)
+                if ok == -1:
+                    return None
                 if ok:
                     lca_node = n
                     for i in self.indices:
@@ -144,9 +157,18 @@ class OSplit(Action):
                     break
 
             if lca_node is None:
-                print("Cannot find the lca for indices", self.indices, "try swap indices")
+                # print("Cannot find the lca for indices", self.indices)
+                # print("Cannot find the lca for indices", self.indices, "try swap indices")
                 # swap indices until they are in the same subtree
-                net = net.swap(self.indices)
+                net.network = net.swap(self.indices)[0].network
+                ind_nodes = [net.node_by_free_index(i.name) for i in self.indices]
+                if len(ind_nodes) < 2:
+                    raise ValueError(
+                        "Cannot find the common ancestor for the given indices"
+                    )
+
+                for n in ind_nodes[1:]:
+                    net.merge(ind_nodes[0], n)
 
         # net.draw()
         # plt.show()
@@ -183,9 +205,19 @@ class OSplit(Action):
         # find the nodes that include @indices@,
         # if there are multiple such nodes, go to the common ancestor
         ac = self.to_isplit(net)
+        if ac is None:
+            return None
         return ac.svd(
             net, svd, compute_data=compute_data, compute_uv=compute_uv
         )
+    
+    def svals(self, net: TreeNetwork, svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None) -> np.ndarray:
+        """Compute the singular values of the split action."""
+        if isinstance(net, TensorTrain):
+            return net.svals(self.indices)
+        else:
+            ac = self.to_isplit(net)
+            return ac.svals(net, svd)
 
 
 class ISplit(Action):
@@ -246,27 +278,35 @@ class ISplit(Action):
         compute_uv: bool = True,
     ) -> Tuple[Tuple[NodeName, NodeName, NodeName], float]:
         """Execute a split action."""
-        node_indices = net.node_tensor(self.node).indices
         linds = self.left_indices
-        rinds = [i for i in range(len(node_indices)) if i not in linds]
-        lszs = [node_indices[i].size for i in linds]
-        rszs = [node_indices[i].size for i in rinds]
-        max_sz = min(int(np.prod(lszs)), int(np.prod(rszs)))
 
         if svd is None:
             if compute_data:
                 net.orthonormalize(self.node)
+            
+            node_indices = net.node_tensor(self.node).indices
+            rinds = [i for i in range(len(node_indices)) if i not in linds]
+            lszs = [node_indices[i].size for i in linds]
+            rszs = [node_indices[i].size for i in rinds]
+            max_sz = min(int(np.prod(lszs)), int(np.prod(rszs)))
+            
             (u, s, v), _ = net.svd(
                 self.node,
                 linds,
-                SVDConfig(compute_data=compute_data, compute_uv=compute_uv),
+                SVDConfig(delta=0, compute_data=compute_data, compute_uv=compute_uv),
             )
         else:
+            node_indices = net.node_tensor(self.node).indices
+            rinds = [i for i in range(len(node_indices)) if i not in linds]
+            lszs = [node_indices[i].size for i in linds]
+            rszs = [node_indices[i].size for i in rinds]
+            max_sz = min(int(np.prod(lszs)), int(np.prod(rszs)))
+
             # print("read preprocessing result")
             (u, s, v), _ = net.svd(
                 self.node,
                 linds,
-                SVDConfig(compute_data=False, compute_uv=compute_uv),
+                SVDConfig(delta=0, compute_data=False, compute_uv=compute_uv),
             )
             net.node_tensor(u).update_val_size(svd[0].reshape(*lszs, -1))
             net.node_tensor(s).update_val_size(np.diag(svd[1]))
@@ -294,6 +334,15 @@ class ISplit(Action):
                 net.node_tensor(v).update_val_size(net.value(v)[:r])
 
         return (u, s, v), err
+    
+    def svals(
+        self,
+        net: TreeNetwork,
+        svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
+    ) -> np.ndarray:
+        """Compute the singular values for the current split action."""
+        (_, s, _), _ = self.svd(net, svd, compute_data=True, compute_uv=False)
+        return np.diag(net.value(s))
 
     # TODO: reorganize the code in this funciton
     def to_osplit(self, st, idx):
@@ -441,8 +490,8 @@ class SearchState:
             # try the error splitting from large to small
             new_net = copy.deepcopy(self.network)
 
-            if not action.is_valid(self.past_actions):
-                return None
+            # if not action.is_valid(self.past_actions):
+            #     return None
 
             if action.delta is None and action.target_size is None:
                 action.delta = self.curr_delta
@@ -461,7 +510,11 @@ class SearchState:
                 # np.sqrt(self.curr_delta ** 2 - new_err ** 2)
             else:
                 # we allow specify the node values
-                (u, s, v), used_delta = action.svd(new_net, svd)
+                res = action.svd(new_net, svd)
+                if res is None: # no-op
+                    return self
+
+                (u, s, v), used_delta = res
                 new_net.merge(v, s)
                 remaining_delta = np.sqrt(self.curr_delta**2 - used_delta)
                 new_state.curr_delta = remaining_delta
