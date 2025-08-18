@@ -18,8 +18,8 @@ from pytens.search.utils import DataTensor
 
 BAD_SCORE = 9999999999999
 
-logger = logging.Logger("constraint", level=logging.DEBUG)
-
+# logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class ILPSolver:
     """An ILP solver to find near-optimal rank assignments."""
@@ -156,7 +156,7 @@ class ConstraintSearch:
             s_sums.append(prev_sum)
 
         # the final sizes need to be accumulated
-        final_sizes = [len(s) - x for x in np.cumsum(np.array(s_sizes))]
+        final_sizes = [max(len(s) - x, 1) for x in np.cumsum(np.array(s_sizes))]
 
         # print(s_sizes, list(zip(final_sizes, s_sums)))
         return s_sums, final_sizes
@@ -172,8 +172,7 @@ class ConstraintSearch:
         bin_size = self.config.synthesizer.bin_size
         err = self.delta * bin_size
         if isinstance(data_tensor, FuncTensorNetwork):
-            net = TreeNetwork()
-            net.network = copy.deepcopy(data_tensor.net.network)
+            net = copy.deepcopy(data_tensor.net)
             net = net.swap(comb)
             # reset the network internal indices to 1
             free_indices = list(net.free_indices())
@@ -236,6 +235,7 @@ class ConstraintSearch:
     ):
         """Precompute the singluar values for a given index combination."""
         logger.debug("preprocess %s", comb)
+        logger.debug("%s", data_tensor)
 
         if isinstance(data_tensor, TensorFunc):
             self._preprocess_cross(data_tensor, comb)
@@ -252,20 +252,23 @@ class ConstraintSearch:
             self.first_steps[ac] = file_name
         else:
             net = copy.deepcopy(data_tensor)
-            (u, s, v), _ = ac.svd(net, compute_uv=compute_uv)
-            u = net.value(u)
-            s = np.diag(net.value(s))
-            v = net.value(v)
-            if compute_uv:
-                # save to file to avoid memory explosion
-                if not os.path.exists(self.config.output.output_dir):
-                    os.makedirs(self.config.output.output_dir)
+            # (u, s, v), _ = ac.svd(net, compute_uv=compute_uv)
+            # u = net.value(u)
+            # s = np.diag(net.value(s))
+            # v = net.value(v)
+            # if compute_uv:
+            #     # save to file to avoid memory explosion
+            #     if not os.path.exists(self.config.output.output_dir):
+            #         os.makedirs(self.config.output.output_dir)
 
-                np.savez(file_name, u=u, s=s, v=v)
-                self.first_steps[OSplit(comb)] = file_name
-                self.temp_files.append(file_name)
+            #     np.savez(file_name, u=u, s=s, v=v)
+            #     self.first_steps[OSplit(comb)] = file_name
+            #     self.temp_files.append(file_name)
+            s = ac.svals(net)
 
         sums, sizes = self.abstract(s)
+        logger.debug("preprocess: %s, %s", comb, s)
+        logger.debug("abstract results: %s, %s", sums, sizes)
         self.split_actions[OSplit(comb)] = (sums, sizes)
 
     def solve(self, st: SearchState, upper: int) -> Optional[SearchState]:

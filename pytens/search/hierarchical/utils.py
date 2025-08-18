@@ -2,6 +2,7 @@
 
 import math
 from typing import Dict, List, Literal, Sequence, Tuple
+from collections import defaultdict
 
 import numpy as np
 
@@ -9,6 +10,36 @@ from pytens.search.configuration import SearchConfig
 from pytens.types import IndexSplit, Index
 from pytens.cross.funcs import TensorFunc, SplitFunc
 
+class DisjointSet:
+    def __init__(self):
+        self.parent = {}
+        self.elems = set()
+
+    def find(self, i):
+        if i not in self.parent:
+            return i
+
+        self.parent[i] = self.find(self.parent[i])  # Path compression
+        return self.parent[i]
+
+    def union(self, i, j):
+        self.elems.add(i)
+        self.elems.add(j)
+        root_i = self.find(i)
+        root_j = self.find(j)
+        if root_i != root_j:
+            self.parent[root_i] = root_j  # Union by setting one root's parent to the other
+            return True
+        return False  # Already in the same set
+    
+    def groups(self):
+        groups = defaultdict(list)
+
+        for x in self.elems:
+            root = self.find(x)
+            groups[root].append(x)
+
+        return groups
 
 def trigger_merge(config: SearchConfig, is_top: bool) -> bool:
     """Determine whether to trigger the index merge operation before search"""
@@ -18,23 +49,22 @@ def trigger_merge(config: SearchConfig, is_top: bool) -> bool:
 
 
 def corr(
-    corr_data: np.ndarray,
+    corr_res: np.ndarray,
     agg: Literal["mean", "det", "norm", "sval"],
-    sample_size: int = 50000,
 ) -> float:
     """Compute the correlation over the random samples of the given data."""
-    samples = np.random.choice(
-        corr_data.shape[0],
-        size=min(sample_size, corr_data.shape[0]),
-        replace=False,
-    )
-    sample_data = corr_data[samples]
-    # TODO: modify this part to support correlation for cross approximation
-    corr_res = np.corrcoef(
-        sample_data + np.random.random(sample_data.shape) * 1e-13
-    )
+    # samples = np.random.choice(
+    #     corr_data.shape[0],
+    #     size=min(sample_size, corr_data.shape[0]),
+    #     replace=False,
+    # )
+    # sample_data = corr_data[samples]
+    # # TODO: modify this part to support correlation for cross approximation
+    # corr_res = np.corrcoef(
+    #     sample_data + np.random.random(sample_data.shape) * 1e-13
+    # )
     if agg == "mean":
-        return -np.mean(np.abs(corr_res))
+        return float(-np.mean(np.abs(corr_res)))
 
     if agg == "det":
         return np.linalg.det(corr_res)

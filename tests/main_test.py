@@ -9,43 +9,12 @@ import pickle
 import numpy as np
 import networkx as nx
 
-<<<<<<< HEAD
 from pytens.algs import *
 from pytens.cross.cross import (
     CrossAlgo,
     CrossApproximation,
     CrossConfig,
     ConvergenceCheck,
-=======
-from pytens.algs import (
-    TensorNetwork,
-    TensorTrain,
-    TreeNetwork,
-    Tensor,
-    Index,
-    gmres,
-    rand_tt,
-    rand_tree,
-    tt_gramsvd_round,
-    tt_randomized_round,
-    tt_right_orth,
-    tt_sum,
-    tt_sum_gramsvd_round,
-    tt_sum_randomized_round,
-    tt_svd_round,
-    ttop_apply,
-    ttop_rank1,
-    ttop_rank2,
-    ttop_sum_apply,
-)
-from pytens.cross.funcs import FuncHilbert
-from tests.search_test import (
-    TestConfig,  # noqa: F401
-    TestAction,  # noqa: F401
-    TestSearch,  # noqa: F401
-    TestState,  # noqa: F401
-    TestTopDownSearch,  # noqa: F401
->>>>>>> b664b70 (svals for tt)
 )
 from pytens.types import Index
 from pytens.cross.funcs import CachedFunc
@@ -1780,7 +1749,7 @@ class TestGeneralOps(unittest.TestCase):
 
     def test_corr(self):
         indices = [Index("i", 10), Index("j", 15), Index("k", 20)]
-        net = TreeNetwork.tt(indices, [5, 5])
+        net = TensorTrain.rand_tt(indices, [5, 5])
         for n in net.network.nodes:
             s = net.node_tensor(n).value.shape
             val_s = s[0], int(np.prod(s[1:]))
@@ -1801,8 +1770,9 @@ class TestGeneralOps(unittest.TestCase):
         inds1 = [indices[0], indices[1]]
         samples, corr = net.corrcoef(inds1)
         expected = np.corrcoef(val[*samples.T].reshape(len(samples), -1))
-        # print(corr)
-        # print(expected)
+        print(corr)
+        print(expected)
+        print(np.cov(val[*samples.T].reshape(len(samples), -1)))
         self.assertTrue(np.allclose(corr, expected))
 
         inds2 = [indices[0], indices[2]]

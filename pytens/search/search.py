@@ -20,6 +20,7 @@ from pytens.search.utils import (
     reshape_indices,
     rtol,
     unravel_indices,
+    reshape_func,
 )
 
 
@@ -143,13 +144,21 @@ class SearchEngine:
             init_size = unopt_size
 
             valid = []
-            for ind in free_indices:
-                valid.append(np.random.randint(0, ind.size, size=10000))
+            for ind in best_network.free_indices():
+                valid.append(np.random.randint(0, ind.size, size=50000))
+            # valid = np.stack(np.unravel_index(np.arange(unopt_size).astype(int), [int(i.size) for i in best_network.free_indices()]), axis=-1)
             valid = np.stack(valid, axis=-1)
-            indices, new_valid = unravel_indices(best_st.reshape_history, free_indices, valid)
-            perm = [indices.index(ind) for ind in best_network.free_indices()]
-            approx_val = best_network.evaluate(best_network.free_indices(), new_valid[:, perm])
-            data_val = data_tensor(valid)
+            # indices, new_valid = unravel_indices(best_st.reshape_history, free_indices, valid)
+            # approx_val = best_network.evaluate(indices, new_valid)
+            approx_val = best_network.evaluate(best_network.free_indices(), valid)
+            # print(np.allclose(approx_val, best_network.contract().value.reshape(-1)))
+            # print(np.where(approx_val != best_network.contract().value.reshape(-1)))
+            # approx_val = best_network.contract().value.reshape(-1)
+            # data_val = data_tensor(valid)
+            best_indices = best_network.free_indices()
+            reshaped_func = reshape_func(best_st.reshape_history, free_indices, data_tensor)
+            perm = [best_indices.index(ind) for ind in reshaped_func.indices]
+            data_val = reshaped_func(valid[:, perm])
         else:
             raise TypeError("unsupported data tensor type")
 

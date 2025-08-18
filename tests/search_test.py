@@ -329,5 +329,6 @@ class TestTopDownSearch(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    np.random.seed(1234)
     test = TestTopDownSearch()
     test.test_top_down_cross_init_reshape()
