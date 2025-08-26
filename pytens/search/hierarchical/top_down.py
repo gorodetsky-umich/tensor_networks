@@ -15,14 +15,15 @@ import tntorch
 from line_profiler import profile
 
 from pytens.algs import TreeNetwork, TensorTrain, Tensor
-from pytens.cross.funcs import TensorFunc, FuncData, FuncTensorNetwork
+from pytens.cross.funcs import TensorFunc, FuncData, FuncTensorNetwork, MergeFunc
 from pytens.search.configuration import SearchConfig
 from pytens.search.hierarchical.error_dist import BaseErrorDist
 from pytens.search.hierarchical.utils import (
-    corr,
+    tntorch_wrapper,
     select_factors,
     trigger_merge,
     split_func,
+    tntorch_to_tt,
 )
 from pytens.search.partition import PartitionSearch
 from pytens.search.utils import DataTensor, init_state, SearchStats, reshape_indices
@@ -173,37 +174,21 @@ class TopDownSearch:
             # FIXME: this might be problematic, but let's come back to this later
             split_indices = list(sorted(st.network.free_indices()))
             f = split_func(data_tensor, split_indices, splits)
+            self.f = f
+
             init_eps = self.config.engine.eps * self.config.cross.init_eps
 
             cross_start = time.time()
             domains = [torch.arange(ind.size) for ind in f.indices]
-            def func(*args):
-                if len(args[0].shape) == 1:
-                    inds = np.stack([a.numpy() for a in args], axis=-1)
-                else:
-                    inds = np.concat([a.numpy() for a in args], axis=-1)
-                return torch.from_numpy(f(inds))
-            res = tntorch.cross(func, domains, eps=init_eps, kickrank=2, max_iter=100, verbose=True)
-            net = TensorTrain()
-            for ni, n in enumerate(res.cores):
-                n = n.squeeze([0, -1])
-                if ni == 0:
-                    n_indices = [split_indices[ni], Index(f"s{ni}", n.shape[1])]
-                elif ni == len(res.cores) - 1:
-                    n_indices = [Index(f"s{ni-1}", n.shape[0]), split_indices[ni]]
-                else:
-                    n_indices = [Index(f"s{ni-1}", n.shape[0]), split_indices[ni], Index(f"s{ni}", n.shape[2])]
-                net.add_node(str(ni), Tensor(n.numpy(), n_indices))
-
-            for i in range(len(res.cores) - 1):
-                net.add_edge(str(i), str(i + 1))
+            
+            res = tntorch.cross(tntorch_wrapper(f), domains, eps=init_eps, kickrank=2, max_iter=100, verbose=False)
+            net = tntorch_to_tt(res, split_indices)
 
             # print(net)
 
             # net.cross(f, eps=init_eps)
             # print(net)
             # print(net.free_indices())
-            init_data = net.contract().value
             self.init_tt = net
             self.stats.cross_time = time.time() - cross_start
             self.stats.init_cross_size = net.cost()
@@ -211,7 +196,7 @@ class TopDownSearch:
             delta = net.norm() * self.config.engine.eps
             init_st = HSearchState(split_indices[:], splits, net, 0)
             self.init_st = init_st
-            self.stats.init_cross_evals = f.stats
+            self.stats.init_cross_evals = len(np.unique(f.calls, axis=0))
 
         else:
             raise ValueError("unknown decomposition algorithm")
@@ -222,20 +207,11 @@ class TopDownSearch:
         nodes = list(st.network.network.nodes)
         for n in nodes:
             network = copy.deepcopy(st.network)
-            # network.round(n, delta=math.sqrt(st.unused_delta))
+            network.round(n, delta=math.sqrt(st.unused_delta))
             if network.cost() < best_st.network.cost():
                 best_st = st
                 best_st.network = network
 
-        print(best_st.network.free_indices())
-        print(init_st.network.free_indices())
-        best_data = best_st.network.contract().value
-        init_indices, init_data = reshape_indices(best_st.reshape_history[len(init_st.reshape_history):], init_st.network.free_indices(), init_data)
-        print(init_indices)
-        init_perm = [init_indices.index(ind) for ind in best_st.network.free_indices()]
-        init_data = init_data.transpose(init_perm)
-        # print("relative error to tt", np.linalg.norm(best_data.reshape(2,3,5,7,-1) - init_data.reshape(2,3,5,7,-1)) / np.linalg.norm(init_data))
-        print("relative error to tt", np.linalg.norm(best_data - init_data) / np.linalg.norm(init_data))
         return best_st
 
     @profile
@@ -257,25 +233,21 @@ class TopDownSearch:
             merge_ops.extend(mops)
             split_ops.extend(sops)
             # before run the merges, let's swap the node to the correct places to avoid very expensive computations
-            
+
+            if isinstance(st.network, TensorTrain):
+                for merge_op in mops:
+                    st.network, _ = st.network.swap(merge_op.indices)
+
             for merge_op in mops:
                 logger.debug("executing merge %s", merge_op)
                 st = st.merge_index(merge_op)
 
                 # st.network.merge_index(merge_op)
 
+        st.network = st.network.flatten()
         result = search_engine.search(
             st.network, delta=delta, exclusions=exclusions
         )
-        # elif self.config.engine.decomp_algo == "cross":
-        #     indices = []
-        #     for ind in st.network.free_indices():
-        #         indices.append(ind.with_new_rng(range(0, ind.size)))
-        #     result = search_engine.search(
-        #         FuncTensorNetwork(indices, st.network),
-        #         delta=delta,
-        #         exclusions=exclusions,
-        #     )
 
         if result.best_state is None:
             return st
@@ -327,15 +299,15 @@ class TopDownSearch:
                 else:
                     unused_delta += remaining_delta**2
 
-                if is_top:
-                    init_data = self.init_tt.contract().value
-                    init_indices, init_data = reshape_indices(best_st.reshape_history[len(self.init_st.reshape_history):], self.init_tt.free_indices(), init_data)
-                    # print(init_indices)
-                    init_perm = [init_indices.index(ind) for ind in best_st.network.free_indices()]
-                    init_data = init_data.transpose(init_perm)
-                    best_data = best_st.network.contract().value
-                    # print("relative error to tt", np.linalg.norm(best_data.reshape(2,3,5,7,-1) - init_data.reshape(2,3,5,7,-1)) / np.linalg.norm(init_data))
-                    print("relative error to tt", np.linalg.norm(best_data - init_data) / np.linalg.norm(init_data))
+                # if is_top:
+                #     init_data = self.init_tt.contract().value
+                #     init_indices, init_data = reshape_indices(best_st.reshape_history[len(self.init_st.reshape_history):], self.init_tt.free_indices(), init_data)
+                #     # print(init_indices)
+                #     init_perm = [init_indices.index(ind) for ind in best_st.network.free_indices()]
+                #     init_data = init_data.transpose(init_perm)
+                #     best_data = best_st.network.contract().value
+                #     # print("relative error to tt", np.linalg.norm(best_data.reshape(2,3,5,7,-1) - init_data.reshape(2,3,5,7,-1)) / np.linalg.norm(init_data))
+                #     print("relative error to tt", np.linalg.norm(best_data - init_data) / np.linalg.norm(init_data))
 
         best_st.unused_delta = unused_delta
         # self.memoization[tuple(st.network.free_indices())] = best_st
@@ -384,11 +356,15 @@ class TopDownSearch:
                 from pytens.search.state import OSplit
                 ac = OSplit(groups[comb[0]] + groups[comb[1]])
                 svals = ac.svals(copy.deepcopy(net))
+                if len(svals) >= 2:
+                    comb_corr[comb] = -svals[0] / svals[1]
+                else:
+                    comb_corr[comb] = 0
+                # comb_corr[comb] = 
                 # _, corr_res = net.corrcoef(groups[comb[0]] + groups[comb[1]])
-                # print(corr_res)
-                logger.debug("corr time: %s, %s, %s", time.time() - start, groups[comb[0]], groups[comb[1]])
+                # # print(corr_res)
                 # comb_corr[comb] = corr(corr_res, self.config.topdown.aggregation)
-                comb_corr[comb] = -svals[-1]
+                logger.debug("corr time: %s, %s, %s", time.time() - start, groups[comb[0]], groups[comb[1]])
 
             comb_corr = sorted(comb_corr.items(), key=lambda x: x[1])
 

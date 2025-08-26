@@ -1,7 +1,8 @@
 """Test functions for cross approximation"""
 
 from typing import List
-from functools import lru_cache
+from multiprocessing import Pool
+import subprocess
 
 import numpy as np
 
@@ -15,7 +16,7 @@ class TensorFunc:
     def __init__(self, indices: List[Index]):
         self.d = len(indices)
         self.indices = indices
-        self.stats = 0
+        self.calls = np.empty((0, self.d))
 
     def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized indices to function arguments"""
@@ -50,11 +51,62 @@ class TensorFunc:
         raise NotImplementedError
 
     def __call__(self, indices: np.ndarray):
-        self.stats += indices.shape[0]
+        self.calls = np.concatenate([indices, self.calls])
         # print("recording", indices.shape[0])
         args = self.index_to_args(indices)
         return self.run(args)
 
+def simulate_neutron_diffusion(args):
+    """Simulate the call with the given arguments"""
+    arg_strs = [str(a) for a in args]
+    cmd = f"./scripts/neutron_diffusion/a.out {' '.join(arg_strs)}"
+    print("running", cmd)
+    result = subprocess.run(cmd, capture_output=True, shell=True, check=True)
+    return float(result.stdout)
+
+class FuncNeutron(TensorFunc):
+    """Class for neutron transport function as cross approximation source."""
+    def __init__(self, indices: List[Index]):
+        super().__init__(indices)
+        self.cache = {}
+        self.pool = Pool()
+
+        # compile the C++ code to the correct number of dimensions
+        nassem_types = len(indices) + 1
+        # modify the C++ code
+        with open("scripts/neutron_diffusion/fiber.hpp", "r") as f:
+            lines = []
+            for ln in f.readlines():
+                if "constexpr size_t Nassem_types" in ln:
+                    lines.append(f"constexpr size_t Nassem_types = {nassem_types};\n")
+                else:
+                    lines.append(ln)
+
+        with open("scripts/neutron_diffusion/fiber.hpp", "w+") as f:
+            f.writelines(lines)
+
+        compile_cmd = "cd scripts/neutron_diffusion; clang++ -o a.out -std=c++23 -O3 main.cpp"
+        subprocess.run(compile_cmd, shell=True, check=True)
+
+    def run(self, args: np.ndarray) -> np.ndarray:
+        jobs = {}
+        for i in range(args.shape[0]):
+            key = tuple(args[i].tolist())
+            if key not in self.cache and key not in jobs:
+                job = self.pool.apply_async(simulate_neutron_diffusion, args=(key,))
+                jobs[key] = job
+
+        for key, job in jobs.items():
+            self.cache[key] = job.get()
+
+        results = np.empty((args.shape[0],), dtype=float)
+        for i in range(args.shape[0]):
+            key = tuple(args[i].tolist())
+            results[i] = self.cache[key]
+
+        print(results)
+        print(self.cache)
+        return results
 
 class FuncData(TensorFunc):
     """Class for data tensors as cross approximation targets."""
@@ -392,7 +444,7 @@ class FuncQing(TensorFunc):
         self.name = "Qing"
 
     def run(self, args: np.ndarray):
-        i = np.arange(1, self.d + 1)
+        i = np.arange(1, args.shape[1] + 1)
         return np.sum((args**2 - i) ** 2, axis=1)
 
 
@@ -696,5 +748,21 @@ FUNCS = [
     FuncWavy,
     FuncHilbert,
     FuncSqSum,
-    FuncExpSum,
 ]
+
+HARD_FUNCS = [
+    FuncDixon,
+    FuncPathological,
+    FuncPinter,
+    FuncQing,
+    FuncSchaffer,
+    FuncTrigonometric,
+]
+
+if __name__ == "__main__":
+    # test neutron function
+    f = FuncNeutron([Index("I1", 21, np.linspace(0, 2, 21)), Index("I2", 21, np.linspace(0, 2, 21)), Index("I3", 21, np.linspace(0, 2, 21))])
+    f(np.array([[0, 10, 20], [10, 10, 20], [20, 10, 20]]))
+    f(np.array([[0, 10, 20], [10, 10, 20], [20, 10, 10]]))
+    f.pool.close()
+    f.pool.join()

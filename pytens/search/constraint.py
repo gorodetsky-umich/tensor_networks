@@ -4,7 +4,7 @@ import copy
 import itertools
 import logging
 import os
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Dict
 
 import gurobipy as gp
 import numpy as np
@@ -227,6 +227,12 @@ class ConstraintSearch:
 
         self.split_actions[OSplit(comb)] = (final_sums, final_sizes)
 
+    def preprocess_tt(self, result: Dict[Sequence[Index], np.ndarray]):
+        for comb, s in result.items():
+            ac = OSplit(comb)
+            sums, sizes = self.abstract(s)
+            self.split_actions[ac] = (sums, sizes)
+
     def preprocess_comb(
         self,
         data_tensor: DataTensor,
@@ -242,6 +248,9 @@ class ConstraintSearch:
             return
 
         ac = OSplit(comb)
+        if ac in self.split_actions:
+            return
+
         ac.delta = 0.0
         file_name = os.path.join(
             self.config.output.output_dir, f"{len(self.first_steps)}.npz"

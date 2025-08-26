@@ -1126,30 +1126,32 @@ class TensorNetwork:  # pylint: disable=R0904
         free_indices = sorted(self.free_indices())
 
         free_graph = nx.Graph()
-        for index in free_indices:
+        for i, index in enumerate(free_indices):
             if index.size == 1:
                 continue
 
-            free_graph.add_node(f"{index.name}-{index.size}")
+            # free_graph.add_node(f"{index.name}-{index.size}")
+            free_graph.add_node(f"I{i}-{index.size}")
 
         new_graph = nx.compose(self.network, free_graph)
-        for index in free_indices:
+        for i, index in enumerate(free_indices):
             if index.size == 1:
                 continue
 
-            name1 = f"{index.name}-{index.size}"
+            # name1 = f"{index.name}-{index.size}"
+            name1 = f"I{i}-{index.size}"
             for node, data in self.network.nodes(data=True):
                 if index in data["tensor"].indices:
                     new_graph.add_edge(node, name1)
 
         # To use graphviz layout,
         # you need to install both graphviz and pygraphviz.
-        pos = nx.drawing.nx_agraph.graphviz_layout(
-            new_graph,
-            prog="dot",
-            # args="-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy",
-        )
-        # pos = nx.planar_layout(new_graph)
+        # pos = nx.drawing.nx_agraph.graphviz_layout(
+        #     new_graph,
+        #     prog="dot",
+        #     # args="-Gsplines=true -Gnodesep=0.6 -Goverlap=scalexy",
+        # )
+        pos = nx.planar_layout(new_graph)
 
         for node, data in self.network.nodes(data=True):
             node_groups["A"].append(node)
@@ -1712,7 +1714,7 @@ class TreeNetwork(TensorNetwork):
     @profile
     def swap_nbr(self, node1: NodeName, node2: NodeName):
         """Swap two neighbor nodes."""
-        self.orthonormalize(node1)
+        # self.orthonormalize(node1)
         common_ind = self.get_contraction_index(node1, node2)[0]
         node_indices = []
         for ind in self.node_tensor(node1).indices:
@@ -1732,9 +1734,9 @@ class TreeNetwork(TensorNetwork):
         new_indices = self.node_tensor(name).indices
         lefts = [new_indices.index(ind) for ind in node_indices]
         # we need to record the singular values in tensor train
-        (u, s, v), _ = self.svd(name, lefts, SVDConfig(delta=1e-6))
-        self.merge(v, s)
-        # q, r = self.qr(name, lefts)
+        # (u, s, v), _ = self.svd(name, lefts, SVDConfig(delta=0))
+        # self.merge(v, s)
+        u, v = self.qr(name, lefts)
         nx.relabel_nodes(self.network, {u: node2, v: node1}, copy=False)
         # print(node2, self.node_tensor(node2).indices)
         # print(node1, self.node_tensor(node1).indices)
@@ -1844,53 +1846,7 @@ class TensorTrain(TreeNetwork):
 
         return net
 
-    # def merge_index(self, merge_op: IndexMerge) -> "HTensorTrain":
-    #     """After index merge, we create a hierarchical tensor train to
-    #     represent such virtual index merging.
-    #     """
-
-    #     # (1) take the merging indices and swap the nodes
-    #     tt, nodes = self.swap(merge_op.indices)
-    #     # print("after swap")
-    #     # print(tt)
-    #     # print("========")
-
-    #     # (2) create an abstract layers to mark several nodes are merged
-    #     # new_node = ""
-    #     # node_mapping = {}
-    #     # reverse_mapping = {}
-    #     # # (2.1) extract the swapped nodes and their corresponding indices
-    #     # for node in tt.network.nodes:
-    #     #     tensor = tt.node_tensor(node)
-    #     #     merge_indices = set(merge_op.indices)
-    #     #     tensor_indices = set(tensor.indices)
-
-    #     #     if merge_indices & tensor_indices:
-    #     #         tmp_res = node_mapping.pop(new_node, [])
-    #     #         new_node += "_" + node
-    #     #         for n in tmp_res:
-    #     #             reverse_mapping.pop(n)
-    #     #         node_mapping[new_node] = tmp_res + [node]
-    #     #         for n in node_mapping[new_node]:
-    #     #             reverse_mapping[n] = new_node
-    #     #     else:
-    #     #         node_mapping[node] = [node]
-    #     #         reverse_mapping[node] = node
-
-    #     # for new_node, old_nodes in node_mapping.items():
-    #     #     if len(old_nodes) == 1:
-    #     #         continue
-
-    #     #     for n in old_nodes[1:]:
-    #     #         tt.merge(old_nodes[0], n)
-
-    #     for n in nodes[1:]:
-    #         if n != nodes[0]:
-    #             tt.merge(nodes[0], n)
-
-    #     super(TensorTrain, tt).merge_index(merge_op)
-    #     return tt
-
+    @profile
     def merge_index(self, merge_op: IndexMerge) -> "HTensorTrain":
         """After index merge, we create a hierarchical tensor train to
         represent such virtual index merging.
@@ -2204,47 +2160,38 @@ class TensorTrain(TreeNetwork):
     def svals(self, indices: Sequence[Index]) -> np.ndarray:
         """Compute the singular values for a tensor train."""
         # move the indices to one side of the tensor train
-        net, end_node = self.swap_to_end(indices)
-        # print(net)
-        # print("best end node", best_end_node)
-        # print("target neighbor", target_nbr)
-        nodes = net.linear_nodes(end_node)
-        node1, node2 = net.get_divisors(
-            end_node, nodes[len(indices) - 1], nodes[len(indices)]
-        )
-        return net.svals_nbr(node1, node2)
+        # net, end_node = self.swap_to_end(indices)
+        # # print(net)
+        # # print("best end node", best_end_node)
+        # # print("target neighbor", target_nbr)
+        # nodes = net.linear_nodes(end_node)
+        # node1, node2 = net.get_divisors(
+        #     end_node, nodes[len(indices) - 1], nodes[len(indices)]
+        # )
+        # return net.svals_nbr(node1, node2)
+        net, nodes = self.swap(indices)
+        if len(nodes) > 1:
+            for n in nodes[1:]:
+                net.merge(nodes[0], n)
+
+            n = nodes[0]
+        else:
+            n = net.node_by_free_index(indices[0].name)
+
+        net.orthonormalize(n)
+
+        node_indices = net.node_tensor(n).indices
+        lefts = []
+        for i, ind in enumerate(node_indices):
+            if ind in indices:
+                lefts.append(i)
+
+        (_, s, _), _ = net.svd(n, lefts, SVDConfig(delta=0, compute_uv=False))
+        return np.diag(net.node_tensor(s).value)
 
     @profile
     def svals_nbr(self, node1: NodeName, node2: NodeName) -> np.ndarray:
         """Compute the singular values for two neighbor nodes."""
-        # print(self)
-        nbr_indices = self.node_tensor(node1).indices
-        # print(
-        #     "[svals_nbr] merging",
-        #     node1,
-        #     "shape",
-        #     self.node_tensor(node1).indices,
-        #     node2,
-        #     "shape",
-        #     self.node_tensor(node2).indices,
-        # )
-        # merged_node = self.merge(node1, node2)
-        # # print("merging", best_end_node, target_nbr)
-        # # print(net)
-        # merged_indices = self.node_tensor(merged_node).indices
-        # # print(nbr_indices, merged_indices)
-        # lefts = [
-        #     merged_indices.index(ind)
-        #     for ind in nbr_indices
-        #     if ind in merged_indices
-        # ]
-        # self.orthonormalize(merged_node)
-        # (_, s, _), _ = self.svd(
-        #     merged_node, lefts, SVDConfig(delta=0, compute_uv=False)
-        # )
-        # # print("after svd")
-        # # print(net)
-        
         self.orthonormalize(node1)
         node_indices = self.node_tensor(node1).indices
         left = node_indices.index(self.get_contraction_index(node1, node2)[0])
@@ -2253,6 +2200,63 @@ class TensorTrain(TreeNetwork):
 
     def flatten(self):
         return self
+    
+    def ends(self):
+        """Compute the end nodes for the current tensor train."""
+        res = []
+        for n in self.network.nodes:
+            if len(self.node_tensor(n).indices) == 2:
+                res.append(n)
+
+        return res
+    
+    @profile
+    def svals_all(self) -> Dict[Sequence[Index], np.ndarray]:
+        """Compute singular values for the given index combos."""
+        assert len(self.network.nodes) <= 4, "expecting only four indices"
+
+        ends = self.ends()
+
+        # right orthogonalize
+        self.orthonormalize(ends[0])
+
+        nodes = self.linear_nodes(ends[0])
+        # now we can compute all nodes from one end to the other
+        result = {}
+        prior_frees = []
+        for ni, n in enumerate(nodes):
+            # find the free index
+            lefts = []
+            frees = []
+            node_indices = self.node_tensor(n).indices
+            for indi, ind in enumerate(node_indices):
+                if ind in self.free_indices():
+                    frees.append(indi)
+                    prior_frees.append(ind)
+
+                if ni != 0 and ind in self.get_contraction_index(n, nodes[ni-1]):
+                    lefts.append(indi)
+
+            # singular values for the current index
+            s, _ = self.node_tensor(n).svd(frees, delta=0, compute_uv=False)
+            node_frees = [node_indices[i] for i in frees]
+            result[tuple(node_frees)] = np.diag(s[0].value)
+
+            if ni > 0:
+                # singular values for binary partitions
+                indices = sorted([prior_frees[ni-1], prior_frees[ni]])
+                tmp_net = copy.deepcopy(self)
+                tmp_net.merge(n, nodes[ni - 1])
+                tmp_indices = tmp_net.node_tensor(n).indices
+                tmp_lefts = [tmp_indices.index(ind) for ind in indices]
+                (_, s, _), _ = tmp_net.svd(n, tmp_lefts, SVDConfig(delta=0))
+                result[tuple(indices)] = np.diag(tmp_net.node_tensor(s).value)
+
+            if ni < len(nodes) - 1:
+                _, r = self.qr(n, list(set(lefts + frees)))
+                self.merge(nodes[ni + 1], r)
+
+        return result
 
 
 class HTensorTrain(TensorTrain):
@@ -2393,7 +2397,7 @@ class HTensorTrain(TensorTrain):
             # sort the nodes by node positions
             ns = sorted(ns, key=lambda x: nodes.index(x))
             for n in ns[1:]:
-                print("merging", net.node_tensor(ns[0]).indices, net.node_tensor(n).indices)
+                # print("merging", net.node_tensor(ns[0]).indices, net.node_tensor(n).indices)
                 net.merge(ns[0], n)
 
             # how do we build the connection between the nodes and indices?
@@ -2405,7 +2409,9 @@ class HTensorTrain(TensorTrain):
             # k_val = htt.node_tensor(ns[0]).value.reshape(shape)
             # res_tt.node_tensor(k).update_val_size(k_val)
 
-        return net
+        res_net = TensorTrain()
+        res_net.network = net.network
+        return res_net
 
 def vector(
     name: Union[str, int], index: Index, value: np.ndarray
