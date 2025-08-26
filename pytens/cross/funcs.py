@@ -20,6 +20,7 @@ class TensorFunc:
         self.d = len(indices)
         self.indices = indices
         self.name = "_func_"
+        self.calls = np.empty((0, self.d))
 
     def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized integer indices to vectorized function arguments.
@@ -100,9 +101,10 @@ class TensorFunc:
         raise NotImplementedError
 
     def __call__(self, indices: np.ndarray):
+        self.calls = np.concatenate([indices, self.calls])
+        # print("recording", indices.shape[0])
         args = self.index_to_args(indices)
         return self.run(args)
-
 
 class CachedFunc(TensorFunc):
     """An abstract class for tensor function with cache.

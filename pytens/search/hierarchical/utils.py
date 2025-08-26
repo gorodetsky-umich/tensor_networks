@@ -5,7 +5,9 @@ from typing import Dict, List, Literal, Sequence, Tuple
 from collections import defaultdict
 
 import numpy as np
+import torch
 
+from pytens.algs import TensorTrain, Tensor
 from pytens.search.configuration import SearchConfig
 from pytens.types import IndexSplit, Index
 from pytens.cross.funcs import TensorFunc, SplitFunc
@@ -159,3 +161,30 @@ def split_func(
         var_mapping[before_split] = (split_inds, split_sizes)
 
     return SplitFunc(free_indices, old_func, var_mapping)
+
+def tntorch_wrapper(f):
+    def g(*args):
+        if len(args[0].shape) == 1:
+            inds = np.stack([a.numpy() for a in args], axis=-1)
+        else:
+            inds = np.concat([a.numpy() for a in args], axis=-1)
+        return torch.from_numpy(f(inds.astype(int)))
+    
+    return g
+
+def tntorch_to_tt(res, split_indices):
+    net = TensorTrain()
+    for ni, n in enumerate(res.cores):
+        n = n.squeeze([0, -1])
+        if ni == 0:
+            n_indices = [split_indices[ni], Index(f"s{ni}", n.shape[1])]
+        elif ni == len(res.cores) - 1:
+            n_indices = [Index(f"s{ni-1}", n.shape[0]), split_indices[ni]]
+        else:
+            n_indices = [Index(f"s{ni-1}", n.shape[0]), split_indices[ni], Index(f"s{ni}", n.shape[2])]
+        net.add_node(str(ni), Tensor(n.numpy(), n_indices))
+
+    for i in range(len(res.cores) - 1):
+        net.add_edge(str(i), str(i + 1))
+
+    return net

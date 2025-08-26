@@ -47,6 +47,7 @@ class SearchStats(pydantic.BaseModel):
     def merge(self, other: "SearchStats") -> None:
         """Merge the other search stats into the current one."""
         self.search_cross_evals += other.search_cross_evals
+        self.preprocess_time += other.preprocess_time
 
 
 class SearchResult:
@@ -419,7 +420,7 @@ def ravel_indices(reshape_ops, indices, data):
 
 def init_state(data_tensor: DataTensor, delta) -> SearchState:
     """Create initial search state for the input data tensor."""
-    print(type(data_tensor))
+    # print(type(data_tensor))
     if isinstance(data_tensor, TreeNetwork):
         return SearchState(data_tensor, delta)
 

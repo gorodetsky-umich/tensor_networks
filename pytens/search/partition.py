@@ -11,7 +11,7 @@ import logging
 import numpy as np
 from line_profiler import profile
 
-from pytens.algs import TreeNetwork, Tensor
+from pytens.algs import TreeNetwork, Tensor, TensorTrain
 from pytens.cross.cross import TensorFunc
 from pytens.search.configuration import SearchConfig
 from pytens.search.constraint import ConstraintSearch
@@ -273,6 +273,9 @@ class PartitionSearch:
             ind_combs = [ac.indices for ac in acs]
         else:
             ind_combs = SearchState.all_index_combs(data_tensor.free_indices())
+
+        if isinstance(data_tensor, TensorTrain):
+            self.constraint_engine.preprocess_tt(data_tensor.svals_all())
 
         for comb in ind_combs:
             if (

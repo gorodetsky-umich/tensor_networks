@@ -158,6 +158,8 @@ class SearchEngine:
             best_indices = best_network.free_indices()
             reshaped_func = reshape_func(best_st.reshape_history, free_indices, data_tensor)
             perm = [best_indices.index(ind) for ind in reshaped_func.indices]
+            self.validation = (best_st.reshape_history, best_indices, valid)
+            self.f = top_down_runner.f
             data_val = reshaped_func(valid[:, perm])
         else:
             raise TypeError("unsupported data tensor type")
