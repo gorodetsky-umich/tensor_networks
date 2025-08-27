@@ -60,7 +60,7 @@ def simulate_neutron_diffusion(args):
     """Simulate the call with the given arguments"""
     arg_strs = [str(a) for a in args]
     cmd = f"./scripts/neutron_diffusion/a.out {' '.join(arg_strs)}"
-    print("running", cmd)
+    # print("running", cmd)
     result = subprocess.run(cmd, capture_output=True, shell=True, check=True)
     return float(result.stdout)
 
@@ -68,6 +68,7 @@ class FuncNeutron(TensorFunc):
     """Class for neutron transport function as cross approximation source."""
     def __init__(self, indices: List[Index]):
         super().__init__(indices)
+        self.name = "neutron_diffusion"
         self.cache = {}
         self.pool = Pool()
 
@@ -85,7 +86,7 @@ class FuncNeutron(TensorFunc):
         with open("scripts/neutron_diffusion/fiber.hpp", "w+") as f:
             f.writelines(lines)
 
-        compile_cmd = "cd scripts/neutron_diffusion; clang++ -o a.out -std=c++23 -O3 main.cpp"
+        compile_cmd = "cd scripts/neutron_diffusion; g++ -o a.out -std=c++17 -O3 main.cpp"
         subprocess.run(compile_cmd, shell=True, check=True)
 
     def run(self, args: np.ndarray) -> np.ndarray:
@@ -104,8 +105,8 @@ class FuncNeutron(TensorFunc):
             key = tuple(args[i].tolist())
             results[i] = self.cache[key]
 
-        print(results)
-        print(self.cache)
+        # print(results)
+        # print(self.cache)
         return results
 
 class FuncData(TensorFunc):
