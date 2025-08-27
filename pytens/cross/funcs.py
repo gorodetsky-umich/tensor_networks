@@ -134,9 +134,8 @@ class CachedFunc(TensorFunc):
         self.calls = np.concatenate([args, self.calls])
         return self._run(args)
 
-
-class FuncData(CachedFunc):
-    """Numpy arrays as cross approximation input."""
+class FuncData(TensorFunc):
+    """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], data: np.ndarray):
         super().__init__(indices)
