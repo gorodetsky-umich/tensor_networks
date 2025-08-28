@@ -56,10 +56,10 @@ class TensorFunc:
         args = self.index_to_args(indices)
         return self.run(args)
 
-def simulate_neutron_diffusion(args):
+def simulate_neutron_diffusion(program, args):
     """Simulate the call with the given arguments"""
     arg_strs = [str(a) for a in args]
-    cmd = f"./scripts/neutron_diffusion/a.out {' '.join(arg_strs)}"
+    cmd = f"./scripts/neutron_diffusion/{program} {' '.join(arg_strs)}"
     # print("running", cmd)
     result = subprocess.run(cmd, capture_output=True, shell=True, check=True)
     return float(result.stdout)
@@ -86,7 +86,7 @@ class FuncNeutron(TensorFunc):
         with open("scripts/neutron_diffusion/fiber.hpp", "w+") as f:
             f.writelines(lines)
 
-        compile_cmd = "cd scripts/neutron_diffusion; g++ -o a.out -std=c++17 -O3 main.cpp"
+        compile_cmd = f"cd scripts/neutron_diffusion; g++ -o a_{self.d}.out -std=c++17 -O3 main.cpp"
         subprocess.run(compile_cmd, shell=True, check=True)
 
     def run(self, args: np.ndarray) -> np.ndarray:
@@ -94,7 +94,7 @@ class FuncNeutron(TensorFunc):
         for i in range(args.shape[0]):
             key = tuple(args[i].tolist())
             if key not in self.cache and key not in jobs:
-                job = self.pool.apply_async(simulate_neutron_diffusion, args=(key,))
+                job = self.pool.apply_async(simulate_neutron_diffusion, args=(f"a_{self.d}.out", key,))
                 jobs[key] = job
 
         for key, job in jobs.items():
