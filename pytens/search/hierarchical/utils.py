@@ -175,12 +175,14 @@ def tntorch_wrapper(f):
 def tntorch_to_tt(res, split_indices):
     net = TensorTrain()
     for ni, n in enumerate(res.cores):
-        n = n.squeeze([0, -1])
         if ni == 0:
+            n = n.squeeze([0])
             n_indices = [split_indices[ni], Index(f"s{ni}", n.shape[1])]
         elif ni == len(res.cores) - 1:
+            n = n.squeeze([-1])
             n_indices = [Index(f"s{ni-1}", n.shape[0]), split_indices[ni]]
         else:
+            assert len(n.shape) == 3
             n_indices = [Index(f"s{ni-1}", n.shape[0]), split_indices[ni], Index(f"s{ni}", n.shape[2])]
         net.add_node(str(ni), Tensor(n.numpy(), n_indices))
 
