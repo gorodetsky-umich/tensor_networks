@@ -174,7 +174,8 @@ class TopDownSearch:
             # FIXME: this might be problematic, but let's come back to this later
             split_indices = list(sorted(st.network.free_indices()))
             f = split_func(data_tensor, split_indices, splits)
-            self.f = f
+            # record the function and number of splits to compare with tt-cross
+            self.init_splits = len(splits)
 
             init_eps = self.config.engine.eps * self.config.cross.init_eps
 

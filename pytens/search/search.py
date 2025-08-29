@@ -22,6 +22,7 @@ from pytens.search.utils import (
     unravel_indices,
     reshape_func,
 )
+from pytens.search.hierarchical.types import TopDownSearchResult
 
 
 class SearchEngine:
@@ -119,7 +120,7 @@ class SearchEngine:
         assert best_st is not None
         best_st.network.compress()
         best_network = best_st.network
-        result = SearchResult()
+        result = TopDownSearchResult()
         result.best_state = SearchState(best_network, 0)
         result.stats = top_down_runner.stats
         result.stats.search_start = start
@@ -158,8 +159,11 @@ class SearchEngine:
             best_indices = best_network.free_indices()
             reshaped_func = reshape_func(best_st.reshape_history, free_indices, data_tensor)
             perm = [best_indices.index(ind) for ind in reshaped_func.indices]
-            self.validation = (best_st.reshape_history, best_indices, valid)
-            self.f = top_down_runner.f
+            result.valid_set = valid
+            result.valid_indices = best_indices
+            result.reshape_history = best_st.reshape_history
+            result.init_tt = top_down_runner.init_tt
+            result.init_splits = top_down_runner.init_splits
             data_val = reshaped_func(valid[:, perm])
         else:
             raise TypeError("unsupported data tensor type")

@@ -188,7 +188,6 @@ class PartitionSearch:
             self.stats.search_cross_evals += tensor_func.stats
             # st.curr_delta = self.config.engine.eps * st.network.norm()
             res.best_state = st
-            res.best_dim_tree = cross_res.dim_tree
             res.unused_delta = np.sqrt(
                 self.config.engine.eps**2
                 - cross_res.ranks_and_errors[-1][1] ** 2
