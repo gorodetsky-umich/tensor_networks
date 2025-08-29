@@ -53,12 +53,6 @@ class SearchStats(pydantic.BaseModel):
 class SearchResult:
     """Result returned by the search process"""
 
-    stats: SearchStats
-    unused_delta: float = 0.0
-    best_state: Optional[SearchState] = None
-    best_dim_tree: Optional[DimTreeNode] = None
-    best_solver_cost: int = -1
-
     def __init__(
         self,
         stats=SearchStats(),
@@ -90,7 +84,6 @@ class SearchResult:
         if other < self:
             self.best_state = other.best_state
             self.unused_delta = other.unused_delta
-            self.best_dim_tree = other.best_dim_tree
 
         return self
 
