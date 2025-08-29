@@ -60,7 +60,7 @@ def simulate_neutron_diffusion(program, args):
     """Simulate the call with the given arguments"""
     arg_strs = [str(a) for a in args]
     cmd = f"./scripts/neutron_diffusion/{program} {' '.join(arg_strs)}"
-    # print("running", cmd)
+    print("running", cmd)
     result = subprocess.run(cmd, capture_output=True, shell=True, check=True)
     return float(result.stdout)
 
@@ -68,33 +68,33 @@ class FuncNeutron(TensorFunc):
     """Class for neutron transport function as cross approximation source."""
     def __init__(self, indices: List[Index]):
         super().__init__(indices)
-        self.name = "neutron_diffusion"
+        self.name = f"neutron_diffusion_{len(indices)}"
         self.cache = {}
         self.pool = Pool()
 
         # compile the C++ code to the correct number of dimensions
-        nassem_types = len(indices) + 1
-        # modify the C++ code
-        with open("scripts/neutron_diffusion/fiber.hpp", "r") as f:
-            lines = []
-            for ln in f.readlines():
-                if "constexpr size_t Nassem_types" in ln:
-                    lines.append(f"constexpr size_t Nassem_types = {nassem_types};\n")
-                else:
-                    lines.append(ln)
+        # nassem_types = len(indices) + 1
+        # # modify the C++ code
+        # with open("scripts/neutron_diffusion/fiber.hpp", "r") as f:
+        #     lines = []
+        #     for ln in f.readlines():
+        #         if "constexpr size_t Nassem_types" in ln:
+        #             lines.append(f"constexpr size_t Nassem_types = {nassem_types};\n")
+        #         else:
+        #             lines.append(ln)
 
-        with open("scripts/neutron_diffusion/fiber.hpp", "w+") as f:
-            f.writelines(lines)
+        # with open("scripts/neutron_diffusion/fiber.hpp", "w+") as f:
+        #     f.writelines(lines)
 
-        compile_cmd = f"cd scripts/neutron_diffusion; g++ -o a_{self.d}.out -std=c++17 -O3 main.cpp"
-        subprocess.run(compile_cmd, shell=True, check=True)
+        # compile_cmd = "cd scripts/neutron_diffusion; g++ -o a.out -std=c++17 -O3 main.cpp"
+        # subprocess.run(compile_cmd, shell=True, check=True)
 
     def run(self, args: np.ndarray) -> np.ndarray:
         jobs = {}
         for i in range(args.shape[0]):
             key = tuple(args[i].tolist())
             if key not in self.cache and key not in jobs:
-                job = self.pool.apply_async(simulate_neutron_diffusion, args=(f"a_{self.d}.out", key,))
+                job = self.pool.apply_async(simulate_neutron_diffusion, args=(f"a_{self.d}.out", key))
                 jobs[key] = job
 
         for key, job in jobs.items():
@@ -106,7 +106,7 @@ class FuncNeutron(TensorFunc):
             results[i] = self.cache[key]
 
         # print(results)
-        # print(self.cache)
+        print("cache size", len(self.cache))
         return results
 
 class FuncData(TensorFunc):

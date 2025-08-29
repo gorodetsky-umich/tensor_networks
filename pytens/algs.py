@@ -2160,15 +2160,19 @@ class TensorTrain(TreeNetwork):
     def svals(self, indices: Sequence[Index]) -> np.ndarray:
         """Compute the singular values for a tensor train."""
         # move the indices to one side of the tensor train
-        # net, end_node = self.swap_to_end(indices)
-        # # print(net)
-        # # print("best end node", best_end_node)
-        # # print("target neighbor", target_nbr)
-        # nodes = net.linear_nodes(end_node)
-        # node1, node2 = net.get_divisors(
-        #     end_node, nodes[len(indices) - 1], nodes[len(indices)]
-        # )
-        # return net.svals_nbr(node1, node2)
+        net, end_node = self.swap_to_end(indices)
+        # print(net)
+        # print("best end node", best_end_node)
+        # print("target neighbor", target_nbr)
+        nodes = net.linear_nodes(end_node)
+        node1, node2 = net.get_divisors(
+            end_node, nodes[len(indices) - 1], nodes[len(indices)]
+        )
+        return net.svals_nbr(node1, node2)
+    
+    @profile
+    def svals_small(self, indices: Sequence[Index]) -> np.ndarray:
+        """Compute the singular values for a tensor train."""
         net, nodes = self.swap(indices)
         if len(nodes) > 1:
             for n in nodes[1:]:
@@ -2412,6 +2416,21 @@ class HTensorTrain(TensorTrain):
         res_net = TensorTrain()
         res_net.network = net.network
         return res_net
+    
+    @profile
+    def svals(self, indices: Sequence[Index]) -> np.ndarray:
+        """Compute the singular values for a tensor train."""
+        # trigger the svals for underlying tensor train
+        # convert indices to the underlying indices
+        underlying_indices = []
+        for merge_op in self.merge_ops:
+            for ind in indices:
+                if ind == merge_op.result:
+                    underlying_indices.extend(merge_op.indices)
+                else:
+                    underlying_indices.append(ind)
+
+        return self.tt.svals(underlying_indices)
 
 def vector(
     name: Union[str, int], index: Index, value: np.ndarray

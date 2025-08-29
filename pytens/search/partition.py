@@ -25,7 +25,7 @@ from pytens.search.utils import (
     to_splits,
     get_conflicts,
 )
-from pytens.types import Index
+from pytens.types import Index, IndexMerge
 
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -92,17 +92,31 @@ class PartitionSearch:
     def _enumerate(
         self,
         data_tensor: DataTensor,
+        merge_ops: Sequence[IndexMerge],
         exclusions: Optional[Sequence[Index]],
     ) -> Sequence[SearchState]:
         """Enumerate all possible splits up to the maximum number of ops."""
         sts = [init_state(data_tensor, self._delta)]
         curr_sts = [init_state(data_tensor, self._delta)]
+        # merged_indices = []
+        # for merge_op in merge_ops:
+        #     merged_indices.append(merge_op.result)
+
+        # for ind in data_tensor.free_indices():
+        #     found = False
+        #     for merge_op in merge_ops:
+        #         if ind in merge_op.indices:
+        #             found = True
+        #             break
+
+        #     if not found:
+        #         merged_indices.append(ind)
 
         for _ in range(1, self.config.engine.max_ops + 1):
             next_sts = []
             for curr_st in curr_sts:
                 is_osplit = self.config.synthesizer.action_type == "osplit"
-                for action in curr_st.get_legal_actions(is_osplit):
+                for action in curr_st.get_legal_actions(is_osplit, merge_ops):
                     if (
                         is_osplit
                         and exclusions is not None
@@ -204,11 +218,12 @@ class PartitionSearch:
             return self._round(st, tensor_func)
 
         ac = actions[0]
-        conflict_acs = get_conflicts(ac, to_splits(st.network))
+        conflict_ac = get_conflicts(ac, to_splits(st.network))
         st = copy.deepcopy(st)
-        for conflict_ac in conflict_acs:
+        while conflict_ac is not None:
             assert conflict_ac.reverse_edge is not None
             st.network.merge(*conflict_ac.reverse_edge)
+            conflict_ac = get_conflicts(ac, to_splits(st.network))
 
         svd = None
         if first_iter and self.config.rank_search.search_mode == "all":
@@ -262,7 +277,7 @@ class PartitionSearch:
         return self.get_cost(data_tensor, st, [data_tensor.cost()])
 
     def preprocess(
-        self, data_tensor: DataTensor, exclusions: Optional[Sequence[Index]]
+        self, data_tensor: DataTensor, merge_ops: Sequence[IndexMerge], exclusions: Optional[Sequence[Index]]
     ) -> float:
         """Precompute the pair of ranks and errors for the given data tensor"""
         preprocess_start = time.time()
@@ -272,10 +287,24 @@ class PartitionSearch:
 
             ind_combs = [ac.indices for ac in acs]
         else:
-            ind_combs = SearchState.all_index_combs(data_tensor.free_indices())
+            indices = []
+            for mop in merge_ops:
+                indices.append(mop.result)
 
-        if isinstance(data_tensor, TensorTrain):
-            self.constraint_engine.preprocess_tt(data_tensor.svals_all())
+            for ind in data_tensor.free_indices():
+                found = False
+                for mop in merge_ops:
+                    if ind in mop.indices:
+                        found = True
+                        break
+
+                if not found:
+                    indices.append(ind)
+                
+            ind_combs = SearchState.all_index_combs(indices)
+
+        # if isinstance(data_tensor, TensorTrain):
+        #     self.constraint_engine.preprocess_tt(data_tensor.svals_all())
 
         for comb in ind_combs:
             if (
@@ -285,9 +314,21 @@ class PartitionSearch:
             ):
                 continue
 
+            # TODO: restore comb to the original indices
+            restored_comb = []
+            for ind in comb:
+                found = False
+                for mop in merge_ops:
+                    if ind == mop.result:
+                        found = True
+                        restored_comb.extend(mop.indices)
+
+                if not found:
+                    restored_comb.append(ind)
+                    
             self.constraint_engine.preprocess_comb(
                 data_tensor,
-                comb,
+                restored_comb,
                 compute_uv=self.config.rank_search.search_mode == "all",
             )
 
@@ -308,6 +349,7 @@ class PartitionSearch:
     def search(
         self,
         data_tensor: DataTensor,
+        merge_ops: Sequence[IndexMerge],
         delta: Optional[float] = None,
         exclusions: Optional[Sequence[Index]] = None,
     ) -> SearchResult:
@@ -328,7 +370,7 @@ class PartitionSearch:
 
         logger.debug("**delta: %s, data norm: %s", self._delta, data_tensor.norm())
         self.constraint_engine.delta = self._delta
-        self.stats.preprocess_time = self.preprocess(data_tensor, exclusions)
+        self.stats.preprocess_time = self.preprocess(data_tensor, merge_ops, exclusions)
         self.stats.search_start = time.time()
 
         if self.config.synthesizer.replay_from is not None:
@@ -353,7 +395,7 @@ class PartitionSearch:
             self.unused_delta = self._delta
             empty_net = TreeNetwork()
             empty_net.add_node("G", Tensor(np.empty(0), data_tensor.free_indices()))
-            sts = self._enumerate(empty_net, exclusions)
+            sts = self._enumerate(empty_net, merge_ops, exclusions)
             search_res = self._top_k(data_tensor, sts)
 
         result = result.update_best_state(search_res)

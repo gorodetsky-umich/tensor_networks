@@ -178,7 +178,7 @@ class OSplit(Action):
         # print(lca_node, self.indices, node_indices)
         # net.draw()
         # plt.show()
-        left_indices = [node_indices.index(i) for i in lca_indices]
+        left_indices = list(set([node_indices.index(i) for i in lca_indices]))
 
         return ISplit(
             lca_node,
@@ -207,14 +207,20 @@ class OSplit(Action):
         ac = self.to_isplit(net)
         if ac is None:
             return None
+        
+        # print("OSplit svd", ac)
+        # print(net)
         return ac.svd(
             net, svd, compute_data=compute_data, compute_uv=compute_uv
         )
     
-    def svals(self, net: TreeNetwork, svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None) -> np.ndarray:
+    def svals(self, net: TreeNetwork, svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None, small = False) -> np.ndarray:
         """Compute the singular values of the split action."""
         if isinstance(net, TensorTrain):
-            return net.svals(self.indices)
+            if small:
+                return net.svals_small(self.indices)
+            else:
+                return net.svals(self.indices)
         else:
             ac = self.to_isplit(net)
             return ac.svals(net, svd)
@@ -422,10 +428,10 @@ class SearchState:
         return cnt
 
     # TODO: check how to implement isplit osplit in a better way
-    def get_legal_actions(self, index_actions=False):
+    def get_legal_actions(self, index_actions=False, merge_ops=None):
         """Return a list of all legal actions in this state."""
         if index_actions:
-            return self.get_legal_index_actions()
+            return self.get_legal_index_actions(merge_ops)
 
         actions = []
         for n in self.network.network.nodes:
@@ -463,15 +469,31 @@ class SearchState:
 
             yield from combs
 
-    def get_legal_index_actions(self):
+    def get_legal_index_actions(self, merge_ops=None):
         """
         Produce a list of legal index splitting actions
         over the current network.
         """
         actions = []
-        free_indices = self.network.free_indices()
+        if merge_ops is None:
+            free_indices = [[ind] for ind in self.network.free_indices()]
+        else:
+            free_indices = []
+            for merge_op in merge_ops:
+                free_indices.append(merge_op.indices)
+
+            for ind in self.network.free_indices():
+                found = False
+                for merge_op in merge_ops:
+                    if ind in merge_op.indices:
+                        found = True
+                        break
+
+                if not found:
+                    free_indices.append([ind])
+
         for comb in SearchState.all_index_combs(free_indices):
-            ac = OSplit(comb)
+            ac = OSplit([ind for ind_group in comb for ind in ind_group])
             if not self.past_actions or (
                 self.past_actions[-1] < ac and ac.is_valid(self.past_actions)
             ):

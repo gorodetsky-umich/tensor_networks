@@ -228,25 +228,43 @@ class TopDownSearch:
 
         before_split = st.network.free_indices()
         merge_ops, split_ops = [], []
-        while trigger_merge(self.config, is_top) and len(st.network.free_indices()) > self.config.topdown.group_threshold:
+        merged_indices = st.network.free_indices()
+        while trigger_merge(self.config, is_top) and len(merged_indices) > self.config.topdown.group_threshold:
             mops, sops = self._merge_by_corr(st, is_top)
             merge_ops.extend(mops)
             split_ops.extend(sops)
             # before run the merges, let's swap the node to the correct places to avoid very expensive computations
 
-            if isinstance(st.network, TensorTrain):
-                for merge_op in mops:
-                    st.network, _ = st.network.swap(merge_op.indices)
+            # TODO: postpone the swap after preprocessing
+            # if isinstance(st.network, TensorTrain):
+            #     for merge_op in mops:
+            #         st.network, _ = st.network.swap(merge_op.indices)
 
-            for merge_op in mops:
-                logger.debug("executing merge %s", merge_op)
-                st = st.merge_index(merge_op)
+            # if not isinstance(st.network, TensorTrain):
+            #     for merge_op in mops:
+            #         logger.debug("executing merge %s", merge_op)
+            #         st = st.merge_index(merge_op)
 
                 # st.network.merge_index(merge_op)
+            net_indices = merged_indices[:]
+            merged_indices = []
+            for merge_op in mops:
+                merged_indices.append(merge_op.result)
 
-        st.network = st.network.flatten()
+            for ind in net_indices:
+                found = False
+                for merge_op in mops:
+                    if ind in merge_op.indices:
+                        found = True
+                        break
+
+                if not found:
+                    merged_indices.append(ind)
+            
+
+        # st.network = st.network.flatten()
         result = search_engine.search(
-            st.network, delta=delta, exclusions=exclusions
+            st.network, merge_ops, delta=delta, exclusions=exclusions
         )
 
         if result.best_state is None:
@@ -355,7 +373,7 @@ class TopDownSearch:
                 start = time.time()
                 from pytens.search.state import OSplit
                 ac = OSplit(groups[comb[0]] + groups[comb[1]])
-                svals = ac.svals(copy.deepcopy(net))
+                svals = ac.svals(copy.deepcopy(net), small=True)
                 if len(svals) >= 2:
                     comb_corr[comb] = -svals[0] / svals[1]
                 else:

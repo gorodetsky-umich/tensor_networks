@@ -474,19 +474,18 @@ def to_splits(net: TreeNetwork) -> List[OSplit]:
 
     return actions
 
-def get_conflicts(ac: OSplit, past_acs: List[OSplit]) -> List[OSplit]:
+def get_conflicts(ac: OSplit, past_acs: List[OSplit]) -> Optional[OSplit]:
     """Get the list of conflict actions."""
     ac_indices = set(ac.indices)
-    conflicts = []
     for past_ac in past_acs:
         past_indices = set(past_ac.indices)
         if len(ac_indices.intersection(past_indices)) > 0 and not ac_indices.issubset(past_indices) and not ac_indices.issuperset(past_indices):
             if past_ac.reversible:
-                conflicts.append(past_ac)
+                return past_ac
             else:
                 print("Warning: the action", past_ac, "conflicts with", ac, "but it is not reversible")
 
-    return conflicts
+    return None
 
 def seed_all(seed_value: int) -> None:
     """
