@@ -7,6 +7,7 @@ import random
 import time
 from typing import List, Optional, Self, Sequence, Tuple, Union, Literal
 import logging
+import pickle
 
 import numpy as np
 import sympy
@@ -191,6 +192,9 @@ class TopDownSearch:
             # print(net)
             # print(net.free_indices())
             self.init_tt = net
+            with open(f"{self.config.output.output_dir}/init_tt.pkl", "wb") as tt_writer:
+                pickle.dump(self.init_tt, tt_writer)
+
             self.stats.cross_time = time.time() - cross_start
             self.stats.init_cross_size = net.cost()
             # print("initial cost", net.cost())
