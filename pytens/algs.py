@@ -27,6 +27,7 @@ import networkx as nx
 import numpy as np
 import opt_einsum as oe
 from line_profiler import profile
+from sklearn.utils.extmath import randomized_svd
 
 from .cross.cross import cross, CrossResult
 from .cross.funcs import TensorFunc
@@ -2025,9 +2026,13 @@ class TensorTrain(TreeNetwork):
 
     @profile
     def swap_to_end(
-        self, indices: Sequence[Index]
+        self, indices: Sequence[Index], orthonormal: Optional[NodeName] = None
     ) -> Tuple[Self, NodeName]:
-        """Swap the indices to the end of the tensor train."""
+        """Swap the indices to the end of the tensor train.
+        
+        If the input tensor train is orthonormalized, we maintain the 
+        orthonormalization after the swap operation.
+        """
         assert all(ind in self.free_indices() for ind in indices), (
             "all indices should be free"
         )
@@ -2044,25 +2049,28 @@ class TensorTrain(TreeNetwork):
                 "Cannot find enough end nodes, please check the tensor train structure."
             )
 
-        # check the distance between the given indices and the end nodes
-        # pick the end node that is closest to all given indices
-        min_dist = float("inf")
-        best_end_node = None
-        for end_node in end_nodes:
-            all_dist = 0
-            for node in self.network.nodes:
-                tensor = self.node_tensor(node)
-                if any(ind in tensor.indices for ind in indices):
-                    # TODO: we can use a different score function here to evaluate the cost of swaps
-                    dist = self.distance(end_node, node)
-                    all_dist += dist
+        if orthonormal is not None:
+            best_end_node = orthonormal
+        else:
+            # check the distance between the given indices and the end nodes
+            # pick the end node that is closest to all given indices
+            min_dist = float("inf")
+            best_end_node = None
+            for end_node in end_nodes:
+                all_dist = 0
+                for node in self.network.nodes:
+                    tensor = self.node_tensor(node)
+                    if any(ind in tensor.indices for ind in indices):
+                        # TODO: we can use a different score function here to evaluate the cost of swaps
+                        dist = self.distance(end_node, node)
+                        all_dist += dist
 
-            if all_dist < min_dist:
-                best_end_node = end_node
-                min_dist = all_dist
+                if all_dist < min_dist:
+                    best_end_node = end_node
+                    min_dist = all_dist
 
-        assert best_end_node is not None
-        # print("Best end node:", best_end_node)
+            assert best_end_node is not None
+            # print("Best end node:", best_end_node)
 
         # swap the given indices to the best end node
         net = copy.deepcopy(self)
@@ -2081,7 +2089,7 @@ class TensorTrain(TreeNetwork):
             # print("node index", node_idx, "ind_idx", ind_idx)
             while node_idx > ind_idx:
                 # print("swapping", nodes[node_idx], nodes[node_idx - 1])
-                net.swap_nbr(nodes[node_idx], nodes[node_idx - 1])
+                net.swap_nbr(nodes[node_idx], nodes[node_idx-1])
                 # print("after swap")
                 # print(net)
                 nodes[node_idx], nodes[node_idx - 1] = (
@@ -2092,6 +2100,23 @@ class TensorTrain(TreeNetwork):
 
         # print("After swapping indices to the end node:")
         # print(net)
+        if orthonormal is not None:
+            # do the orthonormalization for nodes from 0 to len(indices)-1
+            for nidx, n in enumerate(nodes[: len(indices) - 1]):
+                lefts = []
+                node_indices = net.node_tensor(n).indices
+                if nidx == 0:
+                    contract_indices = []
+                else:
+                    contract_indices = net.get_contraction_index(n, nodes[nidx - 1])
+                for ind in node_indices:
+                    if ind in net.free_indices() or ind in contract_indices:
+                        lefts.append(node_indices.index(ind))
+
+                q, r = net.qr(n, lefts)
+                net.merge(nodes[nidx + 1], r)
+                nx.relabel_nodes(net.network, {q: n}, copy=False)
+
         return net, nodes[0]
 
     def __add__(self, other: Any) -> Self:
@@ -2157,10 +2182,10 @@ class TensorTrain(TreeNetwork):
         return node1, node2
 
     @profile
-    def svals(self, indices: Sequence[Index]) -> np.ndarray:
+    def svals(self, indices: Sequence[Index], max_rank: int = 100, orthonormal: Optional[NodeName] = None) -> np.ndarray:
         """Compute the singular values for a tensor train."""
         # move the indices to one side of the tensor train
-        net, end_node = self.swap_to_end(indices)
+        net, end_node = self.swap_to_end(indices, orthonormal=orthonormal)
         # print(net)
         # print("best end node", best_end_node)
         # print("target neighbor", target_nbr)
@@ -2168,10 +2193,10 @@ class TensorTrain(TreeNetwork):
         node1, node2 = net.get_divisors(
             end_node, nodes[len(indices) - 1], nodes[len(indices)]
         )
-        return net.svals_nbr(node1, node2)
+        return net.svals_nbr(node1, node2, max_rank=max_rank, orthonormal=orthonormal is not None)
     
     @profile
-    def svals_small(self, indices: Sequence[Index]) -> np.ndarray:
+    def svals_small(self, indices: Sequence[Index], max_rank:int = 100) -> np.ndarray:
         """Compute the singular values for a tensor train."""
         net, nodes = self.swap(indices)
         if len(nodes) > 1:
@@ -2190,17 +2215,28 @@ class TensorTrain(TreeNetwork):
             if ind in indices:
                 lefts.append(i)
 
-        (_, s, _), _ = net.svd(n, lefts, SVDConfig(delta=0, compute_uv=False))
-        return np.diag(net.node_tensor(s).value)
+        perm = lefts + [i for i in range(len(node_indices)) if i not in lefts]
+        left_size = np.prod([ind.size for ind in indices])
+        tensor_val = net.node_tensor(n).value.transpose(perm).reshape(left_size, -1)
+        _, s, _ = randomized_svd(tensor_val, max_rank)
+        return s
+        # (_, s, _), _ = net.svd(n, lefts, SVDConfig(delta=0, compute_uv=False))
+        # return np.diag(net.node_tensor(s).value)
 
     @profile
-    def svals_nbr(self, node1: NodeName, node2: NodeName) -> np.ndarray:
+    def svals_nbr(self, node1: NodeName, node2: NodeName, max_rank: int = 100, orthonormal: bool = False) -> np.ndarray:
         """Compute the singular values for two neighbor nodes."""
-        self.orthonormalize(node1)
-        node_indices = self.node_tensor(node1).indices
-        left = node_indices.index(self.get_contraction_index(node1, node2)[0])
-        (_, s, _), _ = self.svd(node1, [left], SVDConfig(delta=0, compute_uv=False))
-        return np.diag(self.node_tensor(s).value)
+        if not orthonormal:
+            self.orthonormalize(node1)
+        tensor = self.node_tensor(node1)
+        left_ind = self.get_contraction_index(node1, node2)[0]
+        left = tensor.indices.index(left_ind)
+        perm = [left] + [i for i in range(len(tensor.indices)) if i != left]
+        tensor_val = tensor.value.transpose(perm).reshape(left_ind.size, -1)
+        _, s, _ = randomized_svd(tensor_val, max_rank)
+        return s
+        # (_, s, _), _ = self.svd(node1, [left], SVDConfig(delta=0, compute_uv=False))
+        # return np.diag(self.node_tensor(s).value)
 
     def flatten(self):
         return self
@@ -2356,9 +2392,9 @@ class HTensorTrain(TensorTrain):
         return self.tt.get_divisors(tt_end, tt_node1, tt_node2)
 
     @profile
-    def svals_nbr(self, node1: NodeName, node2: NodeName) -> np.ndarray:
+    def svals_nbr(self, node1: NodeName, node2: NodeName, max_rank:int = 100) -> np.ndarray:
         """Compute the singular values for two neighbor nodes in a hierarchical tensor train."""
-        return self.tt.svals_nbr(node1, node2)
+        return self.tt.svals_nbr(node1, node2, max_rank=max_rank)
 
     # def merge(self, name1: NodeName, name2: NodeName, compute_data:bool = False) -> NodeName:
     #     """Merge the group sets corresponding to these nodes."""

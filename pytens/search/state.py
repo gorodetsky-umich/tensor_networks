@@ -214,13 +214,14 @@ class OSplit(Action):
             net, svd, compute_data=compute_data, compute_uv=compute_uv
         )
     
-    def svals(self, net: TreeNetwork, svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None, small = False) -> np.ndarray:
+    def svals(self, net: TreeNetwork, svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None, small = False, max_rank=100, orthonormal = None) -> np.ndarray:
         """Compute the singular values of the split action."""
         if isinstance(net, TensorTrain):
-            if small:
-                return net.svals_small(self.indices)
-            else:
-                return net.svals(self.indices)
+            # if small:
+            #     return net.svals_small(self.indices, max_rank=max_rank)
+            # else:
+            #     return net.svals(self.indices, max_rank=max_rank)
+            return net.svals(self.indices, max_rank=max_rank, orthonormal=orthonormal)
         else:
             ac = self.to_isplit(net)
             return ac.svals(net, svd)

@@ -15,6 +15,7 @@ import torch
 import tntorch
 from line_profiler import profile
 
+from pytens.search.state import OSplit
 from pytens.algs import TreeNetwork, TensorTrain, Tensor
 from pytens.cross.funcs import TensorFunc, FuncData, FuncTensorNetwork, MergeFunc
 from pytens.search.configuration import SearchConfig
@@ -185,22 +186,19 @@ class TopDownSearch:
             
             res = tntorch.cross(tntorch_wrapper(f), domains, eps=init_eps, kickrank=2, max_iter=100, verbose=False)
             net = tntorch_to_tt(res, split_indices)
-
+            # with open(f"{self.config.output.output_dir}/init_tt.pkl", "rb") as tt_reader:
+            #     net = pickle.load(tt_reader)
             # print(net)
 
-            # net.cross(f, eps=init_eps)
-            # print(net)
-            # print(net.free_indices())
-            self.init_tt = net
             with open(f"{self.config.output.output_dir}/init_tt.pkl", "wb") as tt_writer:
-                pickle.dump(self.init_tt, tt_writer)
+                pickle.dump(net, tt_writer)
 
             self.stats.cross_time = time.time() - cross_start
             self.stats.init_cross_size = net.cost()
             # print("initial cost", net.cost())
             delta = net.norm() * self.config.engine.eps
             init_st = HSearchState(split_indices[:], splits, net, 0)
-            self.init_st = init_st
+            # self.init_st = init_st
             self.stats.init_cross_evals = len(np.unique(f.calls, axis=0))
 
         else:
@@ -366,6 +364,22 @@ class TopDownSearch:
 
         mergable_cnt = len(dsu.elems)
         indices_cnt = len(indices)
+
+        if isinstance(net, TensorTrain):
+            end_nodes = []
+            for node in net.network.nodes:
+                tensor = net.node_tensor(node)
+                if len(tensor.indices) == 2:
+                    end_nodes.append(node)
+
+            normalized_tts = {}
+            for node in end_nodes:
+                normalized_tt = copy.deepcopy(net)
+                normalized_tt.orthonormalize(node)
+                normalized_tts[node] = normalized_tt
+        else:
+            normalized_tts = {None: net}
+
         while True:
             merged = set()
             groups = dsu.groups()
@@ -376,9 +390,30 @@ class TopDownSearch:
             comb_corr = {}
             for comb in itertools.combinations(groups.keys(), 2):
                 start = time.time()
-                from pytens.search.state import OSplit
+                best_end_node = None
+                if isinstance(net, TensorTrain):
+                    end_nodes = []
+                    for node in net.network.nodes:
+                        tensor = net.node_tensor(node)
+                        if len(tensor.indices) == 2:
+                            end_nodes.append(node)
+
+                    min_dist = float("inf")
+                    
+                    all_dist = 0
+                    for end_node in end_nodes:
+                        nodes = net.linear_nodes(end_node)
+                        for node_idx, node in enumerate(nodes):
+                            tensor = net.node_tensor(node)
+                            if any(ind in tensor.indices for ind in comb):
+                                all_dist += node_idx
+
+                        if all_dist < min_dist:
+                            best_end_node = end_node
+                            min_dist = all_dist
+
                 ac = OSplit(groups[comb[0]] + groups[comb[1]])
-                svals = ac.svals(copy.deepcopy(net), small=True)
+                svals = ac.svals(copy.deepcopy(normalized_tts[best_end_node]), max_rank=2, orthonormal=best_end_node)
                 if len(svals) >= 2:
                     comb_corr[comb] = -svals[0] / svals[1]
                 else:
