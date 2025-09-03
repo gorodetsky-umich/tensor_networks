@@ -117,6 +117,10 @@ class PreprocessConfig(pydantic.BaseModel):
         default=True,
         description="Enable recomputation and ignore the stored SVD results",
     )
+    max_rank: int = pydantic.Field(
+        default=100,
+        description="Config the maximum number of singular values in randomized SVD",
+    )
 
 class CrossConfig(pydantic.BaseModel):
     """Configuration for cross approximation"""

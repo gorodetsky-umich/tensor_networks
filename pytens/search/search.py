@@ -162,7 +162,6 @@ class SearchEngine:
             result.valid_set = valid
             result.valid_indices = best_indices
             result.reshape_history = best_st.reshape_history
-            result.init_tt = top_down_runner.init_tt
             result.init_splits = top_down_runner.init_splits
             data_val = reshaped_func(valid[:, perm])
         else:

@@ -9,12 +9,16 @@ from typing import List, Optional, Sequence, Dict
 import gurobipy as gp
 import numpy as np
 from gurobipy import GRB
+import tntorch
+import torch
 
-from pytens.algs import Index, Tensor, TreeNetwork
-from pytens.cross.funcs import TensorFunc, FuncTensorNetwork
+from pytens.algs import Index, Tensor, TreeNetwork, TensorTrain
+from pytens.cross.funcs import TensorFunc, FuncTensorNetwork, MergeFunc
+from pytens.types import IndexMerge
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import OSplit, SearchState
-from pytens.search.utils import DataTensor
+from pytens.search.utils import DataTensor, reshape_func
+from pytens.search.hierarchical.utils import tntorch_wrapper
 
 BAD_SCORE = 9999999999999
 
@@ -132,6 +136,9 @@ class ConstraintSearch:
         prev = 0
         prev_sum = 0
         cnt = 0
+        if len(s) == 0:
+            return None
+        
         s_sizes = [1]
         s_sums = [s[-1] ** 2]
 
@@ -167,38 +174,27 @@ class ConstraintSearch:
         )
 
     def _preprocess_cross(
-        self, data_tensor: TensorFunc, comb: Sequence[Index]
+        self, data_tensor: DataTensor, comb: Sequence[Index]
     ):
         bin_size = self.config.synthesizer.bin_size
         err = self.delta * bin_size
-        if isinstance(data_tensor, FuncTensorNetwork):
-            net = copy.deepcopy(data_tensor.net)
-            net = net.swap(comb)
-            # reset the network internal indices to 1
-            free_indices = list(net.free_indices())
-            for node in net.network:
-                tensor = net.node_tensor(node)
-                shape = []
-                for ind in tensor.indices:
-                    if ind in free_indices:
-                        shape.append(ind.size)
-                    else:
-                        shape.append(1)
-                tensor.update_val_size(np.zeros(shape))
+        assert isinstance(data_tensor, TensorTrain)
+        # create a merge func that merges comb into one index and the rest into the other
+        data_indices = data_tensor.free_indices()
+        
+        comb_size = int(np.prod([i.size for i in comb]))
+        comb_merge = IndexMerge(indices=comb, result=Index("_".join([str(i.name) for i in comb]), comb_size, range(comb_size)))
 
-            ranks_and_errors = net.cross(data_tensor, err).ranks_and_errors
-        else:
-            net = TreeNetwork()
-            net.add_node(
-                "G",
-                Tensor(
-                    np.empty([0 for _ in data_tensor.indices]), data_tensor.indices
-                ),
-            )
-            (_, s, v), _ = OSplit(comb).svd(net, compute_data=False)
-            net.merge(v, s, compute_data=False)
-            ranks_and_errors = net.cross(data_tensor, err).ranks_and_errors
+        other_indices = [ind for ind in data_indices if ind not in comb]
+        other_size = int(np.prod([i.size for i in other_indices]))
+        other_merge = IndexMerge(indices=other_indices, result=Index("_".join([str(i.name) for i in other_indices]), other_size, range(other_size)))
+        merge_func = reshape_func([comb_merge, other_merge], data_tensor.free_indices(), FuncTensorNetwork(data_tensor.free_indices(), data_tensor))
 
+        # get ranks and errors for the comb
+        domains = [torch.arange(s) for s in [comb_size, other_size]]
+        _, info = tntorch.cross(tntorch_wrapper(merge_func), domains, eps=err, kickrank=1, max_iter=self.config.preprocess.max_rank, verbose=False, return_info=True)
+        errors = info["epss"]
+        # TODO: process the errors
         sizes, sums = zip(*reversed(ranks_and_errors))
         # print(sizes, sums)
 
@@ -227,24 +223,25 @@ class ConstraintSearch:
 
         self.split_actions[OSplit(comb)] = (final_sums, final_sizes)
 
-    def preprocess_tt(self, result: Dict[Sequence[Index], np.ndarray]):
-        for comb, s in result.items():
-            ac = OSplit(comb)
-            sums, sizes = self.abstract(s)
-            self.split_actions[ac] = (sums, sizes)
+    # def preprocess_tt(self, result: Dict[Sequence[Index], np.ndarray]):
+    #     for comb, s in result.items():
+    #         ac = OSplit(comb)
+    #         sums, sizes = self.abstract(s)
+    #         self.split_actions[ac] = (sums, sizes)
 
     def preprocess_comb(
         self,
         data_tensor: DataTensor,
         comb: Sequence[Index],
         compute_uv: bool = False,
+        cross: bool = False,
     ):
         """Precompute the singluar values for a given index combination."""
         logger.debug("preprocess %s", comb)
         logger.debug("%s", data_tensor)
 
-        if isinstance(data_tensor, TensorFunc):
-            self._preprocess_cross(data_tensor, comb)
+        if cross:
+            self._preprocess_cross(FuncTensorNetwork(data_tensor.free_indices(), data_tensor), comb)
             return
 
         ac = OSplit(comb)
@@ -273,12 +270,17 @@ class ConstraintSearch:
             #     np.savez(file_name, u=u, s=s, v=v)
             #     self.first_steps[OSplit(comb)] = file_name
             #     self.temp_files.append(file_name)
-            s = ac.svals(net)
+            s = ac.svals(net, max_rank=self.config.preprocess.max_rank)
 
-        sums, sizes = self.abstract(s)
-        logger.debug("preprocess: %s, %s", comb, s)
-        logger.debug("abstract results: %s, %s", sums, sizes)
-        self.split_actions[OSplit(comb)] = (sums, sizes)
+        res = self.abstract(s)
+        if res is not None:
+            sums, sizes = res
+            logger.debug("preprocess: %s, %s", comb, s)
+            logger.debug("abstract results: %s, %s", sums, sizes)
+            self.split_actions[OSplit(comb)] = (sums, sizes)
+        else:
+            logger.debug("no truncation for %s", comb)
+            self.split_actions[OSplit(comb)] = ([], [])
 
     def solve(self, st: SearchState, upper: int) -> Optional[SearchState]:
         """Compute cost for a given set of splits."""
