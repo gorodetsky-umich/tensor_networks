@@ -74,7 +74,7 @@ class Tensor:
         """Convert to dictionary. Useful for serialization."""
 
         return {
-            "value": self.value,
+            "value": np.ascontiguousarray(self.value),
             "indices": [index.to_dict() for index in self.indices],
         }
 
