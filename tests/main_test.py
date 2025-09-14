@@ -52,6 +52,21 @@ class TestTT(unittest.TestCase):
                 eval_orig = self.TT[0, 2, 4].value
                 err = np.abs(eval_here - eval_orig)
                 self.assertTrue(err < 1e-14)
+
+    def test_to_dict(self):
+
+        tt_dict = self.TT.to_dict()
+
+        new_tt = TensorNetwork.from_dict(tt_dict)
+
+        tt_ranks = new_tt.ranks()
+        self.assertEqual(tt_ranks[0], self.tt_ranks[0])
+        self.assertEqual(tt_ranks[1], self.tt_ranks[1])
+
+        eval_here = new_tt[0, 2, 4].value
+        eval_orig = self.TT[0, 2, 4].value
+        err = np.abs(eval_here - eval_orig)
+        self.assertTrue(err < 1e-14)                
         
     def test_ranks(self):
         tt_ranks = self.TT.ranks()

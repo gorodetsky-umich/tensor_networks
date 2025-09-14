@@ -4,6 +4,7 @@ import copy
 import logging
 from collections.abc import Sequence
 from collections import Counter
+import dataclasses
 from dataclasses import dataclass
 import typing
 from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Any
@@ -43,6 +44,15 @@ class Index:
     def __lt__(self, other: Self) -> bool:
         return str(self.name) < str(other.name)
 
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data_dict: dict) -> "Index":
+        """Reconstruct from dictionary."""
+        return cls(**data_dict)
+
 
 @dataclass
 class SVDConfig:
@@ -60,11 +70,28 @@ class Tensor:
     value: np.ndarray
     indices: List[Index]
 
+    def to_dict(self) -> dict:
+        """Convert to dictionary. Useful for serialization."""
+
+        return {
+            "value": self.value,
+            "indices": [index.to_dict() for index in self.indices],
+        }
+
+    @classmethod
+    def from_dict(cls, data_dict: dict) -> "Tensor":
+        """Reconstruct from dictionary."""
+
+        indices_list = [
+            Index.from_dict(idx_dict) for idx_dict in data_dict["indices"]
+        ]
+        return cls(value=data_dict["value"], indices=indices_list)
+
     def update_val_size(self, value: np.ndarray) -> Self:
         """Update the tensor with a new value."""
-        assert value.ndim == len(self.indices), (
-            f"{value.shape}, {self.indices}"
-        )
+        assert value.ndim == len(
+            self.indices
+        ), f"{value.shape}, {self.indices}"
         self.value = value
         for ii, index in enumerate(self.indices):
             self.indices[ii] = index.with_new_size(value.shape[ii])
@@ -1012,7 +1039,7 @@ class TensorNetwork:  # pylint: disable=R0904
 
     def __str__(self) -> str:
         """Convert to string."""
-        out = "Nodes:\n"
+        out = "TensorNetwork\n==========\nNodes:\n"
         out += "------\n"
         for node, data in self.network.nodes(data=True):
             out += (
@@ -1114,6 +1141,46 @@ class TensorNetwork:  # pylint: disable=R0904
         nx.draw_networkx_edge_labels(
             new_graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
         )
+
+    def to_dict(self) -> dict:
+        """Convert Tensor Network to dictionary."""
+
+        # temporary graph
+        plain_graph = nx.Graph()
+        plain_graph.add_nodes_from(self.network.nodes)
+        plain_graph.add_edges_from(self.network.edges)
+
+        for node_name, node_data in self.network.nodes(data=True):
+            if "tensor" in node_data:
+                plain_graph.nodes[node_name]["tensor_dict"] = node_data[
+                    "tensor"
+                ].to_dict()
+
+        # nx built in convert to dict
+        out: dict = nx.node_link_data(plain_graph)
+        return out
+
+    @classmethod
+    def from_dict(cls, data_dict: dict) -> "TensorNetwork":
+        """Build a Tensor Network from a dictionary."""
+
+        reconstructed_graph = nx.node_link_graph(data_dict)
+
+        # Create a new, empty TensorNetwork instance
+        new_tn = cls()
+
+        # Add nodes and edges to the new instance's network
+        new_tn.network.add_nodes_from(reconstructed_graph.nodes)
+        new_tn.network.add_edges_from(reconstructed_graph.edges)
+
+        # Iterate through the reconstructed nodes and
+        # convert the dictionaries back to Tensor objects
+        for node_name, node_data in reconstructed_graph.nodes(data=True):
+            if "tensor_dict" in node_data:
+                tensor_obj = Tensor.from_dict(node_data["tensor_dict"])
+                new_tn.set_node_tensor(node_name, tensor_obj)
+
+        return new_tn
 
 
 def vector(
@@ -1297,7 +1364,7 @@ def gram_eig_and_svd(
         the gram matrices of a TT-core and returns the \
         low-rank factors """
     pos_tol = 1e-15
-    
+
     eigl, vl = np.linalg.eigh(gl)
     eigr, vr = np.linalg.eigh(gr)
     eigl = np.abs(eigl)
@@ -1556,9 +1623,9 @@ def multiply_core_unfolding(  # pylint: disable=R0912
         n = cores_list[0].shape[1]
 
         if v_unfolding and (not transpose):
-            assert cols == rk_sum * n, (
-                f"Dimension mismatch {cols} != {rk_sum * n}"
-            )
+            assert (
+                cols == rk_sum * n
+            ), f"Dimension mismatch {cols} != {rk_sum * n}"
             res = np.zeros((rows, rk1_sum))
             for i in range(n_cores):
                 res[:, rk1_cumsum[i] : rk1_cumsum[i + 1]] = mat[
@@ -1567,9 +1634,9 @@ def multiply_core_unfolding(  # pylint: disable=R0912
             return res
 
         if (not v_unfolding) and (transpose):
-            assert cols == rk1_sum * n, (
-                f"Dimension mismatch {cols} != {rk1_sum * n}"
-            )
+            assert (
+                cols == rk1_sum * n
+            ), f"Dimension mismatch {cols} != {rk1_sum * n}"
             res = np.zeros((rows, rk_sum))
             for i in range(n_cores):
                 ind = get_indices(cols, rk1_sum, rk1[i], rk1_cumsum[i])
