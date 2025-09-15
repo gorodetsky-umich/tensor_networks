@@ -1182,6 +1182,61 @@ class TensorNetwork:  # pylint: disable=R0904
 
         return new_tn
 
+    def to_separated_dict(self) -> tuple[dict, dict[int, np.ndarray]]:
+        """Separates the network into metadata and a dict of NumPy arrays."""
+
+        plain_graph = nx.Graph()
+        plain_graph.add_nodes_from(
+            self.network.nodes(data=False)
+        )  # Add nodes without attributes first
+        plain_graph.add_edges_from(self.network.edges)
+
+        for node_name, node_data in self.network.nodes(data=True):
+            if "tensor" in node_data:
+                tensor_as_dict = node_data["tensor"].to_dict()
+                plain_graph.nodes[node_name]["tensor_dict"] = tensor_as_dict
+
+        metadata = nx.node_link_data(plain_graph)
+        numpy_arrays = {}
+
+        metadata["numpy_arrays_info"] = {}
+
+        for node_metadata in metadata.get("nodes", []):
+            tensor_dict = node_metadata.pop("tensor_dict")
+            node_id = node_metadata["id"]
+
+            array_value = np.ascontiguousarray(tensor_dict["value"])
+            numpy_arrays[node_id] = array_value
+
+            metadata["numpy_arrays_info"][node_id] = {
+                "shape": [int(dim) for dim in array_value.shape],
+                "dtype": array_value.dtype.name,
+            }
+            node_metadata["tensor_indices"] = tensor_dict["indices"]
+            for elem in node_metadata["tensor_indices"]:
+                if not isinstance(elem["size"], int):
+                    try:
+                        elem["size"] = [int(dim) for dim in elem["size"]]
+                    except TypeError:
+                        elem["size"] = int(elem["size"])
+
+        return metadata, numpy_arrays
+
+    @classmethod
+    def from_separated_dict(
+        cls, metadata: dict, numpy_arrays: dict[int, np.ndarray]
+    ) -> "TensorNetwork":
+        """Reconstructs a TensorNetwork from separated metadata and arrays."""
+
+        for node_data in metadata["nodes"]:
+            node_id = node_data["id"]
+            if node_id in numpy_arrays:
+                node_data["tensor_dict"] = {
+                    "value": numpy_arrays[node_id],
+                    "indices": node_data.pop("tensor_indices"),
+                }
+        return cls.from_dict(metadata)
+
 
 def vector(
     name: Union[str, int], index: Index, value: np.ndarray
