@@ -66,7 +66,23 @@ class TestTT(unittest.TestCase):
         eval_here = new_tt[0, 2, 4].value
         eval_orig = self.TT[0, 2, 4].value
         err = np.abs(eval_here - eval_orig)
-        self.assertTrue(err < 1e-14)                
+        self.assertTrue(err < 1e-14)
+        
+
+    def test_to_separated_dict(self):
+
+        metadata, numpy_arrays = self.TT.to_separated_dict()
+
+        new_tt = TensorNetwork.from_separated_dict(metadata, numpy_arrays)
+
+        tt_ranks = new_tt.ranks()
+        self.assertEqual(tt_ranks[0], self.tt_ranks[0])
+        self.assertEqual(tt_ranks[1], self.tt_ranks[1])
+
+        eval_here = new_tt[0, 2, 4].value
+        eval_orig = self.TT[0, 2, 4].value
+        err = np.abs(eval_here - eval_orig)
+        self.assertTrue(err < 1e-14)                        
         
     def test_ranks(self):
         tt_ranks = self.TT.ranks()
