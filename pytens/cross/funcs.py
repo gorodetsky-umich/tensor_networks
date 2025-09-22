@@ -58,23 +58,24 @@ class CountableFunc(TensorFunc):
     """A tensor function with cache"""
     def __init__(self, indices: List[Index]):
         super().__init__(indices)
-        self.cache = np.empty((0, self.d))
+        self.calls = np.empty((0, self.d))
 
     def num_calls(self) -> int:
-        return len(np.unique(self.cache, axis=0))
+        """The number of unique function calls"""
+        return len(np.unique(self.calls, axis=0))
 
     def _run(self, args: np.ndarray) -> np.ndarray:
         raise NotImplementedError
 
     def run(self, args: np.ndarray) -> np.ndarray:
-        self.cache = np.concatenate([args, self.cache])
+        self.calls = np.concatenate([args, self.calls])
         return self._run(args)
 
 def simulate_neutron_diffusion(program, args):
     """Simulate the call with the given arguments"""
     arg_strs = [str(a) for a in args]
     cmd = f"./scripts/neutron_diffusion/{program} {' '.join(arg_strs)}"
-    print("running", cmd)
+    # print("running", cmd)
     result = subprocess.run(cmd, capture_output=True, shell=True, check=True)
     return float(result.stdout)
 
@@ -120,7 +121,7 @@ class FuncNeutron(CountableFunc):
             results[i] = self.cache[key]
 
         # print(results)
-        print("cache size", len(self.cache))
+        # print("cache size", len(self.cache))
         return results
 
 class FuncData(CountableFunc):

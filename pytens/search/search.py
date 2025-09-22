@@ -140,13 +140,14 @@ class SearchEngine:
                 [free_indices.index(ind) for ind in reordered_indices]
             )
         elif isinstance(data_tensor, TensorFunc):
+            sample_size = 10000
             free_indices = data_tensor.indices
             unopt_size = float(np.prod([i.size for i in free_indices]))
             init_size = unopt_size
 
             valid = []
             for ind in best_network.free_indices():
-                valid.append(np.random.randint(0, ind.size, size=50000))
+                valid.append(np.random.randint(0, ind.size, size=sample_size))
             # valid = np.stack(np.unravel_index(np.arange(unopt_size).astype(int), [int(i.size) for i in best_network.free_indices()]), axis=-1)
             valid = np.stack(valid, axis=-1)
             # indices, new_valid = unravel_indices(best_st.reshape_history, free_indices, valid)
