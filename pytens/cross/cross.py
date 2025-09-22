@@ -220,8 +220,8 @@ def cross(
         estimate = net.evaluate(net.free_indices(), validation).reshape(-1)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        print("Error:", err, eps)
-        print(net)
+        # print("Error:", err, eps)
+        # print(net)
         if err <= eps or (max_size is not None and len(up_vals) >= max_size):
             break
 
