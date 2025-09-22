@@ -78,36 +78,14 @@ class IndexSplit(pydantic.BaseModel):
         return hash((type(self),) + tuple(self.__dict__.values()))
 
 
-@dataclass
-class NodeInfo:
-    """Node name and the corresponding indices"""
+class IndexPermute(pydantic.BaseModel):
+    """Permute all indices in a function"""
 
-    node: NodeName
-    level: int
-    indices: List[Index]
-    free_indices: List[Index]
-    up_indices: List[Index]
-    down_indices: List[Index]
+    perm: Sequence[int]
+    unperm: Sequence[int]
 
-
-class Connection:
-    """Node connections including children and parent"""
-
-    def __init__(
-        self,
-        children: List["DimTreeNode"],
-        parent: Optional["DimTreeNode"] = None,
-    ):
-        self.children = children
-        self.parent = parent
-
-
-class CrossVals:
-    """Values for cross approximation"""
-
-    def __init__(self, up_vals: np.ndarray, down_vals: np.ndarray):
-        self.up_vals = up_vals
-        self.down_vals = down_vals
+    def __hash__(self) -> int:
+        return hash((type(self),) + tuple(self.__dict__.values()))
 
 
 def split_index(
@@ -130,6 +108,14 @@ def split_index(
     indices.extend(split_op.result)
     return indices, new_vals
 
+class NodeInfo:
+    """Information at each dim tree node."""
+
+    def __init__(self, nodes: List["DimTreeNode"], indices: List[Index], vals: np.ndarray):
+        self.nodes = nodes
+        self.indices = indices
+        self.vals = vals
+        self.rank = 0
 
 class DimTreeNode:
     """Class for a dimension tree node"""
@@ -137,39 +123,79 @@ class DimTreeNode:
     def __init__(
         self,
         node: NodeName,
-        level: int,
         indices: List[Index],
         free_indices: List[Index],
-        up_indices: List[Index],
-        down_indices: List[Index],
-        children: List["DimTreeNode"],
-        down_vals: np.ndarray,
-        up_vals: np.ndarray,
-        parent: Optional["DimTreeNode"] = None,
+        up_info: NodeInfo,
+        down_info: NodeInfo,
     ):
-        self.info = NodeInfo(
-            node, level, indices, free_indices, up_indices, down_indices
-        )
-        self.conn = Connection(children, parent)
-        self.values = CrossVals(up_vals, down_vals)
+        self.node = node
+        self.indices = indices
+        self.free_indices = free_indices
+        self.up_info = up_info
+        self.down_info = down_info
 
     def __lt__(self, other: Self) -> bool:
-        return sorted(self.info.indices) < sorted(other.info.indices)
+        return sorted(self.indices) < sorted(other.indices)
 
     def preorder(self) -> Sequence["DimTreeNode"]:
         """Get the list of tree nodes in the pre-order traversal."""
         results = [self]
-        for c in self.conn.children:
+        for c in self.down_info.nodes:
             results = itertools.chain(results, c.preorder())
 
         return list(results)
 
+    def increment_ranks(self, kickrank: int = 1) -> None:
+        """Increment the ranks without value modification"""
+        self.up_info.rank += kickrank
+        for c in self.down_info.nodes:
+            c.increment_ranks(kickrank)
+
+    def bound_ranks(self) -> None:
+        """Adjust the ranks according to the ranks of neighbor edges"""
+        # if we move leaves to root
+        rank_up = 1
+        for c in self.down_info.nodes:
+            rank_up *= c.up_info.rank
+
+        for ind in self.free_indices:
+            rank_up *= ind.size
+
+        # if we move root to leaves
+        rank_down = 1
+        for p in self.up_info.nodes:
+            rank_down *= p.down_info.rank
+
+            for s in p.down_info.nodes:
+                if s.node != self.node:
+                    rank_down *= s.up_info.rank
+
+            for ind in p.free_indices:
+                rank_down *= ind.size
+
+        self.up_info.rank = min([rank_up, rank_down, self.up_info.rank])
+
+        for c in self.down_info.nodes:
+            c.bound_ranks()
+
+    def add_values(self, up_vals: np.ndarray) -> None:
+        """Initialize the up and down values for the given dimension tree."""
+        if len(self.up_info.nodes) == 0:
+            self.up_info.rank = 1
+        else:
+            self.up_info.rank += len(up_vals)
+
+        for c in self.down_info.nodes:
+            cvals = up_vals[:, [self.indices.index(ind) for ind in c.indices]]
+            c.up_info.vals = np.append(c.up_info.vals, cvals, axis=0)
+            c.add_values(cvals)
+
     def locate(self, node: NodeName) -> Optional["DimTreeNode"]:
         """Locate a node by its name."""
-        if node == self.info.node:
+        if node == self.node:
             return self
 
-        for c in self.conn.children:
+        for c in self.up_info.nodes:
             res = c.locate(node)
             if res is not None:
                 return res
@@ -179,11 +205,11 @@ class DimTreeNode:
     def leaves(self) -> Sequence["DimTreeNode"]:
         """Get the leaf nodes in the current tree."""
         results = []
-        if len(self.conn.children) == 0:
+        if len(self.up_info.nodes) == 0:
             results.append(self)
             return results
 
-        for c in self.conn.children:
+        for c in self.up_info.nodes:
             results.extend(c.leaves())
 
         return results
@@ -191,7 +217,7 @@ class DimTreeNode:
     def height(self) -> int:
         """Get the height of the tree."""
         max_c = 0
-        for c in self.conn.children:
+        for c in self.up_info.nodes:
             max_c = max(max_c, c.height())
 
         return max_c + 1
@@ -206,10 +232,10 @@ class DimTreeNode:
         p = n1
         dist1 = 0
         while p is not None:
-            if all(ind in p.info.indices for ind in n1.info.indices + n2.info.indices):
+            if all(ind in p.indices for ind in n1.indices + n2.indices):
                 break
 
-            p = p.conn.parent
+            p = p.down_info.nodes[0]
             dist1 += 1
 
         if p is None:
@@ -218,7 +244,7 @@ class DimTreeNode:
         p2 = n2
         dist2 = 0
         while p2 is not None and p2 != p:
-            p2 = p2.conn.parent
+            p2 = p2.down_info.nodes[0]
             dist2 += 1
 
         if p2 is None:

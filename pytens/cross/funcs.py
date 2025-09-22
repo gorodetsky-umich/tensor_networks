@@ -16,7 +16,6 @@ class TensorFunc:
     def __init__(self, indices: List[Index]):
         self.d = len(indices)
         self.indices = indices
-        self.calls = np.empty((0, self.d))
 
     def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized indices to function arguments"""
@@ -51,10 +50,25 @@ class TensorFunc:
         raise NotImplementedError
 
     def __call__(self, indices: np.ndarray):
-        self.calls = np.concatenate([indices, self.calls])
         # print("recording", indices.shape[0])
         args = self.index_to_args(indices)
         return self.run(args)
+
+class CountableFunc(TensorFunc):
+    """A tensor function with cache"""
+    def __init__(self, indices: List[Index]):
+        super().__init__(indices)
+        self.cache = np.empty((0, self.d))
+
+    def num_calls(self) -> int:
+        return len(np.unique(self.cache, axis=0))
+
+    def _run(self, args: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def run(self, args: np.ndarray) -> np.ndarray:
+        self.cache = np.concatenate([args, self.cache])
+        return self._run(args)
 
 def simulate_neutron_diffusion(program, args):
     """Simulate the call with the given arguments"""
@@ -64,7 +78,7 @@ def simulate_neutron_diffusion(program, args):
     result = subprocess.run(cmd, capture_output=True, shell=True, check=True)
     return float(result.stdout)
 
-class FuncNeutron(TensorFunc):
+class FuncNeutron(CountableFunc):
     """Class for neutron transport function as cross approximation source."""
     def __init__(self, indices: List[Index]):
         super().__init__(indices)
@@ -89,7 +103,7 @@ class FuncNeutron(TensorFunc):
         # compile_cmd = "cd scripts/neutron_diffusion; g++ -o a.out -std=c++17 -O3 main.cpp"
         # subprocess.run(compile_cmd, shell=True, check=True)
 
-    def run(self, args: np.ndarray) -> np.ndarray:
+    def _run(self, args: np.ndarray) -> np.ndarray:
         jobs = {}
         for i in range(args.shape[0]):
             key = tuple(args[i].tolist())
@@ -109,25 +123,25 @@ class FuncNeutron(TensorFunc):
         print("cache size", len(self.cache))
         return results
 
-class FuncData(TensorFunc):
+class FuncData(CountableFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], data: np.ndarray):
         super().__init__(indices)
         self.data = data
 
-    def run(self, args: np.ndarray) -> np.ndarray:
+    def _run(self, args: np.ndarray) -> np.ndarray:
         return self.data[*args.astype(int).T]
 
 
-class FuncTensorNetwork(TensorFunc):
+class FuncTensorNetwork(CountableFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
         super().__init__(indices)
         self.net = net
 
-    def run(self, args: np.ndarray) -> np.ndarray:
+    def _run(self, args: np.ndarray) -> np.ndarray:
         return self.net.evaluate(self.indices, args.astype(int))
 
 
@@ -235,8 +249,21 @@ class MergeFunc(TensorFunc):
     def run(self, args: np.ndarray):
         return self.old_func.run(args)
 
+class PermuteFunc(TensorFunc):
+    """Tensor functions for index permutation."""
+    def __init__(self, indices, old_func, ind_unperm):
+        super().__init__(indices)
+        self.old_func = old_func
+        self.ind_unperm = ind_unperm
 
-class FuncAckley(TensorFunc):
+    def index_to_args(self, indices: np.ndarray):
+        # permute the indices back into the order before the permutation
+        return self.old_func.index_to_args(indices[:, self.ind_unperm])
+
+    def run(self, args: np.ndarray):
+        return self.old_func.run(args)
+
+class FuncAckley(CountableFunc):
     """Source: https://www.sfu.ca/~ssurjano/ackley.html"""
 
     def __init__(self, indices: List[Index]):
@@ -247,7 +274,7 @@ class FuncAckley(TensorFunc):
         super().__init__(inds)
         self.name = "Ackley"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         y1 = np.sqrt(np.sum(args**2, axis=1) / args.shape[1])
         y1 = -20 * np.exp(-0.2 * y1)
 
@@ -259,7 +286,7 @@ class FuncAckley(TensorFunc):
         return y1 + y2 + y3
 
 
-class FuncAlpine(TensorFunc):
+class FuncAlpine(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -277,11 +304,11 @@ class FuncAlpine(TensorFunc):
         super().__init__(inds)
         self.name = "Alpine"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return np.sum(np.abs(args * np.sin(args) + 0.1 * args), axis=1)
 
 
-class FuncChung(TensorFunc):
+class FuncChung(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -301,11 +328,11 @@ class FuncChung(TensorFunc):
         super().__init__(inds)
         self.name = "Chung"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return np.sum(args**2, axis=1) ** 2
 
 
-class FuncDixon(TensorFunc):
+class FuncDixon(CountableFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/dixonpr.html
     """
@@ -321,7 +348,7 @@ class FuncDixon(TensorFunc):
         # self.range = 10 * 2
         self.name = "Dixon"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         y1 = (args[:, 0] - 1) ** 2
         i = np.arange(2, self.d + 1)
         y2 = i * (2.0 * args[:, 1:] ** 2 - args[:, :-1]) ** 2
@@ -330,7 +357,7 @@ class FuncDixon(TensorFunc):
         return y1 + y2
 
 
-class FuncGriewank(TensorFunc):
+class FuncGriewank(CountableFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/griewank.html
     """
@@ -346,7 +373,7 @@ class FuncGriewank(TensorFunc):
         # self.range = 100 * 2
         self.name = "Griewank"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         y1 = np.sum(args**2, axis=1) / 4000
 
         i = np.arange(1, self.d + 1)
@@ -358,7 +385,7 @@ class FuncGriewank(TensorFunc):
         return y1 + y2 + y3
 
 
-class FuncPathological(TensorFunc):
+class FuncPathological(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -378,7 +405,7 @@ class FuncPathological(TensorFunc):
         # self.range = 100 * 2
         self.name = "Pathological"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         x1 = args[:, :-1]
         x2 = args[:, 1:]
 
@@ -388,7 +415,7 @@ class FuncPathological(TensorFunc):
         return np.sum(0.5 + y1 / y2, axis=1)
 
 
-class FuncPinter(TensorFunc):
+class FuncPinter(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -408,7 +435,7 @@ class FuncPinter(TensorFunc):
         # self.range = 10 * 2
         self.name = "Pinter"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         xm1 = np.hstack([args[:, -1].reshape(-1, 1), args[:, :-1]])
         xp1 = np.hstack([args[:, +1:], args[:, +0].reshape(-1, 1)])
 
@@ -424,7 +451,7 @@ class FuncPinter(TensorFunc):
         return y1 + y2 + y3
 
 
-class FuncQing(TensorFunc):
+class FuncQing(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -444,12 +471,12 @@ class FuncQing(TensorFunc):
         # self.range = 500
         self.name = "Qing"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         i = np.arange(1, args.shape[1] + 1)
         return np.sum((args**2 - i) ** 2, axis=1)
 
 
-class FuncRastrigin(TensorFunc):
+class FuncRastrigin(CountableFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/rastr.html
     """
@@ -465,13 +492,13 @@ class FuncRastrigin(TensorFunc):
         # self.range = 5.12 * 2
         self.name = "Rastrigin"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         y1 = 10.0 * self.d
         y2 = np.sum(args**2 - 10.0 * np.cos(2.0 * np.pi * args), axis=1)
         return y1 + y2
 
 
-class FuncSchaffer(TensorFunc):
+class FuncSchaffer(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -491,13 +518,13 @@ class FuncSchaffer(TensorFunc):
         # self.range = 100 * 2
         self.name = "Schaffer"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         z = args[:, :-1] ** 2 + args[:, 1:] ** 2
         y = 0.5 + (np.sin(np.sqrt(z)) ** 2 - 0.5) / (1.0 + 0.001 * z) ** 2
         return np.sum(y, axis=1)
 
 
-class FuncSchwefel(TensorFunc):
+class FuncSchwefel(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -517,11 +544,11 @@ class FuncSchwefel(TensorFunc):
         # self.range = 500
         self.name = "Schwefel"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return -np.sum(args * np.sin(np.sqrt(np.abs(args))), axis=1) / self.d
 
 
-class FuncSphere(TensorFunc):
+class FuncSphere(CountableFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/spheref.html
     """
@@ -537,11 +564,11 @@ class FuncSphere(TensorFunc):
         # self.range = 5.12 * 2
         self.name = "Sphere"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return np.sum(args**2, axis=1)
 
 
-class FuncSquares(TensorFunc):
+class FuncSquares(CountableFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/sumsqu.html
     """
@@ -557,12 +584,12 @@ class FuncSquares(TensorFunc):
         # self.range = 10 * 2
         self.name = "Squares"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         i = np.arange(1, self.d + 1)
         return np.sum(i * args**2, axis=1)
 
 
-class FuncTrigonometric(TensorFunc):
+class FuncTrigonometric(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -582,7 +609,7 @@ class FuncTrigonometric(TensorFunc):
         # self.range = np.pi
         self.name = "Trigonometric"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         i = np.arange(1, self.d + 1)
 
         y1 = self.d
@@ -593,7 +620,7 @@ class FuncTrigonometric(TensorFunc):
         return np.sum((y1 + y2 + y3) ** 2, axis=1)
 
 
-class FuncWavy(TensorFunc):
+class FuncWavy(CountableFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -613,12 +640,12 @@ class FuncWavy(TensorFunc):
         # self.range = np.pi * 2
         self.name = "Wavy"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         y = np.cos(10.0 * args) * np.exp(-(args**2) / 2)
         return 1.0 - np.sum(y, axis=1) / self.d
 
 
-class FuncHilbert(TensorFunc):
+class FuncHilbert(CountableFunc):
     """
     Source:
     """
@@ -632,11 +659,11 @@ class FuncHilbert(TensorFunc):
         super().__init__(inds)
         self.name = "Hilbert"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return 1.0 / np.sum(args + 1, axis=1)
 
 
-class FuncSqSum(TensorFunc):
+class FuncSqSum(CountableFunc):
     """
     Source:
     """
@@ -650,11 +677,11 @@ class FuncSqSum(TensorFunc):
         super().__init__(inds)
         self.name = "SqSum"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return 1.0 / np.sqrt(np.sum(args**2, axis=1))
 
 
-class FuncExpSum(TensorFunc):
+class FuncExpSum(CountableFunc):
     """
     Source:
     """
@@ -668,11 +695,11 @@ class FuncExpSum(TensorFunc):
         super().__init__(inds)
         self.name = "ExpSum"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return np.exp(-np.sqrt(np.sum(args**2, axis=1)))
 
 
-class FuncToy1(TensorFunc):
+class FuncToy1(CountableFunc):
     """The toy example 1 from the paper
     TODO: add paper info
     """
@@ -681,11 +708,11 @@ class FuncToy1(TensorFunc):
         super().__init__(indices)
         self.name = "Toy1"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return np.exp(-4 * np.prod(args, axis=1) ** 2)
 
 
-class FuncToy2(TensorFunc):
+class FuncToy2(CountableFunc):
     """The toy example 2 from the paper
     TODO: add paper info
     """
@@ -695,11 +722,11 @@ class FuncToy2(TensorFunc):
         self.name = f"Toy2 (b={b})"
         self.b = b
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return np.power(np.sum(np.power(args, self.b), axis=1), -1.0 / self.b)
 
 
-class FuncTDE(TensorFunc):
+class FuncTDE(CountableFunc):
     """The toy example 2 from the paper
     TODO: add paper info
     """
@@ -711,14 +738,14 @@ class FuncTDE(TensorFunc):
         self.b = b
         self.lam = lam
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return np.power(
             np.sum(np.power(args, self.b), axis=1) + np.exp(self.t * self.lam),
             -1.0 / self.b,
         )
 
 
-class FuncAdvReact(TensorFunc):
+class FuncAdvReact(CountableFunc):
     """The toy example 2 from the paper
     TODO: add paper info
     """
@@ -727,7 +754,7 @@ class FuncAdvReact(TensorFunc):
         super().__init__(indices)
         self.name = "4D-AR"
 
-    def run(self, args: np.ndarray):
+    def _run(self, args: np.ndarray):
         return np.exp(-np.sum((2 * args - 0.5) ** 2, axis=1))
 
 
@@ -758,6 +785,8 @@ HARD_FUNCS = [
     FuncQing,
     FuncSchaffer,
     FuncTrigonometric,
+    FuncHilbert,
+    FuncSqSum,
 ]
 
 if __name__ == "__main__":

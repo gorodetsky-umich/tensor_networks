@@ -1,6 +1,7 @@
 """Cross Approximation."""
 
 import random
+import copy
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
@@ -88,26 +89,27 @@ def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
     # the indices in the DimTreeNode are up indices
     # when traversing from root to leaves, we need to consider
     # the down indices of the root and the up indices of the siblings
-    if node.conn.parent is not None:
-        for ind in node.info.down_indices:
-            if ind in node.conn.parent.info.free_indices:
+    if len(node.up_info.nodes) > 0:
+        p = node.up_info.nodes[0]
+        for ind in node.down_info.indices:
+            if ind in p.free_indices:
                 down_ranges.append(np.arange(ind.size)[:, None])
 
-        if node.conn.parent.conn.parent is not None:
-            down_ranges.append(node.conn.parent.values.down_vals)
+        if len(p.up_info.nodes) > 0:
+            down_ranges.append(p.down_info.vals)
 
-        for c in node.conn.parent.conn.children:
-            if c.info.node != node.info.node:
-                down_ranges.append(c.values.up_vals)
+        for c in p.down_info.nodes:
+            if c.node != node.node:
+                down_ranges.append(c.up_info.vals)
 
         down_vals = cartesian_product_arrays(*down_ranges)
         v = construct_matrix(
             tensor_func,
-            (node.info.up_indices, node.values.up_vals),
-            (node.info.down_indices, down_vals),
+            (node.up_info.indices, node.up_info.vals),
+            (node.down_info.indices, down_vals),
         )
         ind, _ = select_indices(v)
-        node.values.down_vals = down_vals[ind, :]
+        node.down_info.vals = down_vals[ind, :]
 
 
 @profile
@@ -117,69 +119,35 @@ def leaves_to_root(
     """Update the down index values by sweeping from leaves to the root."""
     up_ranges, up_sizes = [], []
 
-    for ind in node.info.up_indices:
-        if ind in node.info.free_indices:
+    for ind in node.up_info.indices:
+        if ind in node.free_indices:
             up_sizes.append(ind.size)
             up_ranges.append(np.arange(ind.size)[:, None])
 
-    for c in node.conn.children:
-        up_sizes.append(len(c.values.up_vals))
-        up_ranges.append(c.values.up_vals)
+    for c in node.down_info.nodes:
+        up_sizes.append(len(c.up_info.vals))
+        up_ranges.append(c.up_info.vals)
 
     up_vals = cartesian_product_arrays(*up_ranges)
     v = construct_matrix(
         tensor_func,
-        (node.info.down_indices, node.values.down_vals),
-        (node.info.up_indices, up_vals),
+        (node.down_info.indices, node.down_info.vals),
+        (node.up_info.indices, up_vals),
     )
     ind, b = select_indices(v)
-    node.values.up_vals = up_vals[ind, :]
+    node.up_info.vals = up_vals[ind, :]
     # print("====>", node.values.up_vals)
-    net.node_tensor(node.info.node).update_val_size(b.reshape(*up_sizes, -1))
+    net.node_tensor(node.node).update_val_size(b.reshape(*up_sizes, -1))
 
-
-def incr_ranks(tree: DimTreeNode, net):
+def incr_ranks(tree: DimTreeNode, kickrank: int = 2) -> None:
     """Increment the ranks for all edges"""
-    if tree.conn.parent is not None:
-        new_up = [
-            np.random.randint(0, ind.size) for ind in tree.info.up_indices
-        ]
-        new_up = np.asarray(new_up)[None, :]
-        tree.values.up_vals = np.append(tree.values.up_vals, new_up, axis=0)
+    # compute the target size of ranks
+    tree.increment_ranks(kickrank)
+    tree.bound_ranks()
+    tree.bound_ranks()
 
-        new_down = [
-            np.random.randint(0, ind.size) for ind in tree.info.down_indices
-        ]
-        new_down = np.asarray(new_down)[None, :]
-        tree.values.down_vals = np.append(
-            tree.values.down_vals, new_down, axis=0
-        )
-
-    for c in tree.conn.children:
-        incr_ranks(c, net)
-
-
-def init_values(net: "pt.TreeNetwork", tree: DimTreeNode) -> None:
-    """Initialize the up and down values for the given dimension tree."""
-    for c in tree.conn.children:
-        rank = net.get_contraction_index(tree.info.node, c.info.node)[0].size
-
-        up_vals = []
-        for ind in c.info.up_indices:
-            up_vals.append(np.random.randint(0, ind.size, rank))
-        c.values.up_vals = np.stack(up_vals, axis=-1)
-        if len(c.values.up_vals.shape) == 1:
-            c.values.up_vals = c.values.up_vals[:, None]
-
-        down_vals = []
-        for ind in c.info.down_indices:
-            down_vals.append(np.random.randint(0, ind.size, rank))
-        c.values.down_vals = np.stack(down_vals, axis=-1)
-        if len(c.values.down_vals.shape) == 1:
-            c.values.down_vals = c.values.down_vals[:, None]
-
-        init_values(net, c)
-
+    up_vals = [np.random.randint(0, ind.size, [kickrank, 1]) for ind in tree.indices]
+    tree.add_values(np.concatenate(up_vals, axis=-1))
 
 class CrossResult:
     """Class to record cross approximation results."""
@@ -199,14 +167,16 @@ def cross(
     net: "pt.TreeNetwork",
     root: "pt.NodeName",
     eps: float = 0.1,
-    val_size: int = 10000,
+    val_size: int = 1000,
     max_size: Optional[int] = None,
 ) -> CrossResult:
     """Cross approximation for the given network structure."""
     # print("root is", root)
     # print(net)
     tree = net.dimension_tree(root)
-    init_values(net, tree)
+    tree.increment_ranks(1)
+    up_vals = [np.random.randint(0, ind.size) for ind in tree.indices]
+    tree.add_values(np.asarray([up_vals]))
     converged = False
 
     validation = []
@@ -214,7 +184,7 @@ def cross(
         validation.append(np.random.randint(0, ind.size, size=val_size))
     validation = np.stack(validation, axis=-1)
     real = f(validation)
-    f_sizes = [ind.size for ind in tree.info.free_indices]
+    f_sizes = [ind.size for ind in tree.free_indices]
     f_vals = cartesian_product_arrays(
         *[np.arange(sz)[:, None] for sz in f_sizes]
     )
@@ -223,7 +193,7 @@ def cross(
     ranks_and_errs = {}
     while not converged:
         for n in tree_nodes:
-            if n.conn.parent is None:
+            if len(n.up_info.nodes) == 0:
                 continue
 
             root_to_leaves(f, n)
@@ -233,28 +203,29 @@ def cross(
 
         # get the value for the root node
         c_indices = [
-            ind for c in tree.conn.children for ind in c.info.up_indices
+            ind for c in tree.down_info.nodes for ind in c.up_info.indices
         ]
-        c_vals = [c.values.up_vals for c in tree.conn.children]
+        c_vals = [c.up_info.vals for c in tree.down_info.nodes]
         up_vals = cartesian_product_arrays(*c_vals)
         c_sizes = [len(v) for v in c_vals]
         root_matrix = construct_matrix(
             f,
-            (tree.info.free_indices, f_vals),
+            (tree.free_indices, f_vals),
             (c_indices, up_vals),
         )
         # print(c_indices, up_vals)
         root_val = root_matrix.T.reshape(*f_sizes, *c_sizes)
-        net.node_tensor(tree.info.node).update_val_size(root_val)
+        net.node_tensor(tree.node).update_val_size(root_val)
 
         estimate = net.evaluate(net.free_indices(), validation).reshape(-1)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        # print("Error:", err, eps)
+        print("Error:", err, eps)
+        print(net)
         if err <= eps or (max_size is not None and len(up_vals) >= max_size):
             break
 
-        incr_ranks(tree, net)
+        incr_ranks(tree)
 
     # print(net)
     ranks_and_errs = sorted(list(ranks_and_errs.items()))

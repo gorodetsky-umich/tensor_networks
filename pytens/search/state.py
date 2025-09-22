@@ -214,14 +214,14 @@ class OSplit(Action):
             net, svd, compute_data=compute_data, compute_uv=compute_uv
         )
     
-    def svals(self, net: TreeNetwork, svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None, small = False, max_rank=100, orthonormal = None) -> np.ndarray:
+    def svals(self, net: TreeNetwork, svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None, small = False, max_rank=100, orthonormal = None, delta = 0) -> np.ndarray:
         """Compute the singular values of the split action."""
         if isinstance(net, TensorTrain):
-            # if small:
-            #     return net.svals_small(self.indices, max_rank=max_rank)
-            # else:
-            #     return net.svals(self.indices, max_rank=max_rank)
-            return net.svals(self.indices, max_rank=max_rank, orthonormal=orthonormal)
+            if small:
+                return net.svals_small(self.indices, max_rank=max_rank)
+            else:
+                return net.svals(self.indices, max_rank=max_rank, delta=delta)
+            # return net.svals(self.indices, max_rank=max_rank, orthonormal=orthonormal)
         else:
             ac = self.to_isplit(net)
             return ac.svals(net, svd)
@@ -367,25 +367,16 @@ class ISplit(Action):
         all_free_indices = st.network.free_indices()
         tmp_net = copy.deepcopy(st.network.network)
         tmp_net.remove_edge(connect_nodes[0], connect_nodes[1])
-        curr_indices = None
+        actions = []
         for subgraph in nx.connected_components(tmp_net):
             tn = TreeNetwork()
             tn.network = st.network.network.subgraph(subgraph)
             indices = [
                 ind for ind in tn.free_indices() if ind in all_free_indices
             ]
-            if (
-                curr_indices is None
-                or len(indices) < len(curr_indices)
-                or (
-                    len(indices) == len(curr_indices)
-                    and indices < curr_indices
-                )
-            ):
-                curr_indices = indices
+            actions.append(OSplit(indices))
 
-        assert curr_indices is not None
-        return OSplit(curr_indices)
+        return min(actions)
 
 
 class Merge(Action):
@@ -457,6 +448,7 @@ class SearchState:
         free_indices: Sequence[Index], k: Optional[int] = None
     ) -> Generator[Sequence[Index], None, None]:
         """Compute all index partitions for the given index set."""
+        free_indices = sorted(free_indices)
         half_size = len(free_indices) // 2
         if k is not None:
             upper = min(k, half_size + 1)

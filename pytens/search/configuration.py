@@ -156,6 +156,12 @@ class TopDownConfig(pydantic.BaseModel):
             description="Configure whether to use random algorithms",
         )
     )
+    merge_algo: Literal["rand", "corr", "svd", "nbr", "rand_nbr"] = (
+        pydantic.Field(
+            default="svd",
+            description="Configure what heuristic to use during index merge",
+        )
+    )
     aggregation: Literal["mean", "det", "norm", "sval"] = pydantic.Field(
         default="mean",
         description="Configure the aggregation method for correlations",

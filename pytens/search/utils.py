@@ -9,11 +9,24 @@ import pydantic
 import torch
 
 from pytens.algs import Tensor, TreeNetwork
-from pytens.cross.funcs import TensorFunc, SplitFunc, MergeFunc
+from pytens.cross.funcs import (
+    TensorFunc,
+    SplitFunc,
+    MergeFunc,
+    CountableFunc,
+    PermuteFunc,
+)
 from pytens.search.state import SearchState, OSplit
-from pytens.types import DimTreeNode, IndexMerge, IndexSplit, Index, NodeName
+from pytens.types import (
+    DimTreeNode,
+    IndexMerge,
+    IndexSplit,
+    Index,
+    NodeName,
+    IndexPermute,
+)
 
-DataTensor = Union[TreeNetwork, TensorFunc]
+DataTensor = Union[TreeNetwork, CountableFunc]
 
 
 class SearchStats(pydantic.BaseModel):
@@ -28,7 +41,7 @@ class SearchStats(pydantic.BaseModel):
     # results
     count: int = 0
     preprocess_time: float = 0.0
-    merge_corr_time: float = 0.0
+    merge_time: float = 0.0
     cross_time: float = 0.0
     search_start: float = 0.0
     search_end: float = 0.0
@@ -222,6 +235,7 @@ def remove_temp_dir(temp_dir, temp_files):
 
 #     return indices, data
 
+
 def reshape_indices(reshape_ops, indices, data):
     """Reshape the data tensor according to the operations."""
     for reshape_op in reshape_ops:
@@ -252,7 +266,7 @@ def reshape_indices(reshape_ops, indices, data):
 
         else:
             raise TypeError("unknown reshape operation")
-        
+
         data = data.reshape([ind.size for ind in new_indices])
         indices = new_indices
 
@@ -282,7 +296,7 @@ def reshape_func(reshape_ops, indices, func):
 
             old_func = SplitFunc(split_indices, old_func, ind_mapping)
             indices = split_indices
-        
+
         elif isinstance(reshape_op, IndexMerge):
             assert reshape_op.result is not None
             merge_indices = [reshape_op.result]
@@ -297,10 +311,15 @@ def reshape_func(reshape_ops, indices, func):
             old_func = MergeFunc(merge_indices, old_func, ind_mapping)
             indices = merge_indices
 
+        elif isinstance(reshape_op, IndexPermute):
+            indices = [indices[i] for i in reshape_op.perm]
+            old_func = PermuteFunc(indices, old_func, reshape_op.unperm)
+
         else:
             raise TypeError("Unknown operation type")
-        
+
     return old_func
+
 
 def unravel_indices(reshape_ops, indices, data):
     """Get corresponding indices after splitting"""
@@ -313,7 +332,9 @@ def unravel_indices(reshape_ops, indices, data):
                     assert reshape_op.result is not None
                     new_indices.extend(reshape_op.result)
                     new_sizes = [i.size for i in reshape_op.result]
-                    new_data.extend(np.unravel_index(data[:, ind_idx], new_sizes))
+                    new_data.extend(
+                        np.unravel_index(data[:, ind_idx], new_sizes)
+                    )
                 else:
                     new_indices.append(ind)
                     new_data.append(data[:, ind_idx])
@@ -344,6 +365,7 @@ def unravel_indices(reshape_ops, indices, data):
     # data = np.hstack([np.stack(g, axis=-1) for g in data])
     # return data[:, np.argsort([i for inds in indices for i in inds])]
     return indices, data
+
 
 def ravel_indices(reshape_ops, indices, data):
     """Get corresponding indices before splitting"""
@@ -432,8 +454,12 @@ def init_state(data_tensor: DataTensor, delta) -> SearchState:
         f"but get {type(data_tensor)}"
     )
 
-def index_partition(net: TreeNetwork, node1: NodeName, node2: NodeName) -> Tuple[List[Index], List[Index]]:
+
+def index_partition(
+    net: TreeNetwork, node1: NodeName, node2: NodeName
+) -> Tuple[List[Index], List[Index]]:
     """Compute the partition of the index by the given edge."""
+
     def indices_of(start: NodeName, exclude: NodeName):
         visited = set()
         queue = [start]
@@ -456,29 +482,85 @@ def index_partition(net: TreeNetwork, node1: NodeName, node2: NodeName) -> Tuple
 
     return indices_of(node1, node2), indices_of(node2, node1)
 
+
 def to_splits(net: TreeNetwork) -> List[OSplit]:
     """Convert a tree network into a list of OSplits."""
+    free_indices = net.free_indices()
+    tree = net.network
+    nodelist = list(tree.nodes)
+
+    # Step 1: Prepare data structures
+    subtree_indices = {}
+    parent = {}
+    visited = set()
+
+    # Step 2: Post-order DFS to compute subtree indices
+    def dfs(node, p):
+        indices = []
+        visited.add(node)
+        parent[node] = p
+        # Add this node's indices
+        for ind in net.node_tensor(node).indices:
+            if ind in free_indices:
+                indices.append(ind)
+        # Visit children
+        for nbr in tree.neighbors(node):
+            if nbr == p:
+                continue
+            indices.extend(dfs(nbr, node))
+        subtree_indices[node] = indices
+        return indices
+
+    root = nodelist[0]
+    dfs(root, None)
+
+    # All free indices are now the indices of the whole tree
+    all_indices = subtree_indices[root]
+
     actions = []
-    for n1, n2 in net.network.edges:
-        inds1, inds2 = index_partition(net, n1, n2)
+    # Step 3: For each edge, produce splits
+    for n1, n2 in tree.edges:
+        # Ensure n1 is the parent and n2 is the child in rooted tree
+        if parent[n2] == n1:
+            child = n2
+        elif parent[n1] == n2:
+            child = n1
+
+        inds1 = subtree_indices[child]
+        inds2 = [
+            ind for ind in all_indices if ind not in inds1
+        ]  # The complement
+
         ac1 = OSplit(inds1, reversible=True, reverse_edge=(n1, n2))
         ac2 = OSplit(inds2, reversible=True, reverse_edge=(n1, n2))
         actions.append(min(ac1, ac2))
 
     return actions
 
+
 def get_conflicts(ac: OSplit, past_acs: List[OSplit]) -> Optional[OSplit]:
     """Get the list of conflict actions."""
     ac_indices = set(ac.indices)
     for past_ac in past_acs:
         past_indices = set(past_ac.indices)
-        if len(ac_indices.intersection(past_indices)) > 0 and not ac_indices.issubset(past_indices) and not ac_indices.issuperset(past_indices):
+        if (
+            len(ac_indices.intersection(past_indices)) > 0
+            and not ac_indices.issubset(past_indices)
+            and not ac_indices.issuperset(past_indices)
+        ):
             if past_ac.reversible:
                 return past_ac
             else:
-                print("Warning: the action", past_ac, "conflicts with", ac, "but it is not reversible")
+                print(
+                    "Warning: the action",
+                    past_ac,
+                    "conflicts with",
+                    ac,
+                    "but it is not reversible",
+                )
 
     return None
+
 
 def seed_all(seed_value: int) -> None:
     """
@@ -497,10 +579,10 @@ def seed_all(seed_value: int) -> None:
     torch.manual_seed(seed_value)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed_value)
-        torch.cuda.manual_seed_all(seed_value) # For multi-GPU setups
+        torch.cuda.manual_seed_all(seed_value)  # For multi-GPU setups
 
     # Set PYTHONHASHSEED environment variable for hash-based operations
-    os.environ['PYTHONHASHSEED'] = str(seed_value)
+    os.environ["PYTHONHASHSEED"] = str(seed_value)
 
     # Ensure deterministic behavior for cuDNN
     torch.backends.cudnn.deterministic = True
