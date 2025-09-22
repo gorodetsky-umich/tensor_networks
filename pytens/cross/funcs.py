@@ -101,7 +101,6 @@ class TensorFunc:
         raise NotImplementedError
 
     def __call__(self, indices: np.ndarray):
-        self.calls = np.concatenate([indices, self.calls])
         # print("recording", indices.shape[0])
         args = self.index_to_args(indices)
         return self.run(args)
@@ -134,7 +133,7 @@ class CachedFunc(TensorFunc):
         self.calls = np.concatenate([args, self.calls])
         return self._run(args)
 
-class FuncData(TensorFunc):
+class FuncData(CountableFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], data: np.ndarray):
@@ -145,14 +144,14 @@ class FuncData(TensorFunc):
         return self.data[*args.astype(int).T]
 
 
-class FuncTensorNetwork(TensorFunc):
+class FuncTensorNetwork(CountableFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
         super().__init__(indices)
         self.net = net
 
-    def run(self, args: np.ndarray) -> np.ndarray:
+    def _run(self, args: np.ndarray) -> np.ndarray:
         return self.net.evaluate(self.indices, args.astype(int))
 
     def cost(self) -> int:

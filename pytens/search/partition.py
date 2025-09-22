@@ -203,11 +203,15 @@ class PartitionSearch:
             return self._round(st, tensor_func)
 
         ac = actions[0]
-        conflict_acs = get_conflicts(ac, to_splits(st.network))
+        # if isinstance(st.network, TensorTrain):
+        #     st = copy.deepcopy(st)
+        #     st.network, _ = st.network.swap(ac.indices)
+        conflict_ac = get_conflicts(ac, to_splits(st.network))
         st = copy.deepcopy(st)
-        for conflict_ac in conflict_acs:
+        while conflict_ac is not None:
             assert conflict_ac.reverse_edge is not None
             st.network.merge(*conflict_ac.reverse_edge)
+            conflict_ac = get_conflicts(ac, to_splits(st.network))
 
         svd = None
         if first_iter and self.config.rank_search.search_mode == "all":
@@ -352,7 +356,13 @@ class PartitionSearch:
             self.unused_delta = self._delta
             empty_net = TreeNetwork()
             empty_net.add_node("G", Tensor(np.empty(0), data_tensor.free_indices()))
+<<<<<<< HEAD
             sts = self._enumerate(empty_net, exclusions)
+=======
+            sts = self._enumerate(empty_net, merge_ops, exclusions)
+            if isinstance(data_tensor, TensorTrain) and len(merge_ops) > 0:
+                data_tensor = data_tensor.reorder(merge_ops, 1e-5 * self._delta)
+>>>>>>> 2ae77ac (fix a lot of bugs)
             search_res = self._top_k(data_tensor, sts)
 
         result = result.update_best_state(search_res)
