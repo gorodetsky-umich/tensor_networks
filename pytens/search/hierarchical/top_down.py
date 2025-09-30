@@ -153,6 +153,7 @@ class TopDownSearch:
         self.config = config
         self.error_dist = BaseErrorDist()
         self.stats = SearchStats()
+        self.init_splits = 0
 
     @profile
     def search(
@@ -218,8 +219,33 @@ class TopDownSearch:
                 cross_start = time.time()
                 # construct a tensor train with the split indices
                 tt = TensorTrain.rand_tt(f.indices)
-                cross(f, tt, tt.end_nodes()[0], eps=init_eps)
+                cross_res = cross(f, tt, tt.end_nodes()[0], eps=init_eps)
                 best_res = tt
+                print(data_tensor.num_calls())
+
+                # # collect the entries in tt results
+                # entries = cross_res.dim_tree.entries()
+                # known_entries = cross_res.dim_tree.known_entries()
+
+                # orders = list(range(len(split_f.indices)))
+                # for i in range(100):
+                #     perm = np.random.permutation(orders)
+                #     perm_indices = [split_f.indices[i] for i in perm]
+                #     unperm = np.argsort(perm)
+                #     g = PermuteFunc(perm_indices, split_f, unperm)
+                #     gtt = TensorTrain.rand_tt(g.indices)
+                #     cross(g, gtt, gtt.end_nodes()[0], eps=init_eps, initialization=known_entries[:, perm], known=known_entries[:, perm])
+                #     # cross(g, gtt, gtt.end_nodes()[0], eps=init_eps)
+                #     best_res = gtt
+                #     # self.init_splits += 1
+                #     # splits.append(
+                #     #         IndexPermute(
+                #     #             perm=tuple(perm), unperm=tuple(unperm.tolist())
+                #     #         )
+                #     #     )
+                #     print(gtt)
+                #     print(data_tensor.num_calls())
+
                 # domains = [torch.arange(ind.size) for ind in f.indices]
 
                 # res = tntorch.cross(
@@ -227,17 +253,19 @@ class TopDownSearch:
                 #     domains,
                 #     eps=init_eps,
                 #     kickrank=2,
-                #     max_iter=100,
+                #     rmax=200,
                 #     verbose=False,
+                #     max_iter=200,
                 # )
                 # if best_res is None or res.numcoef() > best_res.numcoef():
                 #     best_res = res
 
-                # # print(data_tensor.num_calls())
+                # print(data_tensor.num_calls())
 
 
             assert best_res is not None
             # net = tntorch_to_tt(best_res, perm_indices)
+            # print(best_res)
             net = best_res
             # val = net.contract()
             # net = TreeNetwork()
@@ -255,7 +283,7 @@ class TopDownSearch:
             self.stats.init_cross_size = net.cost()
             # print("initial cost", net.cost())
             delta = net.norm() * self.config.engine.eps
-            init_st = HSearchState(split_indices[:], splits, net, 0)
+            init_st = HSearchState(perm_indices[:], splits, net, 0)
             # self.init_st = init_st
             self.stats.init_cross_evals = data_tensor.num_calls()
 
