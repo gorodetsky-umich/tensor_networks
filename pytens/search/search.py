@@ -152,6 +152,8 @@ class SearchEngine:
             valid = np.stack(valid, axis=-1)
             # indices, new_valid = unravel_indices(best_st.reshape_history, free_indices, valid)
             # approx_val = best_network.evaluate(indices, new_valid)
+            # print(21**3 / best_network.cost())
+            # raise Exception("end")
             approx_val = best_network.evaluate(best_network.free_indices(), valid)
             # print(np.allclose(approx_val, best_network.contract().value.reshape(-1)))
             # print(np.where(approx_val != best_network.contract().value.reshape(-1)))

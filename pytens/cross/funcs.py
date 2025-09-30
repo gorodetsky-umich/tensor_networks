@@ -108,7 +108,10 @@ class FuncNeutron(CountableFunc):
         jobs = {}
         for i in range(args.shape[0]):
             key = tuple(args[i].tolist())
+            # print("looking for", key)
             if key not in self.cache and key not in jobs:
+                print("not found")
+                # print(self.cache.keys())
                 job = self.pool.apply_async(simulate_neutron_diffusion, args=(f"a_{self.d}.out", key))
                 jobs[key] = job
 

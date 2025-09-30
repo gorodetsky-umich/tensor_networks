@@ -63,10 +63,10 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
     This method takes the value matrix as input.
     """
-    # q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
-    # real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-14).sum()
-    q, _ = np.linalg.qr(v)
-    # q = q[:, :real_rank]
+    q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
+    real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-14).sum()
+    # q, _ = np.linalg.qr(v)
+    q = q[:, :real_rank]
     return py_maxvol(q)
 
 
@@ -110,6 +110,7 @@ def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
         )
         ind, _ = select_indices(v)
         node.down_info.vals = down_vals[ind, :]
+        node.down_info.rank = len(ind)
 
 
 @profile
@@ -136,18 +137,24 @@ def leaves_to_root(
     )
     ind, b = select_indices(v)
     node.up_info.vals = up_vals[ind, :]
+    node.up_info.rank = len(ind)
     # print("====>", node.values.up_vals)
     net.node_tensor(node.node).update_val_size(b.reshape(*up_sizes, -1))
 
-def incr_ranks(tree: DimTreeNode, kickrank: int = 2) -> None:
+def incr_ranks(tree: DimTreeNode, kickrank: int = 2, known: Optional[np.ndarray] = None) -> None:
     """Increment the ranks for all edges"""
     # compute the target size of ranks
     tree.increment_ranks(kickrank)
     tree.bound_ranks()
     tree.bound_ranks()
+    print(tree.ranks())
 
-    up_vals = [np.random.randint(0, ind.size, [kickrank, 1]) for ind in tree.indices]
-    tree.add_values(np.concatenate(up_vals, axis=-1))
+    if known is None:
+        up_vals = [np.random.randint(0, ind.size, [kickrank, 1]) for ind in tree.indices]
+        up_vals = np.concatenate(up_vals, axis=-1)
+    else:
+        up_vals = known[np.random.randint(0, len(known), [kickrank,])]
+    tree.add_values(up_vals)
 
 class CrossResult:
     """Class to record cross approximation results."""
@@ -169,14 +176,21 @@ def cross(
     eps: float = 0.1,
     val_size: int = 1000,
     max_size: Optional[int] = None,
+    initialization: Optional[np.ndarray] = None,
+    known: Optional[np.ndarray] = None,
 ) -> CrossResult:
     """Cross approximation for the given network structure."""
     # print("root is", root)
     # print(net)
     tree = net.dimension_tree(root)
-    tree.increment_ranks(1)
-    up_vals = [np.random.randint(0, ind.size) for ind in tree.indices]
-    tree.add_values(np.asarray([up_vals]))
+    if initialization is None:
+        tree.increment_ranks(1)
+        up_vals = [np.random.randint(0, ind.size) for ind in tree.indices]
+        tree.add_values(np.asarray([up_vals]))
+    else:
+        tree.increment_ranks(len(initialization))
+        tree.add_values(initialization)
+
     converged = False
 
     validation = []
@@ -191,6 +205,7 @@ def cross(
 
     tree_nodes = tree.preorder()
     ranks_and_errs = {}
+    trial = 0
     while not converged:
         for n in tree_nodes:
             if len(n.up_info.nodes) == 0:
@@ -220,12 +235,13 @@ def cross(
         estimate = net.evaluate(net.free_indices(), validation).reshape(-1)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        # print("Error:", err, eps)
+        print("rank:", trial, "error:", err)
         # print(net)
         if err <= eps or (max_size is not None and len(up_vals) >= max_size):
             break
 
-        incr_ranks(tree)
+        trial += 1
+        incr_ranks(tree, known=known)
 
     # print(net)
     ranks_and_errs = sorted(list(ranks_and_errs.items()))

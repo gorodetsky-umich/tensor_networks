@@ -151,12 +151,20 @@ class DimTreeNode:
         for c in self.down_info.nodes:
             c.increment_ranks(kickrank)
 
+    def ranks(self) -> List[int]:
+        res = [self.up_info.rank]
+        for c in self.down_info.nodes:
+            res.extend(c.ranks())
+
+        return res
+
     def bound_ranks(self) -> None:
         """Adjust the ranks according to the ranks of neighbor edges"""
         # if we move leaves to root
         rank_up = 1
         for c in self.down_info.nodes:
-            rank_up *= c.up_info.rank
+            if c.up_info.rank != 0:
+                rank_up *= c.up_info.rank
 
         for ind in self.free_indices:
             rank_up *= ind.size
@@ -164,15 +172,18 @@ class DimTreeNode:
         # if we move root to leaves
         rank_down = 1
         for p in self.up_info.nodes:
-            rank_down *= p.down_info.rank
+            if p.down_info.rank != 0:
+                rank_down *= p.down_info.rank
 
             for s in p.down_info.nodes:
-                if s.node != self.node:
+                if s.node != self.node and s.up_info.rank != 0:
                     rank_down *= s.up_info.rank
 
             for ind in p.free_indices:
                 rank_down *= ind.size
 
+        # rank_up = max(1, rank_up)
+        # rank_down = max(1, rank_down)
         self.up_info.rank = min([rank_up, rank_down, self.up_info.rank])
 
         for c in self.down_info.nodes:
@@ -188,6 +199,7 @@ class DimTreeNode:
         for c in self.down_info.nodes:
             cvals = up_vals[:, [self.indices.index(ind) for ind in c.indices]]
             c.up_info.vals = np.append(c.up_info.vals, cvals, axis=0)
+            c.up_info.vals = c.up_info.vals[:c.up_info.rank]
             c.add_values(cvals)
 
     def locate(self, node: NodeName) -> Optional["DimTreeNode"]:
@@ -251,3 +263,37 @@ class DimTreeNode:
             raise RuntimeError("not a valid tree")
         
         return dist1 + dist2
+
+    def entries(self) -> np.ndarray:
+        if len(self.up_info.vals) != 0:
+            vals = self.up_info.vals
+        else:
+            vals = np.empty((0, len(self.up_info.indices)))
+
+        # for c in self.down_info.nodes:
+        #     cvals = c.entries()
+        #     print(c.indices)
+        #     if len(vals) == 0:
+        #         vals = cvals
+        #     else:
+        #         size = min(len(vals), len(cvals))
+        #         vals = np.concat([vals[:size], cvals[:size]], axis=-1)
+
+        return vals
+
+    def known_entries(self) -> np.ndarray:
+        if len(self.up_info.vals) != 0:
+            vals = np.concat([self.down_info.vals, self.up_info.vals], axis=-1)
+        else:
+            vals = np.empty((0, len(self.indices)))
+
+        self_inds = self.down_info.indices + self.up_info.indices
+        for c in self.down_info.nodes:
+            cvals = c.known_entries()
+            # cvals follows the order of c.down_info.indices + c.up_info.indices
+            # reorder the values to match self
+            cindices = c.down_info.indices + c.up_info.indices
+            perm = [self_inds.index(ind) for ind in cindices]
+            vals = np.concat([vals, cvals[:, perm]], axis=0)
+
+        return vals
