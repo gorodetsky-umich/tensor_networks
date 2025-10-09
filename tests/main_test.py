@@ -490,7 +490,9 @@ class TestTree(unittest.TestCase):
         self.x = Index("x", 5)
         self.u = Index("u", 10)
         self.v = Index("v", 20)
-        self.tree = rand_tree([self.x, self.u, self.v], [1, 2, 3, 4, 5])
+        self.tree = TreeNetwork.rand_tree(
+            [self.x, self.u, self.v], [1, 2, 3, 4, 5]
+        )
 
     def test_tree_split(self):
         original = self.tree.contract().value

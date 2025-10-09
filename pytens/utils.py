@@ -2,6 +2,7 @@
 
 from typing import Optional, List
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
@@ -114,3 +115,20 @@ def flatten_lists(xss: List) -> List:
         return result
 
     return xss
+
+def num_ht_ranks(num_inds: int, num_branches: int = 2) -> int:
+    """Number of internals ranks in a binary HT."""
+    if num_inds == 1:
+        return 1
+
+    remaining = num_inds
+    res = num_branches
+    branch_size = num_inds // num_branches
+    for i in range(num_branches):
+        if i != num_branches - 1:
+            res += num_ht_ranks(branch_size, num_branches)
+            remaining -= branch_size
+        else:
+            res += num_ht_ranks(remaining, num_branches)
+        
+    return res 
