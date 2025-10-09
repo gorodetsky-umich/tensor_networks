@@ -41,7 +41,7 @@ from .types import (
     NodeName,
     SVDConfig,
 )
-from .utils import delta_svd
+from .utils import delta_svd, num_ht_ranks
 
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -1494,7 +1494,7 @@ class TreeNetwork(TensorNetwork):
         return [leaves[i] for i in np.argsort(perm)]
 
     def cross(
-        self, tensor_func: TensorFunc, eps: Optional[float] = None
+        self, tensor_func: TensorFunc, eps: Optional[float] = None, kickrank: int = 2
     ) -> CrossResult:
         """Run cross approximation over the current network structure
         until the relative error goes below the prescribed epsilon."""
@@ -1518,7 +1518,7 @@ class TreeNetwork(TensorNetwork):
             if node_free > root_free:
                 root = node
 
-        return cross(tensor_func, self, root, eps)
+        return cross(tensor_func, self, root, eps, kickrank=kickrank)
 
     def node_by_free_index(self, index: IndexName) -> NodeName:
         """Identify the node in the network containing the given free index"""
@@ -1739,6 +1739,127 @@ class TreeNetwork(TensorNetwork):
         # print(node2, self.node_tensor(node2).indices)
         # print(node1, self.node_tensor(node1).indices)
         # print("!" * 20)
+
+    @staticmethod
+    def rand_ht(
+        indices: List[Index], rank: int, child_each_level: int = 2
+    ) -> "TreeNetwork":
+        """Return a random hierarchical tucker."""
+        ht = TreeNetwork()
+
+        def build_child(pid: int, node_id: int, sub_indices: List[Index], rank: int = 1) -> int:
+            # print(node_id, sub_indices)
+            if len(sub_indices) == 1:
+                ind = sub_indices[0]
+                val = np.random.random((rank, ind.size))
+                node = Tensor(val, [Index(f"R_{pid}_{node_id}", rank), ind,])
+                ht.add_node(f"G{node_id}", node)
+                return node_id + 1
+
+            # partition the indices into groups hierarchically, 
+            # the leftovers are always in the last group
+            ind_group_num = child_each_level
+            ind_group_size = len(sub_indices) // ind_group_num
+            last_group_size = len(sub_indices) - (ind_group_num - 1) * ind_group_size
+            next_node_id = node_id + 1
+            
+            if pid == -1:
+                val = np.random.random([rank] * child_each_level)
+                indices = []
+            else:
+                val = np.random.random([rank] * (child_each_level + 1))
+                indices = [Index(f"R_{pid}_{node_id}", rank)]
+
+            for i in range(ind_group_num - 1):
+                child_id = next_node_id
+                indices.append(Index(f"R_{node_id}_{child_id}", rank))
+                next_node_id = build_child(node_id, next_node_id, sub_indices[i*ind_group_size:(i+1)*ind_group_size], rank)
+                ht.add_edge(f"G{child_id}", f"G{node_id}")
+
+            child_id = next_node_id
+            indices.append(Index(f"R_{node_id}_{child_id}", rank))
+            next_node_id = build_child(node_id, next_node_id, sub_indices[-last_group_size:], rank)
+            ht.add_edge(f"G{child_id}", f"G{node_id}")
+
+            ht.set_node_tensor(f"G{node_id}", Tensor(val, indices))
+
+            return next_node_id
+
+        build_child(-1, 0, indices, rank)
+        return ht
+
+
+    @staticmethod
+    def rand_tree(indices: List[Index], ranks: List[int]) -> "TreeNetwork":
+        """Return a random tensor tree."""
+
+        ndims = len(indices)
+        num_of_nodes = len(ranks) + 1
+        assert ndims <= num_of_nodes  # In a tree, #edges = #nodes - 1
+
+        # sample a topology from given ranks
+        np.random.shuffle(ranks)
+        # sample nodes for free indices
+        nodes_with_free = np.random.choice(
+            num_of_nodes, len(indices), replace=False
+        )
+        # assign edges between nodes
+        parent: Dict[int, Tuple[NodeName, int]] = {}
+        nodes = list(range(num_of_nodes))
+        while len(nodes) > 1:
+            node = np.random.choice(nodes, 1)[0]
+            nodes.remove(node)
+
+            p = np.random.choice(num_of_nodes, 1)[0]
+            while p == node:
+                p = np.random.choice(num_of_nodes, 1)[0]
+            # print("suggesting parent of", node, "as", p)
+            # check for cycles
+            ancestor = p
+            while ancestor in parent:
+                # print("ancestor of", ancestor)
+                ancestor, _ = parent[ancestor]
+                if ancestor == node:
+                    p = np.random.choice(num_of_nodes, 1)[0]
+                    while p == node:
+                        p = np.random.choice(num_of_nodes, 1)[0]
+                    ancestor = p
+
+            # print("finalizing parent of", node, "as", p)
+            parent[node] = (p, len(nodes) - 1)
+
+        tree = TreeNetwork()
+
+        for i in range(num_of_nodes):
+            i_ranks = []
+            i_dims = []
+            if i in nodes_with_free:
+                idx = list(nodes_with_free).index(i)
+                dim = indices[idx].size
+                i_ranks.append(indices[idx])
+                i_dims.append(dim)
+
+            if i in parent:
+                _, ridx = parent[i]
+                dim = ranks[ridx]
+                i_ranks.append(Index(f"r_{ridx}", dim))
+                i_dims.append(dim)
+
+            for p, ridx in parent.values():
+                if p == i:
+                    dim = ranks[ridx]
+                    i_ranks.append(Index(f"r_{ridx}", dim))
+                    i_dims.append(dim)
+
+            value = np.random.randn(*i_dims)
+            tensor = Tensor(value, i_ranks)
+            tree.add_node(i, tensor)
+
+        for i, (p, _) in parent.items():
+            # print("edge between", i, "and", p)
+            tree.add_edge(i, p)
+
+        return tree
 
     def __add__(self, other: Any) -> Self:
         """Add two tree networks."""
@@ -3787,75 +3908,3 @@ def gmres(  # pylint: disable=R0913,R0917
     # print("resid = ", resid)
     # exit(1);
     return x, resid
-
-
-def rand_tree(indices: List[Index], ranks: List[int]) -> TreeNetwork:
-    """Return a random tensor tree."""
-
-    ndims = len(indices)
-    num_of_nodes = len(ranks) + 1
-    assert ndims <= num_of_nodes  # In a tree, #edges = #nodes - 1
-
-    # sample a topology from given ranks
-    np.random.shuffle(ranks)
-    # sample nodes for free indices
-    nodes_with_free = np.random.choice(
-        num_of_nodes, len(indices), replace=False
-    )
-    # assign edges between nodes
-    parent: Dict[int, Tuple[NodeName, int]] = {}
-    nodes = list(range(num_of_nodes))
-    while len(nodes) > 1:
-        node = np.random.choice(nodes, 1)[0]
-        nodes.remove(node)
-
-        p = np.random.choice(num_of_nodes, 1)[0]
-        while p == node:
-            p = np.random.choice(num_of_nodes, 1)[0]
-        # print("suggesting parent of", node, "as", p)
-        # check for cycles
-        ancestor = p
-        while ancestor in parent:
-            # print("ancestor of", ancestor)
-            ancestor, _ = parent[ancestor]
-            if ancestor == node:
-                p = np.random.choice(num_of_nodes, 1)[0]
-                while p == node:
-                    p = np.random.choice(num_of_nodes, 1)[0]
-                ancestor = p
-
-        # print("finalizing parent of", node, "as", p)
-        parent[node] = (p, len(nodes) - 1)
-
-    tree = TreeNetwork()
-
-    for i in range(num_of_nodes):
-        i_ranks = []
-        i_dims = []
-        if i in nodes_with_free:
-            idx = list(nodes_with_free).index(i)
-            dim = indices[idx].size
-            i_ranks.append(indices[idx])
-            i_dims.append(dim)
-
-        if i in parent:
-            _, ridx = parent[i]
-            dim = ranks[ridx]
-            i_ranks.append(Index(f"r_{ridx}", dim))
-            i_dims.append(dim)
-
-        for p, ridx in parent.values():
-            if p == i:
-                dim = ranks[ridx]
-                i_ranks.append(Index(f"r_{ridx}", dim))
-                i_dims.append(dim)
-
-        value = np.random.randn(*i_dims)
-        tensor = Tensor(value, i_ranks)
-        tree.add_node(i, tensor)
-
-    for i, (p, _) in parent.items():
-        # print("edge between", i, "and", p)
-        tree.add_edge(i, p)
-
-    return tree

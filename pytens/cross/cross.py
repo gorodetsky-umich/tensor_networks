@@ -66,6 +66,8 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
     real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-14).sum()
     # q, _ = np.linalg.qr(v)
+    if real_rank < r.shape[0]:
+        print("Warning: cutting internal ranks")
     q = q[:, :real_rank]
     return py_maxvol(q)
 
@@ -145,9 +147,11 @@ def incr_ranks(tree: DimTreeNode, kickrank: int = 2, known: Optional[np.ndarray]
     """Increment the ranks for all edges"""
     # compute the target size of ranks
     tree.increment_ranks(kickrank)
+    # print("after increment", tree.ranks())
     tree.bound_ranks()
+    # print("after first round", tree.ranks())
     tree.bound_ranks()
-    print(tree.ranks())
+    # print("after second round", tree.ranks())
 
     if known is None:
         up_vals = [np.random.randint(0, ind.size, [kickrank, 1]) for ind in tree.indices]
@@ -178,6 +182,7 @@ def cross(
     max_size: Optional[int] = None,
     initialization: Optional[np.ndarray] = None,
     known: Optional[np.ndarray] = None,
+    kickrank: int = 2,
 ) -> CrossResult:
     """Cross approximation for the given network structure."""
     # print("root is", root)
@@ -207,6 +212,7 @@ def cross(
     ranks_and_errs = {}
     trial = 0
     while not converged:
+        # print(net)
         for n in tree_nodes:
             if len(n.up_info.nodes) == 0:
                 continue
@@ -232,16 +238,16 @@ def cross(
         root_val = root_matrix.T.reshape(*f_sizes, *c_sizes)
         net.node_tensor(tree.node).update_val_size(root_val)
 
-        estimate = net.evaluate(net.free_indices(), validation).reshape(-1)
+        estimate = net.evaluate(f.indices, validation).reshape(-1)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        print("rank:", trial, "error:", err)
+        # print("rank:", trial, "error:", err)
         # print(net)
         if err <= eps or (max_size is not None and len(up_vals) >= max_size):
             break
 
         trial += 1
-        incr_ranks(tree, known=known)
+        incr_ranks(tree, kickrank=kickrank, known=known)
 
     # print(net)
     ranks_and_errs = sorted(list(ranks_and_errs.items()))

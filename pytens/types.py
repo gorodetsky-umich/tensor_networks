@@ -148,11 +148,12 @@ class DimTreeNode:
     def increment_ranks(self, kickrank: int = 1) -> None:
         """Increment the ranks without value modification"""
         self.up_info.rank += kickrank
+        self.down_info.rank += kickrank
         for c in self.down_info.nodes:
             c.increment_ranks(kickrank)
 
     def ranks(self) -> List[int]:
-        res = [self.up_info.rank]
+        res = [(self.up_info.rank, self.down_info.rank)]
         for c in self.down_info.nodes:
             res.extend(c.ranks())
 
@@ -170,8 +171,9 @@ class DimTreeNode:
             rank_up *= ind.size
 
         # if we move root to leaves
-        rank_down = 1
+        rank_down = self.down_info.rank
         for p in self.up_info.nodes:
+            rank_down = 1
             if p.down_info.rank != 0:
                 rank_down *= p.down_info.rank
 
@@ -185,6 +187,7 @@ class DimTreeNode:
         # rank_up = max(1, rank_up)
         # rank_down = max(1, rank_down)
         self.up_info.rank = min([rank_up, rank_down, self.up_info.rank])
+        self.down_info.rank = min([rank_up, rank_down, self.down_info.rank])
 
         for c in self.down_info.nodes:
             c.bound_ranks()

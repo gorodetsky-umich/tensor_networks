@@ -17,7 +17,6 @@ from pytens.algs import (
     Index,
     gmres,
     rand_tt,
-    rand_tree,
     tt_gramsvd_round,
     tt_randomized_round,
     tt_right_orth,
@@ -31,6 +30,7 @@ from pytens.algs import (
     ttop_sum_apply,
 )
 from pytens.cross.funcs import FuncHilbert
+from tensor_networks.pytens.utils import num_ht_ranks
 from tests.search_test import (
     TestConfig,  # noqa: F401
     TestAction,  # noqa: F401
@@ -472,7 +472,9 @@ class TestTree(unittest.TestCase):
         self.x = Index("x", 5)
         self.u = Index("u", 10)
         self.v = Index("v", 20)
-        self.tree = rand_tree([self.x, self.u, self.v], [1, 2, 3, 4, 5])
+        self.tree = TreeNetwork.rand_tree(
+            [self.x, self.u, self.v], [1, 2, 3, 4, 5]
+        )
 
     def test_tree_split(self):
         original = self.tree.contract().value
@@ -627,6 +629,11 @@ class TestTree(unittest.TestCase):
         self.assertNotEqual(
             tt1.canonical_structure(), tt2.canonical_structure()
         )
+
+    def test_rand_ht(self):
+        inds = [Index(i, 5, range(1, 5)) for i in range(7)]
+        ht = TreeNetwork.rand_ht(inds, 2)
+        self.assertEqual(len(ht.network.nodes), 2 + 4 + 7)
 
 
 class TestGeneralOps(unittest.TestCase):
@@ -1111,6 +1118,7 @@ class TestGeneralOps(unittest.TestCase):
         )
         self.assertTrue(np.allclose(val, val2))
 
+
 class TestCross(unittest.TestCase):
     def test_cross_err(self):
         p = 25
@@ -1166,38 +1174,55 @@ class TestCross(unittest.TestCase):
 
     def test_cross_ht(self):
         p = 25
-        indices = [Index(i, p, range(1, p + 1)) for i in range(4)]
+        indices = [Index(i, p, range(p)) for i in range(4)]
         tensor_func = FuncHilbert(indices)
 
         net = TreeNetwork()
         net.add_node(
-            "A", Tensor(np.empty((0, 0)), [Index("i0", 1), Index("i1", 1)])
+            "A",
+            Tensor(np.random.random((1, 1)), [Index("i0", 1), Index("i1", 1)]),
         )
         net.add_node(
             "B",
             Tensor(
-                np.empty((0, 0, 0)),
+                np.random.random((1, 1, 1)),
                 [Index("i2", 1), Index("i4", 1), Index("i0", 1)],
             ),
         )
         net.add_node(
             "C",
             Tensor(
-                np.empty((0, 0, 0)),
+                np.random.random((1, 1, 1)),
                 [Index("i3", 1), Index("i5", 1), Index("i1", 1)],
             ),
         )
         net.add_node(
-            "D", Tensor(np.empty((0, 0)), [Index("i2", 1), indices[0]])
+            "D",
+            Tensor(
+                np.random.random((1, indices[0].size)),
+                [Index("i2", 1), indices[0]],
+            ),
         )
         net.add_node(
-            "E", Tensor(np.empty((0, 0)), [Index("i4", 1), indices[1]])
+            "E",
+            Tensor(
+                np.random.random((1, indices[1].size)),
+                [Index("i4", 1), indices[1]],
+            ),
         )
         net.add_node(
-            "F", Tensor(np.empty((0, 0)), [Index("i3", 1), indices[2]])
+            "F",
+            Tensor(
+                np.random.random((1, indices[2].size)),
+                [Index("i3", 1), indices[2]],
+            ),
         )
         net.add_node(
-            "G", Tensor(np.empty((0, 0)), [Index("i5", 1), indices[3]])
+            "G",
+            Tensor(
+                np.random.random((1, indices[3].size)),
+                [Index("i5", 1), indices[3]],
+            ),
         )
         net.add_edge("A", "B")
         net.add_edge("A", "C")
@@ -1205,7 +1230,7 @@ class TestCross(unittest.TestCase):
         net.add_edge("B", "E")
         net.add_edge("C", "F")
         net.add_edge("C", "G")
-        net.cross(tensor_func, 0.1)
+        net.cross(tensor_func, 0.1, kickrank=1)
 
         net_val = net.contract().value
         all_args = np.mgrid[0:p, 0:p, 0:p, 0:p].reshape(4, -1).T
@@ -1274,33 +1299,43 @@ class TestCross(unittest.TestCase):
 
     def test_cross_tree(self):
         p = 25
-        indices = [
-            Index(i, p * (i + 1), range(1, p * (i + 1) + 1)) for i in range(4)
-        ]
+        indices = [Index(i, p * (i + 1), range(p * (i + 1))) for i in range(4)]
         tensor_func = FuncHilbert(indices)
 
         net = TreeNetwork()
         net.add_node(
             "A",
             Tensor(
-                np.empty((0, 0, 0)), [Index("i", 1), Index("j", 1), indices[2]]
+                np.random.random((1, 1, 2)),
+                [Index("i", 1), Index("j", 1), indices[2]],
             ),
         )
         net.add_node(
-            "B", Tensor(np.empty((0, 0)), [indices[0], Index("k", 1)])
+            "B",
+            Tensor(
+                np.random.random((indices[0].size, 1)),
+                [indices[0], Index("k", 1)],
+            ),
         )
         net.add_node(
-            "C", Tensor(np.empty((0, 0)), [indices[1], Index("j", 1)])
+            "C",
+            Tensor(
+                np.random.random((indices[1].size, 1)),
+                [indices[1], Index("j", 1)],
+            ),
         )
         net.add_node(
             "D",
             Tensor(
-                np.empty((0, 0, 0)),
+                np.empty((1, 1, 1)),
                 [Index("i", 1), Index("k", 1), Index("l", 1)],
             ),
         )
         net.add_node(
-            "E", Tensor(np.empty((0, 0)), [Index("l", 1), indices[3]])
+            "E",
+            Tensor(
+                np.empty((1, indices[3].size)), [Index("l", 1), indices[3]]
+            ),
         )
         net.add_edge("A", "C")
         net.add_edge("A", "D")
@@ -1309,7 +1344,9 @@ class TestCross(unittest.TestCase):
         # print(net)
         net.cross(tensor_func, 0.1)
 
-        net_val = net.contract().value
+        net_inds = net.free_indices()
+        ind_perm = [net_inds.index(ind) for ind in tensor_func.indices]
+        net_val = net.contract().value.transpose(ind_perm)
         all_args = (
             np.mgrid[0:p, 0 : p * 2, 0 : p * 3, 0 : p * 4].reshape(4, -1).T
         )
@@ -1375,11 +1412,12 @@ class TestCross(unittest.TestCase):
         for ind in tensor_func.indices:
             validation.append(np.random.randint(0, ind.size, size=10000))
         validation = np.stack(validation, axis=-1)
-        net_val = net.evaluate(net.free_indices(), validation)
+        net_val = net.evaluate(tensor_func.indices, validation)
         real_val = tensor_func(validation)
         rtol = np.linalg.norm(net_val - real_val) / np.linalg.norm(real_val)
         self.assertLessEqual(float(rtol), 0.15)
         self.assertLessEqual(net.cost(), p**4)
+
 
 class TestHTT(unittest.TestCase):
     def test_htt_construct(self):
@@ -1411,17 +1449,23 @@ class TestHTT(unittest.TestCase):
         tt = TensorTrain.rand_tt(indices, [5, 8, 10])
         svals = tt.svals([indices[0], indices[1]])
         real_val = tt.contract().value
-        real_svals = np.linalg.svdvals(real_val.reshape(10*15, -1))
+        real_svals = np.linalg.svdvals(real_val.reshape(10 * 15, -1))
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
-            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-10, atol=1e-10)
+            np.allclose(
+                svals[:min_len], real_svals[:min_len], rtol=1e-10, atol=1e-10
+            )
         )
 
         svals = tt.svals([indices[0], indices[2]])
-        real_svals = np.linalg.svdvals(real_val.transpose(0, 2, 1, 3).reshape(10*20, -1))
+        real_svals = np.linalg.svdvals(
+            real_val.transpose(0, 2, 1, 3).reshape(10 * 20, -1)
+        )
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
-            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-10, atol=1e-10)
+            np.allclose(
+                svals[:min_len], real_svals[:min_len], rtol=1e-10, atol=1e-10
+            )
         )
 
     def test_htt_svals(self):
@@ -1436,34 +1480,48 @@ class TestHTT(unittest.TestCase):
         tt = TensorTrain.rand_tt(indices, [5, 8, 10, 11, 12])
         svals = tt.svals([indices[0], indices[1]])
         real_val = tt.contract().value
-        real_svals = np.linalg.svdvals(real_val.reshape(10*15, -1))
+        real_svals = np.linalg.svdvals(real_val.reshape(10 * 15, -1))
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
-            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+            np.allclose(
+                svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6
+            )
         )
 
         svals = tt.svals([indices[0], indices[2]])
-        real_svals = np.linalg.svdvals(real_val.transpose(0, 2, 1, 3, 4, 5).reshape(10*20, -1))
+        real_svals = np.linalg.svdvals(
+            real_val.transpose(0, 2, 1, 3, 4, 5).reshape(10 * 20, -1)
+        )
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
-            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+            np.allclose(
+                svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6
+            )
         )
 
         htt = tt.merge_index(IndexMerge(indices=[indices[3], indices[1]]))
         htt_indices = htt.free_indices()
         # print(htt_indices)
         svals = htt.svals([htt_indices[2]])
-        real_svals = np.linalg.svdvals(real_val.transpose(1, 3, 0, 2, 4, 5).reshape(15*20, -1))
+        real_svals = np.linalg.svdvals(
+            real_val.transpose(1, 3, 0, 2, 4, 5).reshape(15 * 20, -1)
+        )
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
-            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+            np.allclose(
+                svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6
+            )
         )
 
         svals = htt.svals([htt_indices[2], htt_indices[3]])
-        real_svals = np.linalg.svdvals(real_val.transpose(1, 3, 4, 0, 2, 5).reshape(15*20*12, -1))
+        real_svals = np.linalg.svdvals(
+            real_val.transpose(1, 3, 4, 0, 2, 5).reshape(15 * 20 * 12, -1)
+        )
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
-            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+            np.allclose(
+                svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6
+            )
         )
 
         # print("*****Starting merge_index*****")
@@ -1472,17 +1530,25 @@ class TestHTT(unittest.TestCase):
         # print(htt1_indices)
         # print("*****Starting svals*****")
         svals = htt1.svals([htt1_indices[2], htt1_indices[3]])
-        real_svals = np.linalg.svdvals(real_val.transpose(2, 5, 4, 0, 1, 3).reshape(20*13*12, -1))
+        real_svals = np.linalg.svdvals(
+            real_val.transpose(2, 5, 4, 0, 1, 3).reshape(20 * 13 * 12, -1)
+        )
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
-            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+            np.allclose(
+                svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6
+            )
         )
 
         svals = htt1.svals([htt1_indices[1], htt1_indices[3]])
-        real_svals = np.linalg.svdvals(real_val.transpose(2, 5, 1, 3, 4, 0).reshape(15*20*20*13, -1))
+        real_svals = np.linalg.svdvals(
+            real_val.transpose(2, 5, 1, 3, 4, 0).reshape(15 * 20 * 20 * 13, -1)
+        )
         min_len = min(len(svals), len(real_svals))
         self.assertTrue(
-            np.allclose(svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6)
+            np.allclose(
+                svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6
+            )
         )
 
 
