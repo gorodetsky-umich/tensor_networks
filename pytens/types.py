@@ -108,14 +108,21 @@ def split_index(
     indices.extend(split_op.result)
     return indices, new_vals
 
+
 class NodeInfo:
     """Information at each dim tree node."""
 
-    def __init__(self, nodes: List["DimTreeNode"], indices: List[Index], vals: np.ndarray):
+    def __init__(
+        self,
+        nodes: List["DimTreeNode"],
+        indices: List[Index],
+        vals: np.ndarray,
+    ):
         self.nodes = nodes
         self.indices = indices
         self.vals = vals
         self.rank = 0
+
 
 class DimTreeNode:
     """Class for a dimension tree node"""
@@ -148,12 +155,12 @@ class DimTreeNode:
     def increment_ranks(self, kickrank: int = 1) -> None:
         """Increment the ranks without value modification"""
         self.up_info.rank += kickrank
-        self.down_info.rank += kickrank
         for c in self.down_info.nodes:
             c.increment_ranks(kickrank)
 
     def ranks(self) -> List[int]:
-        res = [(self.up_info.rank, self.down_info.rank)]
+        """Get all up ranks in the dimension tree."""
+        res = [self.up_info.rank]
         for c in self.down_info.nodes:
             res.extend(c.ranks())
 
@@ -171,11 +178,11 @@ class DimTreeNode:
             rank_up *= ind.size
 
         # if we move root to leaves
-        rank_down = self.down_info.rank
+        rank_down = self.up_info.rank
         for p in self.up_info.nodes:
             rank_down = 1
-            if p.down_info.rank != 0:
-                rank_down *= p.down_info.rank
+            if p.up_info.rank != 0:
+                rank_down *= p.up_info.rank
 
             for s in p.down_info.nodes:
                 if s.node != self.node and s.up_info.rank != 0:
@@ -187,7 +194,6 @@ class DimTreeNode:
         # rank_up = max(1, rank_up)
         # rank_down = max(1, rank_down)
         self.up_info.rank = min([rank_up, rank_down, self.up_info.rank])
-        self.down_info.rank = min([rank_up, rank_down, self.down_info.rank])
 
         for c in self.down_info.nodes:
             c.bound_ranks()
@@ -202,7 +208,7 @@ class DimTreeNode:
         for c in self.down_info.nodes:
             cvals = up_vals[:, [self.indices.index(ind) for ind in c.indices]]
             c.up_info.vals = np.append(c.up_info.vals, cvals, axis=0)
-            c.up_info.vals = c.up_info.vals[:c.up_info.rank]
+            c.up_info.vals = c.up_info.vals[: c.up_info.rank]
             c.add_values(cvals)
 
     def locate(self, node: NodeName) -> Optional["DimTreeNode"]:
@@ -210,7 +216,7 @@ class DimTreeNode:
         if node == self.node:
             return self
 
-        for c in self.up_info.nodes:
+        for c in self.down_info.nodes:
             res = c.locate(node)
             if res is not None:
                 return res
@@ -228,7 +234,7 @@ class DimTreeNode:
             results.extend(c.leaves())
 
         return results
-    
+
     def height(self) -> int:
         """Get the height of the tree."""
         max_c = 0
@@ -236,36 +242,42 @@ class DimTreeNode:
             max_c = max(max_c, c.height())
 
         return max_c + 1
-    
-    def distance(self, node1: NodeName, node2: NodeName) -> int:
-        """Get the distance between the two indices."""
+
+    def path(self, node1: NodeName, node2: NodeName) -> List["DimTreeNode"]:
+        """Get the list of nodes between the source and destination."""
+
         n1 = self.locate(node1)
         assert n1 is not None
         n2 = self.locate(node2)
         assert n2 is not None
         # find the common ancestor that subsumes both n1 and n2
+
+        res = [n1]
         p = n1
-        dist1 = 0
         while p is not None:
             if all(ind in p.indices for ind in n1.indices + n2.indices):
                 break
 
-            p = p.down_info.nodes[0]
-            dist1 += 1
+            p = p.up_info.nodes[0]
+            res.append(p)
 
         if p is None:
             raise RuntimeError("not a valid tree")
-        
+
         p2 = n2
-        dist2 = 0
+        res2 = [p2]
         while p2 is not None and p2 != p:
-            p2 = p2.down_info.nodes[0]
-            dist2 += 1
+            p2 = p2.up_info.nodes[0]
+            res2.append(p2)
 
         if p2 is None:
             raise RuntimeError("not a valid tree")
-        
-        return dist1 + dist2
+
+        return res + list(reversed(res2[:-1]))
+
+    def distance(self, node1: NodeName, node2: NodeName) -> int:
+        """Get the distance between the two indices."""
+        return len(self.path(node1, node2))
 
     def entries(self) -> np.ndarray:
         if len(self.up_info.vals) != 0:
@@ -300,3 +312,41 @@ class DimTreeNode:
             vals = np.concat([vals, cvals[:, perm]], axis=0)
 
         return vals
+
+    def highest_frontier(
+        self, indices: Sequence[Index]
+    ) -> List["DimTreeNode"]:
+        """Find the frontier of nodes that contain the given indices."""
+        if all(ind in indices for ind in self.indices):
+            return [self]
+
+        res = []
+        for c in self.down_info.nodes:
+            res.extend(c.highest_frontier(indices))
+
+        return res
+
+    def sibling(self, node: "DimTreeNode") -> "DimTreeNode":
+        """Get one of the sibling node of the given node"""
+        if len(node.up_info.nodes) != 1:
+            raise ValueError("root node does not have a sibling")
+
+        p = node.up_info.nodes[0]
+        for c in p.down_info.nodes:
+            if c.node == node.node:
+                continue
+
+            return c
+
+        raise ValueError("No sibling for the given node")
+
+    def is_ancestor(self, other: "DimTreeNode") -> bool:
+        """Return true if the current node is an ancestor of other"""
+        while len(other.up_info.nodes) > 0:
+            other = other.up_info.nodes[0]
+            if other.node == self.node:
+                return True
+
+        return False
+
+        

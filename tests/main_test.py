@@ -1,20 +1,23 @@
 """Tensor Network Solvers."""
 
 import copy
+import itertools
 import os
-import unittest
-import tempfile
 import pickle
+import tempfile
+import unittest
 
-import numpy as np
 import networkx as nx
+import numpy as np
+from tensor_networks.pytens.utils import num_ht_ranks
 
 from pytens.algs import (
+    HierarchicalTucker,
+    Index,
+    Tensor,
     TensorNetwork,
     TensorTrain,
     TreeNetwork,
-    Tensor,
-    Index,
     gmres,
     rand_tt,
     tt_gramsvd_round,
@@ -30,15 +33,14 @@ from pytens.algs import (
     ttop_sum_apply,
 )
 from pytens.cross.funcs import FuncHilbert
-from tensor_networks.pytens.utils import num_ht_ranks
+from pytens.search.utils import IndexMerge, IndexSplit
 from tests.search_test import (
-    TestConfig,  # noqa: F401
     TestAction,  # noqa: F401
+    TestConfig,  # noqa: F401
     TestSearch,  # noqa: F401
     TestState,  # noqa: F401
     TestTopDownSearch,  # noqa: F401
 )
-from pytens.search.utils import IndexSplit, IndexMerge
 
 np.random.seed(4)
 
@@ -632,8 +634,49 @@ class TestTree(unittest.TestCase):
 
     def test_rand_ht(self):
         inds = [Index(i, 5, range(1, 5)) for i in range(7)]
-        ht = TreeNetwork.rand_ht(inds, 2)
+        ht = HierarchicalTucker.rand_ht(inds, 2)
         self.assertEqual(len(ht.network.nodes), 2 + 4 + 7)
+
+    def test_move_to(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(4)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+
+        ht.move_to([indices[0], indices[2]])
+        new_tree = ht.dimension_tree(ht.root())
+
+        n1 = ht.node_by_free_index("I0")
+        n2 = ht.node_by_free_index("I3")
+        self.assertEqual(new_tree.distance(n1, n2), 5)
+
+        n1 = ht.node_by_free_index("I0")
+        n2 = ht.node_by_free_index("I2")
+        self.assertEqual(new_tree.distance(n1, n2), 3)
+
+    def test_ht_svals(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+        data = ht.contract().value
+
+        for i, ind in enumerate(indices):
+            # ht = copy.deepcopy(init_ht)
+            svals = ht.svals([ind])
+            others = [j for j in range(len(indices)) if j != i]
+            gt_val = data.transpose([i]+ others)
+            gt_svals = np.linalg.svdvals(gt_val.reshape(ind.size, -1))
+            # print(ind, svals, gt_svals)
+            min_len = min(len(svals), len(gt_svals))
+            self.assertTrue(np.allclose(svals[:min_len], gt_svals[:min_len], atol=1e-8, rtol=1e-8))
+
+        for comb in itertools.combinations(indices, 2):
+            # ht = copy.deepcopy(init_ht)
+            svals = ht.svals(comb)
+            comb_pos = [indices.index(ind) for ind in comb]
+            comb_size = int(np.prod([ind.size for ind in comb]))
+            others = [j for j in range(len(indices)) if j not in comb_pos]
+            gt_val = data.transpose(comb_pos + others)
+            gt_svals = np.linalg.svdvals(gt_val.reshape(comb_size, -1))
+            min_len = min(len(svals), len(gt_svals))
+            self.assertTrue(np.allclose(svals[:min_len], gt_svals[:min_len], atol=1e-8, rtol=1e-8))
 
 
 class TestGeneralOps(unittest.TestCase):
@@ -1119,6 +1162,10 @@ class TestGeneralOps(unittest.TestCase):
         self.assertTrue(np.allclose(val, val2))
 
 
+def empty_tensor(indices):
+    return Tensor(np.empty([0] * len(indices)), indices)
+
+
 class TestCross(unittest.TestCase):
     def test_cross_err(self):
         p = 25
@@ -1126,12 +1173,8 @@ class TestCross(unittest.TestCase):
         tensor_func = FuncHilbert(indices)
 
         net = TreeNetwork()
-        net.add_node(
-            "A", Tensor(np.empty((0, 0, 0)), indices[:2] + [Index("i", 1)])
-        )
-        net.add_node(
-            "B", Tensor(np.empty((0, 0, 0)), indices[-2:] + [Index("i", 1)])
-        )
+        net.add_node("A", empty_tensor(indices[:2] + [Index("i", 1)]))
+        net.add_node("B", empty_tensor(indices[-2:] + [Index("i", 1)]))
         net.add_edge("A", "B")
         net.cross(tensor_func, 0.1)
 
@@ -1148,19 +1191,18 @@ class TestCross(unittest.TestCase):
         tensor_func = FuncHilbert(indices)
 
         net = TreeNetwork()
-        net.add_node(
-            "A", Tensor(np.empty((0, 0, 0)), indices[:2] + [Index("i", 1)])
-        )
+        net.add_node("A", empty_tensor(indices[:2] + [Index("i", 1)]))
         net.add_node(
             "B",
-            Tensor(
-                np.empty((0, 0, 0)),
-                [indices[-2], Index("i", 1), Index("j", 1)],
+            empty_tensor(
+                [
+                    indices[-2],
+                    Index("i", 1),
+                    Index("j", 1),
+                ]
             ),
         )
-        net.add_node(
-            "C", Tensor(np.empty((0, 0)), [indices[-1], Index("j", 1)])
-        )
+        net.add_node("C", empty_tensor([indices[-1], Index("j", 1)]))
         net.add_edge("A", "B")
         net.add_edge("B", "C")
         net.cross(tensor_func, 0.1)
@@ -1178,52 +1220,31 @@ class TestCross(unittest.TestCase):
         tensor_func = FuncHilbert(indices)
 
         net = TreeNetwork()
-        net.add_node(
-            "A",
-            Tensor(np.random.random((1, 1)), [Index("i0", 1), Index("i1", 1)]),
-        )
+        net.add_node("A", empty_tensor([Index("i0", 1), Index("i1", 1)]))
         net.add_node(
             "B",
-            Tensor(
-                np.random.random((1, 1, 1)),
-                [Index("i2", 1), Index("i4", 1), Index("i0", 1)],
+            empty_tensor(
+                [
+                    Index("i2", 1),
+                    Index("i4", 1),
+                    Index("i0", 1),
+                ]
             ),
         )
         net.add_node(
             "C",
-            Tensor(
-                np.random.random((1, 1, 1)),
-                [Index("i3", 1), Index("i5", 1), Index("i1", 1)],
+            empty_tensor(
+                [
+                    Index("i3", 1),
+                    Index("i5", 1),
+                    Index("i1", 1),
+                ]
             ),
         )
-        net.add_node(
-            "D",
-            Tensor(
-                np.random.random((1, indices[0].size)),
-                [Index("i2", 1), indices[0]],
-            ),
-        )
-        net.add_node(
-            "E",
-            Tensor(
-                np.random.random((1, indices[1].size)),
-                [Index("i4", 1), indices[1]],
-            ),
-        )
-        net.add_node(
-            "F",
-            Tensor(
-                np.random.random((1, indices[2].size)),
-                [Index("i3", 1), indices[2]],
-            ),
-        )
-        net.add_node(
-            "G",
-            Tensor(
-                np.random.random((1, indices[3].size)),
-                [Index("i5", 1), indices[3]],
-            ),
-        )
+        net.add_node("D", empty_tensor([Index("i2", 1), indices[0]]))
+        net.add_node("E", empty_tensor([Index("i4", 1), indices[1]]))
+        net.add_node("F", empty_tensor([Index("i3", 1), indices[2]]))
+        net.add_node("G", empty_tensor([Index("i5", 1), indices[3]]))
         net.add_edge("A", "B")
         net.add_edge("A", "C")
         net.add_edge("B", "D")
@@ -1255,32 +1276,30 @@ class TestCross(unittest.TestCase):
         #     /     \
         #   B         F
         #
-        net.add_node(
-            "A", Tensor(np.empty((0, 0)), [Index("i", 1), indices[0]])
-        )
-        net.add_node(
-            "B", Tensor(np.empty((0, 0)), [indices[1], Index("j", 1)])
-        )
+        net.add_node("A", empty_tensor([Index("i", 1), indices[0]]))
+        net.add_node("B", empty_tensor([indices[1], Index("j", 1)]))
         net.add_node(
             "C",
-            Tensor(
-                np.empty((0, 0, 0)),
-                [Index("i", 1), Index("j", 1), Index("k", 1)],
+            empty_tensor(
+                [
+                    Index("i", 1),
+                    Index("j", 1),
+                    Index("k", 1),
+                ]
             ),
         )
         net.add_node(
             "D",
-            Tensor(
-                np.empty((0, 0, 0)),
-                [Index("k", 1), Index("l", 1), Index("m", 1)],
+            empty_tensor(
+                [
+                    Index("k", 1),
+                    Index("l", 1),
+                    Index("m", 1),
+                ]
             ),
         )
-        net.add_node(
-            "E", Tensor(np.empty((0, 0)), [Index("l", 1), indices[2]])
-        )
-        net.add_node(
-            "F", Tensor(np.empty((0, 0)), [Index("m", 1), indices[3]])
-        )
+        net.add_node("E", empty_tensor([Index("l", 1), indices[2]]))
+        net.add_node("F", empty_tensor([Index("m", 1), indices[3]]))
         net.add_edge("A", "C")
         net.add_edge("B", "C")
         net.add_edge("C", "D")
@@ -1305,38 +1324,27 @@ class TestCross(unittest.TestCase):
         net = TreeNetwork()
         net.add_node(
             "A",
-            Tensor(
-                np.random.random((1, 1, 2)),
-                [Index("i", 1), Index("j", 1), indices[2]],
+            empty_tensor(
+                [
+                    Index("i", 1),
+                    Index("j", 1),
+                    indices[2],
+                ]
             ),
         )
-        net.add_node(
-            "B",
-            Tensor(
-                np.random.random((indices[0].size, 1)),
-                [indices[0], Index("k", 1)],
-            ),
-        )
-        net.add_node(
-            "C",
-            Tensor(
-                np.random.random((indices[1].size, 1)),
-                [indices[1], Index("j", 1)],
-            ),
-        )
+        net.add_node("B", empty_tensor([indices[0], Index("k", 1)]))
+        net.add_node("C", empty_tensor([indices[1], Index("j", 1)]))
         net.add_node(
             "D",
-            Tensor(
-                np.empty((1, 1, 1)),
-                [Index("i", 1), Index("k", 1), Index("l", 1)],
+            empty_tensor(
+                [
+                    Index("i", 1),
+                    Index("k", 1),
+                    Index("l", 1),
+                ]
             ),
         )
-        net.add_node(
-            "E",
-            Tensor(
-                np.empty((1, indices[3].size)), [Index("l", 1), indices[3]]
-            ),
-        )
+        net.add_node("E", empty_tensor([Index("l", 1), indices[3]]))
         net.add_edge("A", "C")
         net.add_edge("A", "D")
         net.add_edge("D", "B")
@@ -1366,38 +1374,31 @@ class TestCross(unittest.TestCase):
         net = TreeNetwork()
         net.add_node(
             "A",
-            Tensor(
-                np.empty((0, 0, 0, 0)),
-                [Index("i2", 1), Index("i0", 1), Index("i1", 1), indices[2]],
+            empty_tensor(
+                [
+                    Index("i2", 1),
+                    Index("i0", 1),
+                    Index("i1", 1),
+                    indices[2],
+                ]
             ),
         )
         net.add_node(
             "B",
-            Tensor(
-                np.empty((0, 0, 0, 0)),
+            empty_tensor(
                 [
                     Index("i0", 1),
                     Index("i3", 1),
                     Index("i4", 1),
                     Index("i5", 1),
-                ],
+                ]
             ),
         )
-        net.add_node(
-            "C", Tensor(np.empty((0, 0)), [indices[1], Index("i3", 1)])
-        )
-        net.add_node(
-            "D", Tensor(np.empty((0, 0)), [Index("i4", 1), indices[0]])
-        )
-        net.add_node(
-            "E", Tensor(np.empty((0, 0)), [Index("i5", 1), indices[3]])
-        )
-        net.add_node(
-            "F", Tensor(np.empty((0, 0)), [Index("i1", 1), indices[5]])
-        )
-        net.add_node(
-            "G", Tensor(np.empty((0, 0)), [Index("i2", 1), indices[4]])
-        )
+        net.add_node("C", empty_tensor([indices[1], Index("i3", 1)]))
+        net.add_node("D", empty_tensor([Index("i4", 1), indices[0]]))
+        net.add_node("E", empty_tensor([Index("i5", 1), indices[3]]))
+        net.add_node("F", empty_tensor([Index("i1", 1), indices[5]]))
+        net.add_node("G", empty_tensor([Index("i2", 1), indices[4]]))
         net.add_edge("A", "B")
         net.add_edge("A", "F")
         net.add_edge("A", "G")
@@ -1435,9 +1436,6 @@ class TestHTT(unittest.TestCase):
         htt2 = htt1.merge_index(IndexMerge(indices=[indices[1], indices[3]]))
         assert htt2 is not None
         self.assertEqual(len(htt2.network.nodes), 2)
-        print(htt2)
-        print(htt2.tt)
-        print(htt2.tt.tt)
 
     def test_tt_svals(self):
         indices = [
@@ -1550,6 +1548,60 @@ class TestHTT(unittest.TestCase):
                 svals[:min_len], real_svals[:min_len], rtol=1e-6, atol=1e-6
             )
         )
+
+
+class TestDimTree(unittest.TestCase):
+    def test_highest_frontier(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(4)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+        dim_tree = ht.dimension_tree(ht.root())
+        frontier = dim_tree.highest_frontier(indices[:2])
+        self.assertEqual(len(frontier), 1)
+        frontier_names = [n.node for n in frontier]
+        self.assertIn("G1", frontier_names)
+
+        frontier = dim_tree.highest_frontier([indices[0], indices[2]])
+        self.assertEqual(len(frontier), 2)
+        frontier_names = [n.node for n in frontier]
+        self.assertIn("G2", frontier_names)
+        self.assertIn("G5", frontier_names)
+
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+        dim_tree = ht.dimension_tree(ht.root())
+        frontier = dim_tree.highest_frontier(indices[:2])
+        self.assertEqual(len(frontier), 2)
+        frontier_names = [n.node for n in frontier]
+        self.assertIn("G2", frontier_names)
+        self.assertIn("G4", frontier_names)
+
+        frontier = dim_tree.highest_frontier([indices[1], indices[3]])
+        self.assertEqual(len(frontier), 2)
+        frontier_names = [n.node for n in frontier]
+        self.assertIn("G4", frontier_names)
+        self.assertIn("G7", frontier_names)
+
+        frontier = dim_tree.highest_frontier(indices[1:4])
+        self.assertEqual(len(frontier), 2)
+        frontier_names = [n.node for n in frontier]
+        self.assertIn("G3", frontier_names)
+        self.assertIn("G7", frontier_names)
+
+    def test_path(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+        dim_tree = ht.dimension_tree(ht.root())
+
+        path = dim_tree.path("G2", "G0")
+        self.assertListEqual([n.node for n in path], ["G2", "G1", "G0"])
+
+        path = dim_tree.path("G2", "G9")
+        self.assertListEqual(
+            [n.node for n in path], ["G2", "G1", "G0", "G6", "G8", "G9"]
+        )
+
+        path = dim_tree.path("G8", "G1")
+        self.assertListEqual([n.node for n in path], ["G8", "G6", "G0", "G1"])
 
 
 if __name__ == "__main__":
