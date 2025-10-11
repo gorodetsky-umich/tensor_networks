@@ -1,13 +1,15 @@
 """Tensor Network Solvers."""
 
 import copy
+import itertools
 import os
-import unittest
-import tempfile
 import pickle
+import tempfile
+import unittest
 
-import numpy as np
 import networkx as nx
+import numpy as np
+from tensor_networks.pytens.utils import num_ht_ranks
 
 from pytens.algs import *
 from pytens.cross.cross import (
@@ -1331,6 +1333,47 @@ class TestCross(unittest.TestCase):
             <= 1e-4
         )
 
+
+    def test_move_to(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(4)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+
+        ht.move_to([indices[0], indices[2]])
+        new_tree = ht.dimension_tree(ht.root())
+
+        n1 = ht.node_by_free_index("I0")
+        n2 = ht.node_by_free_index("I3")
+        self.assertEqual(new_tree.distance(n1, n2), 5)
+
+        n1 = ht.node_by_free_index("I0")
+        n2 = ht.node_by_free_index("I2")
+        self.assertEqual(new_tree.distance(n1, n2), 3)
+
+    def test_ht_svals(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+        data = ht.contract().value
+
+        for i, ind in enumerate(indices):
+            # ht = copy.deepcopy(init_ht)
+            svals = ht.svals([ind])
+            others = [j for j in range(len(indices)) if j != i]
+            gt_val = data.transpose([i]+ others)
+            gt_svals = np.linalg.svdvals(gt_val.reshape(ind.size, -1))
+            # print(ind, svals, gt_svals)
+            min_len = min(len(svals), len(gt_svals))
+            self.assertTrue(np.allclose(svals[:min_len], gt_svals[:min_len], atol=1e-8, rtol=1e-8))
+
+        for comb in itertools.combinations(indices, 2):
+            # ht = copy.deepcopy(init_ht)
+            svals = ht.svals(comb)
+            comb_pos = [indices.index(ind) for ind in comb]
+            comb_size = int(np.prod([ind.size for ind in comb]))
+            others = [j for j in range(len(indices)) if j not in comb_pos]
+            gt_val = data.transpose(comb_pos + others)
+            gt_svals = np.linalg.svdvals(gt_val.reshape(comb_size, -1))
+            min_len = min(len(svals), len(gt_svals))
+            self.assertTrue(np.allclose(svals[:min_len], gt_svals[:min_len], atol=1e-8, rtol=1e-8))
 
 
 class TestGeneralOps(unittest.TestCase):
