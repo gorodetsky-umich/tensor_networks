@@ -7,8 +7,17 @@ import copy
 import numpy as np
 import networkx as nx
 
-from pytens.algs import NodeName, TensorTrain, TreeNetwork, Index, SVDConfig, IndexName
-from pytens.types import IndexMerge
+from pytens.algs import (
+    FoldedTensorTrain,
+    HierarchicalTucker,
+    NodeName,
+    TensorTrain,
+    TreeNetwork,
+    Index,
+    SVDConfig,
+    IndexName,
+)
+from pytens.types import IndexMerge, PartitionStatus, SVDAlgorithm
 from pytens.cross.cross import TensorFunc
 
 
@@ -93,103 +102,46 @@ class OSplit(Action):
     # TODO: Reorganize the code in this function
     def to_isplit(self, net: TreeNetwork):
         """Convert an output-directed split to an input-directed one."""
-        lca_node = None
-        lca_indices = []
+        res = net.partition_node(self.indices)
+        if res.code == PartitionStatus.EXIST:
+            return None
 
-        # we should find a node where the expected indices and
-        # the unexpected indices are on different indices
-        def postorder(visited, node):
-            visited.add(node)
-            results = []
-            for m in net.network.neighbors(node):
-                if m not in visited:
-                    ok, finds = postorder(visited, m)
-                    if not ok:
-                        return False, []
-                    
-                    if ok == -1:
-                        return -1, []
+        while res.code != PartitionStatus.OK:
+            print("Cannot find the lca for indices", self.indices, "try swap indices")
+            print("before swap", net)
+            # swap indices until they are in the same subtree
+            ind_nodes = [net.node_by_free_index(i.name) for i in self.indices]
+            net.swap(ind_nodes)
+            if len(ind_nodes) < 2:
+                raise ValueError(
+                    "Cannot find the common ancestor for the given indices"
+                )
 
-                    # print("get", finds, "for", m, "with parent", node)
-                    inds = []
-                    for x in finds:
-                        inds.extend(list(x[1]))
+            for n in ind_nodes[1:]:
+                net.merge(ind_nodes[0], n)
 
-                    # if finds include both desired and undesired, skip
-                    desired = set(self.indices).intersection(set(inds))
-                    undesired = set(inds).difference(set(self.indices))
-                    # print(desired, undesired)
-                    if len(desired) > 0 and len(undesired) > 0:
-                        return False, []
-
-                    if len(undesired) == 0 and len(desired) == len(self.indices):
-                        return -1, []
-
-                    results.append(
-                        (net.get_contraction_index(m, node)[0], inds)
-                    )
-
-            free_indices = net.free_indices()
-            node_indices = net.network.nodes[node]["tensor"].indices
-            for i in node_indices:
-                if i in free_indices:
-                    results.append((i, [i]))
-
-            return True, results
-
-        while lca_node is None:
-            for n in net.network.nodes:
-                # postorder traversal from each node and
-                # if we find each index
-                visited = set()
-                # print("postordering", n)
-                ok, results = postorder(visited, n)
-                if ok == -1:
-                    return None
-                if ok:
-                    lca_node = n
-                    for i in self.indices:
-                        for e, inds in results:
-                            if i in inds:
-                                lca_indices.append(e)
-                                break
-
-                    break
-
-            if lca_node is None:
-                # print("Cannot find the lca for indices", self.indices)
-                # print("Cannot find the lca for indices", self.indices, "try swap indices")
-                # swap indices until they are in the same subtree
-                net.network = net.swap(self.indices)[0].network
-                ind_nodes = [net.node_by_free_index(i.name) for i in self.indices]
-                if len(ind_nodes) < 2:
-                    raise ValueError(
-                        "Cannot find the common ancestor for the given indices"
-                    )
-
-                for n in ind_nodes[1:]:
-                    net.merge(ind_nodes[0], n)
+            res = net.partition_node(self.indices)
 
         # net.draw()
         # plt.show()
         # Once we find the node and indices, we perform the split
-        node_indices = net.network.nodes[lca_node]["tensor"].indices
+        node_indices = net.node_tensor(res.lca_node).indices
         # print(path_views)
         # print(lca_node, self.indices, node_indices)
         # net.draw()
         # plt.show()
-        left_indices = list(set([node_indices.index(i) for i in lca_indices]))
+
+        left_indices = [node_indices.index(i) for i in res.lca_indices]
+        left_indices = list(set(left_indices))
 
         return ISplit(
-            lca_node,
+            res.lca_node,
             left_indices,
             target_size=self.target_size,
             delta=self.delta,
         )
 
-    def cross(
-        self, net: TreeNetwork
-    ) -> Tuple[NodeName, NodeName]:
+    def cross(self, net: TreeNetwork) -> Tuple[NodeName, NodeName]:
         """Execute the split index action with cross approximation"""
         ac = self.to_isplit(net)
         return ac.cross(net)
@@ -207,24 +159,42 @@ class OSplit(Action):
         ac = self.to_isplit(net)
         if ac is None:
             return None
-        
+
         # print("OSplit svd", ac)
         # print(net)
         return ac.svd(
             net, svd, compute_data=compute_data, compute_uv=compute_uv
         )
-    
-    def svals(self, net: TreeNetwork, svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None, small = False, max_rank=100, orthonormal = None, delta = 0) -> np.ndarray:
+
+    def svals(
+        self,
+        net: TreeNetwork,
+        svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+        algo: SVDAlgorithm = SVDAlgorithm.SVD,
+        max_rank=100,
+        orthonormal=None,
+        delta=0,
+    ) -> np.ndarray:
         """Compute the singular values of the split action."""
         if isinstance(net, TensorTrain):
-            if small:
-                return net.svals_small(self.indices, max_rank=max_rank)
-            else:
-                return net.svals(self.indices, max_rank=max_rank, delta=delta)
-            # return net.svals(self.indices, max_rank=max_rank, orthonormal=orthonormal)
-        else:
-            ac = self.to_isplit(net)
-            return ac.svals(net, svd)
+            if algo == SVDAlgorithm.MERGE:
+                return net.svals_by_merge(self.indices, max_rank=max_rank)
+
+            if algo == SVDAlgorithm.CROSS:
+                return net.svals_by_cross(self.indices, max_rank=max_rank)
+
+            return net.svals(self.indices, max_rank=max_rank, delta=delta)
+
+        if isinstance(net, HierarchicalTucker):
+            return net.svals(
+                self.indices, max_rank=max_rank, orthonormal=orthonormal
+            )
+
+        if isinstance(net, FoldedTensorTrain):
+            return net.svals(self.indices, max_rank=max_rank)
+
+        ac = self.to_isplit(net)
+        return ac.svals(net, svd)
 
 
 class ISplit(Action):
@@ -262,9 +232,7 @@ class ISplit(Action):
 
         return True
 
-    def cross(
-        self, net: TreeNetwork
-    ) -> Tuple[NodeName, NodeName]:
+    def cross(self, net: TreeNetwork) -> Tuple[NodeName, NodeName]:
         """Execute the split action with cross approximation."""
         (u, s, v), _ = net.svd(
             self.node,
@@ -287,20 +255,23 @@ class ISplit(Action):
         """Execute a split action."""
         linds = self.left_indices
 
+        # TODO: clean up this if block
         if svd is None:
             if compute_data:
                 net.orthonormalize(self.node)
-            
+
             node_indices = net.node_tensor(self.node).indices
             rinds = [i for i in range(len(node_indices)) if i not in linds]
             lszs = [node_indices[i].size for i in linds]
             rszs = [node_indices[i].size for i in rinds]
             max_sz = min(int(np.prod(lszs)), int(np.prod(rszs)))
-            
+
             (u, s, v), _ = net.svd(
                 self.node,
                 linds,
-                SVDConfig(delta=0, compute_data=compute_data, compute_uv=compute_uv),
+                SVDConfig(
+                    delta=0, compute_data=compute_data, compute_uv=compute_uv
+                ),
             )
         else:
             node_indices = net.node_tensor(self.node).indices
@@ -323,8 +294,13 @@ class ISplit(Action):
         s_val = np.diag(net.node_tensor(s).value)
         trunc_error = np.cumsum(np.flip(s_val**2))
         if self.target_size is not None:
+            # max_sz = min(max_sz, len(trunc_error))
+            # r = min(max_sz, self.target_size)
             r = self.target_size
-            err = trunc_error[max_sz - r - 1]
+            if r < max_sz:
+                err = trunc_error[max_sz - r - 1]
+            else:
+                err = 0.0
         elif self.delta is not None:
             # find the first index where the truncation error is less than delta
             r_discard = np.searchsorted(trunc_error, self.delta**2)
@@ -341,11 +317,11 @@ class ISplit(Action):
                 net.node_tensor(v).update_val_size(net.value(v)[:r])
 
         return (u, s, v), err
-    
+
     def svals(
         self,
         net: TreeNetwork,
-        svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
+        svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
     ) -> np.ndarray:
         """Compute the singular values for the current split action."""
         (_, s, _), _ = self.svd(net, svd, compute_data=True, compute_uv=False)
@@ -526,7 +502,7 @@ class SearchState:
             else:
                 # we allow specify the node values
                 res = action.svd(new_net, svd)
-                if res is None: # no-op
+                if res is None:  # no-op
                     return self
 
                 (u, s, v), used_delta = res

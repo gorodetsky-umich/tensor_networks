@@ -273,9 +273,10 @@ def reshape_indices(reshape_ops, indices, data):
     return indices, data
 
 
-def reshape_func(reshape_ops, indices, func):
+def reshape_func(reshape_ops, func):
     """Reshape the function inputs according to the operations."""
     old_func = func
+    indices = func.indices
     for reshape_op in reshape_ops:
         if isinstance(reshape_op, IndexSplit):
             # find the source index and replace with result indices
@@ -547,7 +548,7 @@ def get_conflicts(ac: OSplit, past_acs: List[OSplit]) -> Optional[OSplit]:
             len(ac_indices.intersection(past_indices)) > 0
             and not ac_indices.issubset(past_indices)
             and not ac_indices.issuperset(past_indices)
-        ):
+        ) or ac == past_ac:
             if past_ac.reversible:
                 return past_ac
             else:

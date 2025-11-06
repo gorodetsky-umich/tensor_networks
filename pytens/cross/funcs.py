@@ -26,6 +26,13 @@ class TensorFunc:
 
         return args
 
+    def size(self) -> int:
+        res = 1
+        for ind in self.indices:
+            res *= ind.size
+            
+        return res
+
     @property
     def shape(self) -> List[int]:
         result = [0] * self.d
@@ -110,7 +117,7 @@ class FuncNeutron(CountableFunc):
             key = tuple(args[i].tolist())
             # print("looking for", key)
             if key not in self.cache and key not in jobs:
-                print("not found")
+                # print("not found")
                 # print(self.cache.keys())
                 job = self.pool.apply_async(simulate_neutron_diffusion, args=(f"a_{self.d}.out", key))
                 jobs[key] = job

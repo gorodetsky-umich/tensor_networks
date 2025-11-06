@@ -4,6 +4,7 @@ import copy
 import itertools
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Self, Sequence, Union, Tuple
+from enum import Enum, auto
 
 import numpy as np
 import pydantic
@@ -86,6 +87,16 @@ class IndexPermute(pydantic.BaseModel):
 
     def __hash__(self) -> int:
         return hash((type(self),) + tuple(self.__dict__.values()))
+
+
+class IndexSwap(pydantic.BaseModel):
+    """Swap the indices on two neighbor nodes."""
+
+    node: NodeName
+    left_indices: Sequence[Index]
+
+
+IndexOp = Union[IndexMerge, IndexSplit, IndexPermute, IndexSwap]
 
 
 def split_index(
@@ -317,7 +328,8 @@ class DimTreeNode:
         self, indices: Sequence[Index]
     ) -> List["DimTreeNode"]:
         """Find the frontier of nodes that contain the given indices."""
-        if all(ind in indices for ind in self.indices):
+        inds = self.indices
+        if len(inds) > 0 and all(ind in indices for ind in inds):
             return [self]
 
         res = []
@@ -349,4 +361,41 @@ class DimTreeNode:
 
         return False
 
-        
+
+class PartitionStatus(Enum):
+    """Status codes for partition."""
+
+    OK = auto()
+    FAIL = auto()
+    EXIST = auto()
+
+
+class PartitionResult:
+    """Result object for partition check."""
+
+    code: PartitionStatus
+    lca_node: NodeName
+    lca_indices: List[Index]
+
+
+class FoldDir(Enum):
+    """Direction of how to fold a chain."""
+
+    IN_BOUND = 0
+    OUT_BOUND = 1
+
+
+class NodeStatus(Enum):
+    """Status of nodes during node swapping."""
+
+    UNKNOWN = -1
+    ATTACHED = 0
+    CONFIRMED = 1
+
+
+class SVDAlgorithm(Enum):
+    """Different way to compute singular values."""
+
+    SVD = auto()
+    MERGE = auto()
+    CROSS = auto()

@@ -678,6 +678,59 @@ class TestTree(unittest.TestCase):
             min_len = min(len(svals), len(gt_svals))
             self.assertTrue(np.allclose(svals[:min_len], gt_svals[:min_len], atol=1e-8, rtol=1e-8))
 
+    def test_node_swap(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+        data = ht.contract().value
+        data_indices = [ind.name for ind in ht.free_indices()]
+
+        ind_nodes = [ht.node_by_free_index(ind.name) for ind in indices[:2]]
+        ht.swap(ind_nodes)
+        value_after_swap = ht.contract().permute_by_name(data_indices).value
+        self.assertTrue(np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8))
+        
+        ind_nodes = [ht.node_by_free_index(indices[i].name) for i in [1,3,5]]
+        ht.swap(ind_nodes)
+        value_after_swap = ht.contract().permute_by_name(data_indices).value
+        self.assertTrue(
+            np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8)
+        )
+        
+        tt = TensorTrain.rand_tt(indices, [2]*len(indices))
+        data = tt.contract().value
+        data_indices = [ind.name for ind in tt.free_indices()]
+        
+        ind_nodes = [tt.node_by_free_index(indices[i].name) for i in [2,0,1]]
+        tt.swap(ind_nodes)
+        value_after_swap = tt.contract().permute_by_name(data_indices).value
+        self.assertTrue(np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8))
+        
+    def test_node_fold(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        tt = TensorTrain.rand_tt(indices, [2] * len(indices))
+        data = tt.contract().value
+        data_indices = [ind.name for ind in tt.free_indices()]
+
+        ind_nodes = [tt.node_by_free_index(indices[i].name) for i in [2, 0, 1]]
+        net, _ = tt.fold(ind_nodes)
+        value_after_swap = net.contract().permute_by_name(data_indices).value
+        self.assertTrue(
+            np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8)
+        )
+
+    def test_node_fold_hierarchy(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        tt = TensorTrain.rand_tt(indices, [2] * len(indices))
+        data = tt.contract().value
+        data_indices = [ind.name for ind in tt.free_indices()]
+
+        ind_nodes = [tt.node_by_free_index(indices[i].name) for i in [2, 0, 1, 3]]
+        net, _ = tt.fold_hierarchical(ind_nodes, max_dist=2)
+        value_after_swap = net.contract().permute_by_name(data_indices).value
+        self.assertTrue(
+            np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8)
+        )
+
 
 class TestGeneralOps(unittest.TestCase):
     """Test general operations over tensor networks"""

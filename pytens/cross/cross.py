@@ -3,6 +3,7 @@
 import random
 import copy
 from typing import Optional, Sequence, Tuple
+import time
 
 import numpy as np
 from line_profiler import profile
@@ -63,12 +64,13 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
     This method takes the value matrix as input.
     """
-    q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
-    real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-14).sum()
-    # q, _ = np.linalg.qr(v)
-    if real_rank < r.shape[0]:
-        print("Warning: cutting internal ranks")
-    q = q[:, :real_rank]
+    # q, r, _ = scipy.linalg.qr(v, pivoting=True, mode="economic")
+    # real_rank = (np.abs(np.diag(r) / r[0, 0]) > 1e-10).sum()
+    # # if real_rank < r.shape[0]:
+    # #     print("Warning: cutting internal ranks")
+    # q = q[:, :real_rank]
+    # print(v)
+    q, _ = np.linalg.qr(v)
     return py_maxvol(q)
 
 
@@ -105,6 +107,10 @@ def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
                 down_ranges.append(c.up_info.vals)
 
         down_vals = cartesian_product_arrays(*down_ranges)
+        # print(
+        #     (node.up_info.indices, node.up_info.vals),
+        #     (node.down_info.indices, down_vals),
+        # )
         v = construct_matrix(
             tensor_func,
             (node.up_info.indices, node.up_info.vals),
@@ -179,7 +185,7 @@ def cross(
     root: "pt.NodeName",
     eps: float = 0.1,
     val_size: int = 1000,
-    max_size: Optional[int] = None,
+    max_iters: Optional[int] = None,
     initialization: Optional[np.ndarray] = None,
     known: Optional[np.ndarray] = None,
     kickrank: int = 2,
@@ -238,12 +244,22 @@ def cross(
         root_val = root_matrix.T.reshape(*f_sizes, *c_sizes)
         net.node_tensor(tree.node).update_val_size(root_val)
 
+        # eval_start = time.time()
+        # estimate_tensor = net.contract()
+        # ind_perm = [estimate_tensor.indices.index(ind) for ind in f.indices]
+        # estimate = estimate_tensor.value.transpose(ind_perm)[*validation]
+        # if isinstance(net, pt.HierarchicalTucker):
+        #     estimate = net.evaluate_cross(f.indices, validation).reshape(-1)
+        # elif isinstance(net, pt.TensorTrain):
+        #     estimate = net.evaluate(f.indices, validation).reshape(-1)
         estimate = net.evaluate(f.indices, validation).reshape(-1)
+
+        # print("evaluate time:", time.time() - eval_start)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
         # print("rank:", trial, "error:", err)
         # print(net)
-        if err <= eps or (max_size is not None and len(up_vals) >= max_size):
+        if err <= eps or (max_iters is not None and trial >= max_iters):
             break
 
         trial += 1
