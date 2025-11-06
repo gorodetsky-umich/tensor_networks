@@ -160,7 +160,7 @@ class SearchEngine:
             # approx_val = best_network.contract().value.reshape(-1)
             # data_val = data_tensor(valid)
             best_indices = best_network.free_indices()
-            reshaped_func = reshape_func(best_st.reshape_history, free_indices, data_tensor)
+            reshaped_func = reshape_func(best_st.reshape_history, data_tensor)
             perm = [best_indices.index(ind) for ind in reshaped_func.indices]
             result.valid_set = valid
             result.valid_indices = best_indices

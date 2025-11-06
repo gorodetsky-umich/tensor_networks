@@ -95,6 +95,10 @@ class SearchEngineConfig(pydantic.BaseModel):
         default=False,
         description="Enable verbose logging for intermediate search steps",
     )
+    seed: int = pydantic.Field(
+        default=0,
+        description="Random seed used in random algorithms",
+    )
 
 
 class OutputConfig(pydantic.BaseModel):

@@ -158,7 +158,7 @@ class ConstraintSearch:
                 prev_sum = sv
                 cnt = 1
 
-        if cnt != 0:
+        if cnt != 0 and cnt != 1:
             s_sizes.append(cnt)
             s_sums.append(prev_sum)
 
@@ -188,7 +188,7 @@ class ConstraintSearch:
         other_indices = [ind for ind in data_indices if ind not in comb]
         other_size = int(np.prod([i.size for i in other_indices]))
         other_merge = IndexMerge(indices=other_indices, result=Index("_".join([str(i.name) for i in other_indices]), other_size, range(other_size)))
-        merge_func = reshape_func([comb_merge, other_merge], data_tensor.free_indices(), FuncTensorNetwork(data_tensor.free_indices(), data_tensor))
+        merge_func = reshape_func([comb_merge, other_merge], FuncTensorNetwork(data_tensor.free_indices(), data_tensor))
 
         # get ranks and errors for the comb
         domains = [torch.arange(s) for s in [comb_size, other_size]]
