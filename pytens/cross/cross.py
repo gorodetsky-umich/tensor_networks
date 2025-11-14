@@ -266,7 +266,7 @@ def cross(
         # print(estimate.shape, real.shape)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        print("rank:", trial, "error:", err)
+        # print("rank:", trial, "error:", err)
         # print(net)
         if err <= eps or (max_iters is not None and trial >= max_iters):
             break

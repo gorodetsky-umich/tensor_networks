@@ -49,7 +49,7 @@ class TnTorchCrossRunner(CrossRunner):
             max_iter=100,
             val_size=2500,
             rmax=500,
-            verbose=True,
+            verbose=False,
         )
         net = tntorch_to_tt(res, f.indices)
         return net
