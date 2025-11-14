@@ -144,7 +144,7 @@ class FuncData(CountableFunc):
         return self.data[*args.astype(int).T]
 
 
-class FuncTensorNetwork(CountableFunc):
+class FuncTensorNetwork(CountingFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):

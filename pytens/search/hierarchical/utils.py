@@ -40,14 +40,11 @@ class DisjointSet:
         for x in self.elems:
             root = self.find(x)
             groups[root].append(x)
+ 
+        for k in groups:
+            groups[k] = sorted(groups[k])
 
         return groups
-
-def trigger_merge(config: SearchConfig, is_top: bool) -> bool:
-    """Determine whether to trigger the index merge operation before search"""
-    return (config.topdown.search_algo == "correlation") and (
-        not is_top or config.topdown.merge_mode == "all"
-    )
 
 
 def corr(

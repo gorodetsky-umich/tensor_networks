@@ -3,17 +3,17 @@
 import atexit
 import copy
 import heapq
+import logging
 import pickle
 import time
 from typing import List, Optional, Sequence
-import logging
 
 import numpy as np
 from line_profiler import profile
 
-from pytens.algs import FoldedTensorTrain, TreeNetwork, Tensor, TensorTrain
-from pytens.cross.cross import TensorFunc
-from pytens.cross.funcs import CountableFunc
+from pytens.algs import FoldedTensorTrain, Tensor, TensorTrain, TreeNetwork
+from pytens.cross.cross import cross
+from pytens.cross.funcs import FuncTensorNetwork, TensorFunc
 from pytens.search.configuration import SearchConfig
 from pytens.search.constraint import ConstraintSearch
 from pytens.search.state import Action, ISplit, OSplit, SearchState
@@ -21,15 +21,16 @@ from pytens.search.utils import (
     DataTensor,
     SearchResult,
     SearchStats,
+    get_conflicts,
     init_state,
     remove_temp_dir,
     to_splits,
-    get_conflicts,
 )
 from pytens.types import Index, IndexMerge, FoldDir
 
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
 
 class PartitionSearch:
     """Search by partitions free indices"""
@@ -186,11 +187,11 @@ class PartitionSearch:
         unused_delta = 0.0
         for n in st.network.network.nodes:
             tmp_st = copy.deepcopy(st)
-            tmp_st.network.compress()
             _, unused_delta = tmp_st.network.round(n, st.curr_delta)
             if tmp_st.network.cost() < best_state.network.cost():
                 best_state = tmp_st
 
+        best_state.network.compress()
         res.best_state = best_state
         res.unused_delta = unused_delta
         return res
@@ -204,23 +205,23 @@ class PartitionSearch:
         tensor_func: Optional[TensorFunc] = None,
     ) -> SearchResult:
         if not actions:
-            # undo everything else
-            while True:
-                modified = False
-                for ac in to_splits(st.network):
-                    # print("checking action", ac)
-                    # for pac in st.past_actions:
-                        # print("past action", pac)
+            # # undo everything else
+            # while True:
+            #     modified = False
+            #     for ac in to_splits(st.network):
+            #         # print("checking action", ac)
+            #         # for pac in st.past_actions:
+            #         # print("past action", pac)
 
-                    if ac not in st.past_actions:
-                        # print("revert", ac)
-                        modified = True
-                        st.network.merge(*ac.reverse_edge)
-                        break
-                # print("-------")
-                if not modified:
-                    break
-                
+            #         if ac not in st.past_actions:
+            #             # print("revert", ac)
+            #             modified = True
+            #             st.network.merge(*ac.reverse_edge)
+            #             break
+            #     # print("-------")
+            #     if not modified:
+            #         break
+
             # print(st.network)
             return self._round(st, tensor_func)
 
@@ -295,7 +296,9 @@ class PartitionSearch:
 
         return self.get_cost(data_tensor, st, [data_tensor.cost()])
 
-    def _preprocess_cross_result(self, data_tensor: TensorTrain, merge_ops: Sequence[IndexMerge]) -> TreeNetwork:
+    def _cross_to_tt_to_ftt(
+        self, data_tensor: TensorTrain, merge_ops: Sequence[IndexMerge]
+    ) -> TreeNetwork:
         """Handle index merging during preprocessing for cross results."""
         # after we know how indices are merged, we create a permuted function
         new_indices = []
@@ -314,7 +317,9 @@ class PartitionSearch:
                 new_indices.append(ind)
 
         assert len(new_indices) == len(data_tensor.free_indices())
-        tt = data_tensor.reorder_by_cross(new_indices)
+        ok, tt = data_tensor.reorder_by_cross(new_indices, self.config.engine.eps)
+        if not ok:
+            tt = data_tensor.reorder_by_svd(new_indices, self.config.engine.eps)
 
         # fold the indices according to merge ops
         for mop in merge_ops:
@@ -341,12 +346,59 @@ class PartitionSearch:
 
         return tt
 
+    def _cross_to_ftt(
+        self, data_tensor: TensorTrain, merge_ops: Sequence[IndexMerge]
+    ) -> TreeNetwork:
+        """Handle index merging during preprocessing for cross results."""
+        # after we know how indices are merged, we create a permuted function
+        new_indices = []
+        for mop in merge_ops:
+            new_indices.append(mop.indices)
+
+        # there exists some free indices are not merged
+        for ind in data_tensor.free_indices():
+            found = False
+            for mop in merge_ops:
+                if ind in mop.indices:
+                    found = True
+                    break
+
+            if not found:
+                new_indices.append([ind])
+
+        tt = FoldedTensorTrain.rand_ftt(new_indices)
+        finds = [
+            ind.with_new_rng(range(ind.size)) for ind in tt.free_indices()
+        ]
+        func = FuncTensorNetwork(finds, data_tensor)
+        cross(
+            func,
+            tt,
+            tt.backbone_nodes[0],
+            eps=self.config.engine.eps,
+            max_iters=100,
+            kickrank=1,
+        )
+
+        # orthonormalize before proceeding
+        if isinstance(tt, FoldedTensorTrain):
+            tt.orthonormalize(tt.backbone_nodes[0])
+        else:
+            tt.orthonormalize(list(tt.network.nodes)[0])
+
+        return tt
+
+    # def _preprocess_ftt(self, data_tensor: FoldedTensorTrain) -> FoldedTensorTrain:
+    #     data_tensor.orthonormalize(data_tensor.backbone_nodes[0])
+    #     return data_tensor
+
     def preprocess(
-        self, data_tensor: DataTensor, merge_ops: Sequence[IndexMerge], exclusions: Optional[Sequence[Index]]
-    ) -> float:
+        self,
+        data_tensor: DataTensor,
+        merge_ops: Sequence[IndexMerge],
+        exclusions: Optional[Sequence[Index]],
+    ) -> None:
         """Precompute the pair of ranks and errors for the given data tensor"""
-        # print("start preprocess")
-        preprocess_start = time.time()
         if self.config.synthesizer.replay_from is not None:
             with open(self.config.synthesizer.replay_from, "rb") as ac_file:
                 acs = pickle.load(ac_file)
@@ -364,7 +416,7 @@ class PartitionSearch:
 
                 if not found:
                     indices.append(ind)
-                
+
             ind_combs = SearchState.all_index_combs(indices)
 
         for comb in ind_combs:
@@ -399,13 +451,9 @@ class PartitionSearch:
                 self.config.output.output_dir,
                 self.constraint_engine.temp_files,
             )
-        preprocess_end = time.time()
 
         if isinstance(data_tensor, TensorFunc):
             self.stats.search_cross_evals += data_tensor.stats
-
-        # print("end preprocess")
-        return preprocess_end - preprocess_start
 
     @profile
     def search(
@@ -430,9 +478,25 @@ class PartitionSearch:
         else:
             self._delta = delta
 
-        logger.debug("**delta: %s, data norm: %s", self._delta, data_tensor.norm())
+        logger.debug(
+            "**delta: %s, data norm: %s", self._delta, data_tensor.norm()
+        )
         self.constraint_engine.delta = self._delta
-        self.stats.preprocess_time = self.preprocess(data_tensor, merge_ops, exclusions)
+
+        transform_start = time.time()
+        if isinstance(data_tensor, TensorTrain):
+            if self.config.cross.init_struct == "ftt":
+                data_tensor = self._cross_to_ftt(data_tensor, merge_ops)
+            else:
+                data_tensor = self._cross_to_tt_to_ftt(data_tensor, merge_ops)
+        self.stats.merge_transform_time = time.time() - transform_start
+
+        # print(data_tensor)
+        # if isinstance(data_tensor, FoldedTensorTrain):
+        #     data_tensor = self._preprocess_ftt(data_tensor)
+        preprocess_start = time.time()
+        self.preprocess(data_tensor, merge_ops, exclusions)
+        self.stats.preprocess_time = time.time() - preprocess_start
         self.stats.search_start = time.time()
 
         if self.config.synthesizer.replay_from is not None:

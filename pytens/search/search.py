@@ -2,27 +2,46 @@
 
 import itertools
 import time
+from abc import abstractmethod
 
 import numpy as np
 
 from pytens.algs import TreeNetwork
-from pytens.cross.cross import TensorFunc
-from pytens.search.configuration import SearchConfig
+from pytens.cross.funcs import CountingFunc, TensorFunc
+from pytens.cross.runner import (
+    CrossRunner,
+    HTCrossRunner,
+    TnTorchCrossRunner,
+    TTCrossRunner,
+    FTTCrossRunner,
+)
+from pytens.search.configuration import (
+    InitStructType,
+    InputFormat,
+    SearchConfig,
+    ClusterMethod,
+)
 from pytens.search.exhaustive import BFSSearch, DFSSearch
 from pytens.search.hierarchical.error_dist import AlphaErrorDist
-from pytens.search.hierarchical.top_down import TopDownSearch
+from pytens.search.hierarchical.top_down import (
+    TopDownSearch,
+    BlackBoxTopDownSearch,
+    WhiteBoxTopDownSearch,
+)
+from pytens.search.hierarchical.types import TopDownSearchResult, HSearchState
 from pytens.search.partition import PartitionSearch
 from pytens.search.state import SearchState
 from pytens.search.utils import (
     DataTensor,
-    SearchResult,
     approx_error,
+    reshape_func,
     reshape_indices,
     rtol,
-    unravel_indices,
-    reshape_func,
 )
-from pytens.search.hierarchical.types import TopDownSearchResult
+from pytens.search.hierarchical.index_cluster import (
+    SVDIndexCluster,
+    RandomIndexCluster,
+)
 
 
 class SearchEngine:
@@ -35,7 +54,7 @@ class SearchEngine:
         """Perform an search with output-directed splits + constraint solve."""
 
         engine = PartitionSearch(self.config)
-        result = engine.search(data_tensor)
+        result = engine.search(data_tensor, [])
         assert result.best_state is not None
 
         free_indices = data_tensor.free_indices()
@@ -52,7 +71,9 @@ class SearchEngine:
             validation = [np.random.randint(i, size=val_size) for i in sizes]
             validation = np.stack(validation, axis=-1)
             net_val = data_tensor(validation)
-            best_val = result.best_state.network.evaluate(result.best_state.network.free_indices(), validation)
+            best_val = result.best_state.network.evaluate(
+                result.best_state.network.free_indices(), validation
+            )
             start_cost = np.prod(sizes)
         else:
             raise TypeError("unknown data tensor type")
@@ -105,16 +126,24 @@ class SearchEngine:
 
         return result
 
-    def top_down(self, data_tensor: DataTensor):
-        """Start point of a top down hierarchical search."""
 
-        top_down_runner = TopDownSearch(self.config)
-        top_down_runner.error_dist = AlphaErrorDist(alpha=self.config.topdown.alpha)
+class TopDownSearchEngine(SearchEngine):
+    """The search engine with the top down search strategy."""
+
+    def __init__(self, config: SearchConfig):
+        super().__init__(config)
+        self._top_down_runner = TopDownSearch(config)
+
+    def top_down(self) -> TopDownSearchResult:
+        """Start point of a top down hierarchical search."""
+        self._initialize()
+        self._set_cluster()
+        self._top_down_runner.error_dist = AlphaErrorDist(
+            alpha=self.config.topdown.alpha
+        )
+
         start = time.time()
-        if self.config.topdown.random_algorithm == "random":
-            best_st = top_down_runner.search(data_tensor)
-        else:
-            raise ValueError("Random search algorithm not implemented yet.")
+        best_st = self._top_down_runner.search()
         end = time.time()
 
         assert best_st is not None
@@ -122,57 +151,115 @@ class SearchEngine:
         best_network = best_st.network
         result = TopDownSearchResult()
         result.best_state = SearchState(best_network, 0)
-        result.stats = top_down_runner.stats
+        result.stats = self._top_down_runner.stats
         result.stats.search_start = start
         result.stats.search_end = end
 
-        if isinstance(data_tensor, TreeNetwork):
-            free_indices = data_tensor.free_indices()
-            unopt_size = float(np.prod([i.size for i in free_indices]))
-            init_size = data_tensor.cost()
-            data_val = data_tensor.contract().value
-            approx_val = best_network.contract().value
-            reordered_indices, data_val = reshape_indices(
-                best_st.reshape_history, free_indices, data_val
-            )
-            reordered_indices = list(itertools.chain(*reordered_indices))
-            approx_val = approx_val.transpose(
-                [free_indices.index(ind) for ind in reordered_indices]
-            )
-        elif isinstance(data_tensor, TensorFunc):
-            sample_size = 10000
-            free_indices = data_tensor.indices
-            unopt_size = float(np.prod([i.size for i in free_indices]))
-            init_size = unopt_size
+        self._collect_stats(result, best_st)
+        return result
 
-            valid = []
-            for ind in best_network.free_indices():
-                valid.append(np.random.randint(0, ind.size, size=sample_size))
-            # valid = np.stack(np.unravel_index(np.arange(unopt_size).astype(int), [int(i.size) for i in best_network.free_indices()]), axis=-1)
-            valid = np.stack(valid, axis=-1)
-            # indices, new_valid = unravel_indices(best_st.reshape_history, free_indices, valid)
-            # approx_val = best_network.evaluate(indices, new_valid)
-            # print(21**3 / best_network.cost())
-            # raise Exception("end")
-            approx_val = best_network.evaluate(best_network.free_indices(), valid)
-            # print(np.allclose(approx_val, best_network.contract().value.reshape(-1)))
-            # print(np.where(approx_val != best_network.contract().value.reshape(-1)))
-            # approx_val = best_network.contract().value.reshape(-1)
-            # data_val = data_tensor(valid)
-            best_indices = best_network.free_indices()
-            reshaped_func = reshape_func(best_st.reshape_history, data_tensor)
-            perm = [best_indices.index(ind) for ind in reshaped_func.indices]
-            result.valid_set = valid
-            result.valid_indices = best_indices
-            result.reshape_history = best_st.reshape_history
-            result.init_splits = top_down_runner.init_splits
-            data_val = reshaped_func(valid[:, perm])
-        else:
-            raise TypeError("unsupported data tensor type")
+    def _set_cluster(self):
+        threshold = self.config.topdown.group_threshold
+        cluster_method = {
+            ClusterMethod.SVD: SVDIndexCluster(threshold),
+            ClusterMethod.RAND: RandomIndexCluster(threshold),
+            ClusterMethod.NBR: RandomIndexCluster(threshold, False),
+        }.get(self.config.topdown.cluster_method, ClusterMethod(threshold))
+        self._top_down_runner.set_cluster(cluster_method)
+
+    @abstractmethod
+    def _initialize(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def _collect_stats(
+        self, result: TopDownSearchResult, best_st: HSearchState
+    ):
+        raise NotImplementedError
+
+
+class WhiteBoxTopDownSearchEngine(TopDownSearchEngine):
+    """Search engine for the white box tensors."""
+
+    def __init__(self, config, data_tensor: TreeNetwork):
+        super().__init__(config)
+        self._data_tensor = data_tensor
+
+    def _initialize(self):
+        self._top_down_runner = WhiteBoxTopDownSearch(
+            self.config, self._data_tensor
+        )
+
+    def _collect_stats(
+        self, result: TopDownSearchResult, best_st: HSearchState
+    ):
+        free_indices = self._data_tensor.free_indices()
+        best_network = best_st.network
+        unopt_size = float(np.prod([i.size for i in free_indices]))
+        init_size = self._data_tensor.cost()
+        data_val = self._data_tensor.contract().value
+        approx_val = best_network.contract().value
+        reordered_indices, data_val = reshape_indices(
+            best_st.reshape_history, free_indices, data_val
+        )
+        approx_val = approx_val.transpose(
+            [free_indices.index(ind) for ind in reordered_indices]
+        )
+        result.stats.cr_start = init_size / best_network.cost()
+        result.stats.cr_core = unopt_size / best_network.cost()
+        result.stats.re_f = float(
+            np.linalg.norm(approx_val - data_val) / np.linalg.norm(data_val)
+        )
+
+
+class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
+    """Search engine for the black box functions."""
+
+    def __init__(self, config, data_tensor: CountingFunc):
+        super().__init__(config)
+        self._data_tensor = data_tensor
+
+    def _initialize(self):
+        top_down_runner = BlackBoxTopDownSearch(self.config, self._data_tensor)
+
+        cross_runner = {
+            InitStructType.TT: TTCrossRunner(),
+            InitStructType.TT_CROSS: TnTorchCrossRunner(),
+            InitStructType.HT: HTCrossRunner(),
+            InitStructType.FTT: FTTCrossRunner(),
+        }.get(self.config.cross.init_struct, CrossRunner())
+
+        top_down_runner.set_cross_runner(cross_runner)
+        self._top_down_runner = top_down_runner
+
+    def _collect_stats(
+        self, result: TopDownSearchResult, best_st: HSearchState
+    ):
+        sample_size = 10000
+        best_network = best_st.network
+        free_indices = self._data_tensor.indices
+        unopt_size = float(np.prod([i.size for i in free_indices]))
+        init_size = unopt_size
+
+        valid = []
+        for ind in best_network.free_indices():
+            valid.append(np.random.randint(0, ind.size, size=sample_size))
+        valid = np.stack(valid, axis=-1)
+
+        approx_val = best_network.evaluate(best_network.free_indices(), valid)
+        best_indices = best_network.free_indices()
+        reshaped_func = reshape_func(
+            best_st.reshape_history, self._data_tensor
+        )
+        perm = [best_indices.index(ind) for ind in reshaped_func.indices]
+        result.valid_set = valid
+        result.valid_indices = best_indices
+        result.reshape_history = best_st.reshape_history
+        result.init_splits = self._top_down_runner.init_splits
+        data_val = reshaped_func(valid[:, perm])
 
         result.stats.cr_start = init_size / best_network.cost()
         result.stats.cr_core = unopt_size / best_network.cost()
         result.stats.re_f = float(
             np.linalg.norm(approx_val - data_val) / np.linalg.norm(data_val)
         )
-        return result

@@ -21,6 +21,8 @@ import pytens.algs as pt
 from pytens.cross.funcs import TensorFunc
 from pytens.types import DimTreeNode
 
+# logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class CrossAlgo(Enum):
     """Enumeration of cross algorithms."""

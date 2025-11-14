@@ -5,22 +5,20 @@ from typing import Optional
 
 import numpy as np
 
-from pytens.algs import TensorNetwork, rand_tt
 from pytens.cross.cross import CrossApproximation, CrossConfig
 from pytens.cross.funcs import TensorFunc
+from pytens.algs import (
+    HierarchicalTucker,
+    TensorTrain,
+    TreeNetwork,
+)
 
 
 class CrossRunner:
     """Base class for running cross approximation."""
 
     @abstractmethod
-    def run(
-        self,
-        f: TensorFunc,
-        eps: float,
-        kickrank: int = 2,
-        validation: Optional[np.ndarray] = None,
-    ) -> TensorNetwork:
+    def run(self, f: TensorFunc, eps: float) -> TreeNetwork:
         """Run the cross approximation on the given function
         with the specified error.
         """
@@ -36,9 +34,9 @@ class TTCrossRunner(CrossRunner):
         eps: float,
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
-    ) -> TensorNetwork:
+    ) -> TensorTrain:
         indices = f.indices[:]
-        net = rand_tt(indices, [1] * len(indices))
+        net = TensorTrain.rand_tt(indices, [1] * len(indices))
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(
@@ -56,8 +54,8 @@ class HTCrossRunner(CrossRunner):
         eps: float,
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
-    ) -> TensorNetwork:
-        net = TensorNetwork.rand_ht(f.indices, 1)
+    ) -> HierarchicalTucker:
+        net = HierarchicalTucker.rand_ht(f.indices, 1)
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(
@@ -75,8 +73,8 @@ class TuckerCrossRunner(CrossRunner):
         eps: float,
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
-    ) -> TensorNetwork:
-        tucker = TensorNetwork.rand_tucker(f.indices)
+    ) -> TreeNetwork:
+        tucker = TreeNetwork.rand_tucker(f.indices)
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(tucker, "root", validation, eps=eps)
