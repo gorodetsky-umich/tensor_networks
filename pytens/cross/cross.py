@@ -434,6 +434,12 @@ class CrossApproximation:
             trial += 1
             self._incr_ranks(tree, known=known)
 
+        # print("evaluate time:", time.time() - eval_start)
+        logger.debug("%s", net)
+        # print(estimate.shape, real.shape)
+        err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
+        ranks_and_errs[len(up_vals)] = err
+        # print("rank:", trial, "error:", err)
         # print(net)
         ranks_and_errs = list(sorted(list(ranks_and_errs.items())))
         # print(ranks_and_errs)
