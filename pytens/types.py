@@ -1,6 +1,6 @@
 """Type definitions."""
 
-import copy
+import logging
 import itertools
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Self, Sequence, Union, Tuple
@@ -8,6 +8,8 @@ from enum import Enum, auto
 
 import numpy as np
 import pydantic
+
+logger = logging.getLogger(__name__)
 
 IntOrStr = Union[str, int]
 NodeName = IntOrStr
@@ -204,6 +206,7 @@ class DimTreeNode:
 
         # rank_up = max(1, rank_up)
         # rank_down = max(1, rank_down)
+        logger.debug("node: %s, indices: %s, rank_up: %i, rank_down: %i, curr_rankL %i", self.node, self.free_indices, rank_up, rank_down, self.up_info.rank)
         self.up_info.rank = min([rank_up, rank_down, self.up_info.rank])
 
         for c in self.down_info.nodes:
@@ -211,10 +214,10 @@ class DimTreeNode:
 
     def add_values(self, up_vals: np.ndarray) -> None:
         """Initialize the up and down values for the given dimension tree."""
-        if len(self.up_info.nodes) == 0:
-            self.up_info.rank = 1
-        else:
-            self.up_info.rank += len(up_vals)
+        # if len(self.up_info.nodes) == 0:
+        #     self.up_info.rank = 1
+        # else:
+        #     self.up_info.rank += len(up_vals)
 
         for c in self.down_info.nodes:
             cvals = up_vals[:, [self.indices.index(ind) for ind in c.indices]]
@@ -399,3 +402,4 @@ class SVDAlgorithm(Enum):
     SVD = auto()
     MERGE = auto()
     CROSS = auto()
+    # FOLD = auto()

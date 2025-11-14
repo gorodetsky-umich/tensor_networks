@@ -1,9 +1,30 @@
 """Configuration fields for the structure search process."""
 
 from typing import Literal, Optional
+from enum import Enum, auto
 
 import pydantic
 
+class InputFormat(Enum):
+    """Types for different input formats"""
+    WHITE_BOX = auto()
+    BLACK_BOX = auto()
+
+class ClusterMethod(Enum):
+    """Different merge algorithms"""
+    RAND = auto()
+    CORR = auto()
+    SVD = auto()
+    NBR = auto()
+    RAND_NBR = auto()
+
+class InitStructType(Enum):
+    """Different initial structures"""
+    TUCKER = auto()
+    HT = auto()
+    TT = auto()
+    FTT = auto()
+    TT_CROSS = auto()
 
 class HeuristicConfig(pydantic.BaseModel):
     """Configuration for pruning heuristics"""
@@ -133,8 +154,8 @@ class CrossConfig(pydantic.BaseModel):
         default=0.1,
         description="Initial error setting for cross approximation",
     )
-    init_struct: Literal["tucker", "ht", "tt"] = pydantic.Field(
-        default="tucker",
+    init_struct: InitStructType = pydantic.Field(
+        default=InitStructType.TT_CROSS,
         description="Choice of the initial network structure before cross",
     )
     init_dim: int = pydantic.Field(
@@ -154,15 +175,15 @@ class TopDownConfig(pydantic.BaseModel):
         default="not_first",
         description="Configure whether to merge indices at the first level",
     )
-    search_algo: Literal["random", "enumerate", "correlation"] = (
+    search_algo: Literal["random", "enumerate", "merge"] = (
         pydantic.Field(
             default="enumerate",
             description="Configure whether to use random algorithms",
         )
     )
-    merge_algo: Literal["rand", "corr", "svd", "nbr", "rand_nbr"] = (
+    cluster_method: ClusterMethod = (
         pydantic.Field(
-            default="svd",
+            default=ClusterMethod.RAND,
             description="Configure what heuristic to use during index merge",
         )
     )
@@ -170,7 +191,7 @@ class TopDownConfig(pydantic.BaseModel):
         default="mean",
         description="Configure the aggregation method for correlations",
     )
-    random_algorithm: Literal["random", "anneal"] = pydantic.Field(
+    random_algorithm: Literal["random"] = pydantic.Field(
         default="random",
         description="Configure to use which random search algorithm",
     )
@@ -178,23 +199,19 @@ class TopDownConfig(pydantic.BaseModel):
         default=4,
         description="Configure the number of indices allowed in one search",
     )
-    annel_step: int = pydantic.Field(
-        default=10,
-        description="Configure the step number for SA",
-    )
-    init_temp: float = pydantic.Field(
-        default=100,
-        description="Configure the initial temperature for AS",
-    )
-    temp_schedule: Literal["linear", "exp", "log"] = pydantic.Field(
-        default="linear",
-        description="Configure the temperature schedule for SA",
-    )
     alpha: float = pydantic.Field(
         default=10,
         description="Configure the error distribution between steps",
     )
 
+
+class InputConfig(pydantic.BaseModel):
+    """Configuration for input-related fields"""
+
+    input_format: InputFormat = pydantic.Field(
+        default=InputFormat.WHITE_BOX,
+        description="Choose the input data format",
+    )
 
 class SearchConfig(pydantic.BaseModel):
     """Configuration for the entire search process"""
@@ -218,6 +235,10 @@ class SearchConfig(pydantic.BaseModel):
     output: OutputConfig = pydantic.Field(
         default_factory=OutputConfig,
         description="Configurations for search outputs",
+    )
+    input: InputConfig = pydantic.Field(
+        default_factory=InputConfig,
+        description="Configuration for input formats",
     )
     preprocess: PreprocessConfig = pydantic.Field(
         default_factory=PreprocessConfig,

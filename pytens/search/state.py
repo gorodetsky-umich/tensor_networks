@@ -1,24 +1,24 @@
 """Classes for search states."""
 
-from typing import Sequence, Tuple, Self, Generator, Optional, Dict, List
-import itertools
 import copy
+import itertools
+from typing import Dict, Generator, List, Optional, Self, Sequence, Tuple
 
-import numpy as np
 import networkx as nx
+import numpy as np
 
 from pytens.algs import (
     FoldedTensorTrain,
     HierarchicalTucker,
+    Index,
+    IndexName,
     NodeName,
+    SVDConfig,
     TensorTrain,
     TreeNetwork,
-    Index,
-    SVDConfig,
-    IndexName,
 )
-from pytens.types import IndexMerge, PartitionStatus, SVDAlgorithm
 from pytens.cross.cross import TensorFunc
+from pytens.types import IndexMerge, PartitionStatus, SVDAlgorithm
 
 
 class Action:
@@ -107,7 +107,11 @@ class OSplit(Action):
             return None
 
         while res.code != PartitionStatus.OK:
-            print("Cannot find the lca for indices", self.indices, "try swap indices")
+            print(
+                "Cannot find the lca for indices",
+                self.indices,
+                "try swap indices",
+            )
             print("before swap", net)
             # swap indices until they are in the same subtree
             ind_nodes = [net.node_by_free_index(i.name) for i in self.indices]
@@ -177,13 +181,15 @@ class OSplit(Action):
     ) -> np.ndarray:
         """Compute the singular values of the split action."""
         if isinstance(net, TensorTrain):
-            if algo == SVDAlgorithm.MERGE:
-                return net.svals_by_merge(self.indices, max_rank=max_rank)
-
             if algo == SVDAlgorithm.CROSS:
                 return net.svals_by_cross(self.indices, max_rank=max_rank)
 
-            return net.svals(self.indices, max_rank=max_rank, delta=delta)
+            # if algo == SVDAlgorithm.FOLD:
+            #     return net.svals_by_fold(self.indices, max_rank=max_rank)
+
+            return net.svals_by_merge(self.indices, max_rank=max_rank)
+
+            # return net.svals(self.indices, max_rank=max_rank, delta=delta)
 
         if isinstance(net, HierarchicalTucker):
             return net.svals(

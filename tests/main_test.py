@@ -12,6 +12,7 @@ import numpy as np
 from tensor_networks.pytens.utils import num_ht_ranks
 
 from pytens.algs import (
+    FoldedTensorTrain,
     HierarchicalTucker,
     Index,
     Tensor,
@@ -1656,6 +1657,14 @@ class TestDimTree(unittest.TestCase):
         path = dim_tree.path("G8", "G1")
         self.assertListEqual([n.node for n in path], ["G8", "G6", "G0", "G1"])
 
+
+class TestFoldedTT(unittest.TestCase):
+    def test_construction(self):
+        indices = [Index(f"I{i}", 2, range(2)) for i in range(10)]
+        ind_groups = [indices[i*3:i*3+3] for i in range(4)]
+        ftt = FoldedTensorTrain.rand_ftt(ind_groups)
+        self.assertEqual(len(ftt.network.nodes), 10)
+        self.assertEqual(len(ftt.network.edges), 9)
 
 if __name__ == "__main__":
     unittest.main()

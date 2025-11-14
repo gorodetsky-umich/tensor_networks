@@ -328,7 +328,7 @@ class TestTopDownSearch(unittest.TestCase):
         config.engine.decomp_algo = "cross"
         config.cross.init_eps = 0.1
         config.cross.init_struct = "tt"
-        config.topdown.search_algo = "correlation"
+        config.topdown.search_algo = "merge"
         config.topdown.merge_mode = "all"
         search_engine = SearchEngine(config=config)
         result = search_engine.top_down(tensor_func)
@@ -357,7 +357,7 @@ class TestTopDownSearch(unittest.TestCase):
         config.engine.decomp_algo = "cross"
         config.cross.init_eps = 0.1
         config.cross.init_struct = "tt"
-        config.topdown.search_algo = "correlation"
+        config.topdown.search_algo = "merge"
         config.topdown.merge_mode = "all"
         search_engine = SearchEngine(config=config)
         result = search_engine.top_down(tensor_func)

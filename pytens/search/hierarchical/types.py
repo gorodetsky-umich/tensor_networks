@@ -1,4 +1,71 @@
+"""Type definitions for hierarchical search"""
+
+from typing import List, Sequence, Self
+import copy
 from pytens.search.utils import SearchResult, SearchStats
+from pytens.algs import TreeNetwork
+from pytens.types import Index, IndexOp, IndexMerge, IndexSplit
+
+
+class HSearchState:
+    """Hierarchical search state"""
+
+    def __init__(
+        self,
+        free_indices: List[Index],
+        reshape_history: List[IndexOp],
+        network: TreeNetwork,
+        unused_delta: float,
+    ):
+        self.free_indices = free_indices
+        self.reshape_history = reshape_history
+        self.network = network
+        self.unused_delta = unused_delta
+
+    # after the cross, we do the normal but the data tensor is a tensor network.
+    def merge_index(self, merge_op: IndexMerge) -> Self:
+        """Perform a merge operation on the given node."""
+        new_st = copy.deepcopy(self)
+        new_st.network = new_st.network.merge_index(merge_op)
+        new_net = new_st.network
+        assert new_net is not None, "merge operation failed"
+
+        new_indices = []
+        for i in new_net.free_indices():
+            if i not in self.network.free_indices():
+                new_indices.append(i)
+
+        for mi in merge_op.indices:
+            new_st.free_indices.remove(mi)
+
+        merge_op.result = new_indices[0]
+        new_st.reshape_history.append(merge_op)
+        new_st.free_indices.extend(new_indices)
+
+        return new_st
+
+    def split_index(
+        self, split_op: IndexSplit, compute_data: bool = True
+    ) -> Self:
+        """Perform a split operation on the given node."""
+        # print("applying split", split_op)
+        new_st = copy.deepcopy(self)
+        new_net = new_st.network
+        new_net.split_index(split_op, compute_data=compute_data)
+        # print(node)
+
+        old_indices = self.network.free_indices()
+        new_indices = []
+        for i in new_net.free_indices():
+            if i not in old_indices:
+                new_indices.append(i)
+
+        ind = split_op.index
+        new_st.free_indices.remove(ind)
+        new_st.free_indices.extend(new_indices)
+        new_st.reshape_history.append(split_op)
+
+        return new_st
 
 
 class TopDownSearchResult(SearchResult):
@@ -17,3 +84,18 @@ class TopDownSearchResult(SearchResult):
         self.valid_set = valid_set
         self.valid_indices = valid_indices
         self.reshape_history = reshape_history
+
+
+class SubnetResult:
+    """Result for optimizing a subnet."""
+    def __init__(self, network: TreeNetwork, subnet: TreeNetwork, state: HSearchState):
+        self.subnet_state = state
+        self.subnet = subnet
+        self.network = network
+
+
+class IndexSplitResult:
+    """Result for index splits of one node."""
+    def __init__(self, state: HSearchState, splits: Sequence[IndexSplit]):
+        self.state = state
+        self.splits = splits

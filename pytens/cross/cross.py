@@ -4,6 +4,7 @@ import random
 import copy
 from typing import Optional, Sequence, Tuple
 import time
+import logging
 
 import numpy as np
 from line_profiler import profile
@@ -14,6 +15,8 @@ import pytens.algs as pt
 from pytens.cross.funcs import TensorFunc
 from pytens.types import DimTreeNode
 
+# logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 def cartesian_product_arrays(*arrays):
     """
@@ -69,7 +72,7 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     # # if real_rank < r.shape[0]:
     # #     print("Warning: cutting internal ranks")
     # q = q[:, :real_rank]
-    # print(v)
+    # # print(v)
     q, _ = np.linalg.qr(v)
     return py_maxvol(q)
 
@@ -133,7 +136,7 @@ def leaves_to_root(
             up_sizes.append(ind.size)
             up_ranges.append(np.arange(ind.size)[:, None])
 
-    for c in node.down_info.nodes:
+    for c in sorted(node.down_info.nodes):
         up_sizes.append(len(c.up_info.vals))
         up_ranges.append(c.up_info.vals)
 
@@ -153,12 +156,15 @@ def incr_ranks(tree: DimTreeNode, kickrank: int = 2, known: Optional[np.ndarray]
     """Increment the ranks for all edges"""
     # compute the target size of ranks
     tree.increment_ranks(kickrank)
-    # print("after increment", tree.ranks())
-    tree.bound_ranks()
-    # print("after first round", tree.ranks())
-    tree.bound_ranks()
-    # print("after second round", tree.ranks())
-
+    logger.debug("after increment %s", tree.ranks())
+    new_ranks = tree.ranks()
+    old_ranks = None
+    while new_ranks != old_ranks:
+        tree.bound_ranks()
+        logger.debug("after bounding %s", tree.ranks())
+        old_ranks = new_ranks
+        new_ranks = tree.ranks()
+        
     if known is None:
         up_vals = [np.random.randint(0, ind.size, [kickrank, 1]) for ind in tree.indices]
         up_vals = np.concatenate(up_vals, axis=-1)
@@ -229,10 +235,11 @@ def cross(
             leaves_to_root(f, n, net)
 
         # get the value for the root node
+        ordered_down_nodes = sorted(tree.down_info.nodes)
         c_indices = [
-            ind for c in tree.down_info.nodes for ind in c.up_info.indices
+            ind for c in ordered_down_nodes for ind in c.up_info.indices
         ]
-        c_vals = [c.up_info.vals for c in tree.down_info.nodes]
+        c_vals = [c.up_info.vals for c in ordered_down_nodes]
         up_vals = cartesian_product_arrays(*c_vals)
         c_sizes = [len(v) for v in c_vals]
         root_matrix = construct_matrix(
@@ -248,16 +255,18 @@ def cross(
         # estimate_tensor = net.contract()
         # ind_perm = [estimate_tensor.indices.index(ind) for ind in f.indices]
         # estimate = estimate_tensor.value.transpose(ind_perm)[*validation]
-        # if isinstance(net, pt.HierarchicalTucker):
-        #     estimate = net.evaluate_cross(f.indices, validation).reshape(-1)
-        # elif isinstance(net, pt.TensorTrain):
+        # if isinstance(net, pt.TensorTrain):
         #     estimate = net.evaluate(f.indices, validation).reshape(-1)
+        # else:
+        #     estimate = net.evaluate_cross(f.indices, validation).reshape(-1)
         estimate = net.evaluate(f.indices, validation).reshape(-1)
 
         # print("evaluate time:", time.time() - eval_start)
+        logger.debug("%s", net)
+        # print(estimate.shape, real.shape)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        # print("rank:", trial, "error:", err)
+        print("rank:", trial, "error:", err)
         # print(net)
         if err <= eps or (max_iters is not None and trial >= max_iters):
             break
@@ -267,4 +276,5 @@ def cross(
 
     # print(net)
     ranks_and_errs = sorted(list(ranks_and_errs.items()))
+    # print(ranks_and_errs)
     return CrossResult(tree, ranks_and_errs)

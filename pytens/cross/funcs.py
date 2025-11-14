@@ -16,6 +16,7 @@ class TensorFunc:
     def __init__(self, indices: List[Index]):
         self.d = len(indices)
         self.indices = indices
+        self.name = "_func_"
 
     def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized indices to function arguments"""
@@ -61,7 +62,7 @@ class TensorFunc:
         args = self.index_to_args(indices)
         return self.run(args)
 
-class CountableFunc(TensorFunc):
+class CountingFunc(TensorFunc):
     """A tensor function with cache"""
     def __init__(self, indices: List[Index]):
         super().__init__(indices)
@@ -86,7 +87,7 @@ def simulate_neutron_diffusion(program, args):
     result = subprocess.run(cmd, capture_output=True, shell=True, check=True)
     return float(result.stdout)
 
-class FuncNeutron(CountableFunc):
+class FuncNeutron(CountingFunc):
     """Class for neutron transport function as cross approximation source."""
     def __init__(self, indices: List[Index]):
         super().__init__(indices)
@@ -134,7 +135,7 @@ class FuncNeutron(CountableFunc):
         # print("cache size", len(self.cache))
         return results
 
-class FuncData(CountableFunc):
+class FuncData(CountingFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], data: np.ndarray):
@@ -145,7 +146,7 @@ class FuncData(CountableFunc):
         return self.data[*args.astype(int).T]
 
 
-class FuncTensorNetwork(CountableFunc):
+class FuncTensorNetwork(CountingFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
@@ -274,7 +275,7 @@ class PermuteFunc(TensorFunc):
     def run(self, args: np.ndarray):
         return self.old_func.run(args)
 
-class FuncAckley(CountableFunc):
+class FuncAckley(CountingFunc):
     """Source: https://www.sfu.ca/~ssurjano/ackley.html"""
 
     def __init__(self, indices: List[Index]):
@@ -297,7 +298,7 @@ class FuncAckley(CountableFunc):
         return y1 + y2 + y3
 
 
-class FuncAlpine(CountableFunc):
+class FuncAlpine(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -319,7 +320,7 @@ class FuncAlpine(CountableFunc):
         return np.sum(np.abs(args * np.sin(args) + 0.1 * args), axis=1)
 
 
-class FuncChung(CountableFunc):
+class FuncChung(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -343,7 +344,7 @@ class FuncChung(CountableFunc):
         return np.sum(args**2, axis=1) ** 2
 
 
-class FuncDixon(CountableFunc):
+class FuncDixon(CountingFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/dixonpr.html
     """
@@ -368,7 +369,7 @@ class FuncDixon(CountableFunc):
         return y1 + y2
 
 
-class FuncGriewank(CountableFunc):
+class FuncGriewank(CountingFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/griewank.html
     """
@@ -396,7 +397,7 @@ class FuncGriewank(CountableFunc):
         return y1 + y2 + y3
 
 
-class FuncPathological(CountableFunc):
+class FuncPathological(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -426,7 +427,7 @@ class FuncPathological(CountableFunc):
         return np.sum(0.5 + y1 / y2, axis=1)
 
 
-class FuncPinter(CountableFunc):
+class FuncPinter(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -462,7 +463,7 @@ class FuncPinter(CountableFunc):
         return y1 + y2 + y3
 
 
-class FuncQing(CountableFunc):
+class FuncQing(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -487,7 +488,7 @@ class FuncQing(CountableFunc):
         return np.sum((args**2 - i) ** 2, axis=1)
 
 
-class FuncRastrigin(CountableFunc):
+class FuncRastrigin(CountingFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/rastr.html
     """
@@ -509,7 +510,7 @@ class FuncRastrigin(CountableFunc):
         return y1 + y2
 
 
-class FuncSchaffer(CountableFunc):
+class FuncSchaffer(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -535,7 +536,7 @@ class FuncSchaffer(CountableFunc):
         return np.sum(y, axis=1)
 
 
-class FuncSchwefel(CountableFunc):
+class FuncSchwefel(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -559,7 +560,7 @@ class FuncSchwefel(CountableFunc):
         return -np.sum(args * np.sin(np.sqrt(np.abs(args))), axis=1) / self.d
 
 
-class FuncSphere(CountableFunc):
+class FuncSphere(CountingFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/spheref.html
     """
@@ -579,7 +580,7 @@ class FuncSphere(CountableFunc):
         return np.sum(args**2, axis=1)
 
 
-class FuncSquares(CountableFunc):
+class FuncSquares(CountingFunc):
     """
     Source: https://www.sfu.ca/~ssurjano/sumsqu.html
     """
@@ -600,7 +601,7 @@ class FuncSquares(CountableFunc):
         return np.sum(i * args**2, axis=1)
 
 
-class FuncTrigonometric(CountableFunc):
+class FuncTrigonometric(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -631,7 +632,7 @@ class FuncTrigonometric(CountableFunc):
         return np.sum((y1 + y2 + y3) ** 2, axis=1)
 
 
-class FuncWavy(CountableFunc):
+class FuncWavy(CountingFunc):
     """
     Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
             benchmark functions for global optimization problems". Journal of
@@ -656,7 +657,7 @@ class FuncWavy(CountableFunc):
         return 1.0 - np.sum(y, axis=1) / self.d
 
 
-class FuncHilbert(CountableFunc):
+class FuncHilbert(CountingFunc):
     """
     Source:
     """
@@ -674,7 +675,7 @@ class FuncHilbert(CountableFunc):
         return 1.0 / np.sum(args + 1, axis=1)
 
 
-class FuncSqSum(CountableFunc):
+class FuncSqSum(CountingFunc):
     """
     Source:
     """
@@ -692,7 +693,7 @@ class FuncSqSum(CountableFunc):
         return 1.0 / np.sqrt(np.sum(args**2, axis=1))
 
 
-class FuncExpSum(CountableFunc):
+class FuncExpSum(CountingFunc):
     """
     Source:
     """
@@ -710,7 +711,7 @@ class FuncExpSum(CountableFunc):
         return np.exp(-np.sqrt(np.sum(args**2, axis=1)))
 
 
-class FuncToy1(CountableFunc):
+class FuncToy1(CountingFunc):
     """The toy example 1 from the paper
     TODO: add paper info
     """
@@ -723,7 +724,7 @@ class FuncToy1(CountableFunc):
         return np.exp(-4 * np.prod(args, axis=1) ** 2)
 
 
-class FuncToy2(CountableFunc):
+class FuncToy2(CountingFunc):
     """The toy example 2 from the paper
     TODO: add paper info
     """
@@ -737,7 +738,7 @@ class FuncToy2(CountableFunc):
         return np.power(np.sum(np.power(args, self.b), axis=1), -1.0 / self.b)
 
 
-class FuncTDE(CountableFunc):
+class FuncTDE(CountingFunc):
     """The toy example 2 from the paper
     TODO: add paper info
     """
@@ -756,7 +757,7 @@ class FuncTDE(CountableFunc):
         )
 
 
-class FuncAdvReact(CountableFunc):
+class FuncAdvReact(CountingFunc):
     """The toy example 2 from the paper
     TODO: add paper info
     """

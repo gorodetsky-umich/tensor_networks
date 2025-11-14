@@ -1,8 +1,8 @@
 """Utility function for structure search."""
 
 import os
-from typing import Dict, List, Literal, Optional, Self, Tuple, Union
 import random
+from typing import Dict, List, Literal, Optional, Self, Tuple, Union
 
 import numpy as np
 import pydantic
@@ -10,23 +10,16 @@ import torch
 
 from pytens.algs import Tensor, TreeNetwork
 from pytens.cross.funcs import (
-    TensorFunc,
-    SplitFunc,
+    CountingFunc,
     MergeFunc,
-    CountableFunc,
     PermuteFunc,
+    SplitFunc,
+    TensorFunc,
 )
-from pytens.search.state import SearchState, OSplit
-from pytens.types import (
-    DimTreeNode,
-    IndexMerge,
-    IndexSplit,
-    Index,
-    NodeName,
-    IndexPermute,
-)
+from pytens.search.state import OSplit, SearchState
+from pytens.types import Index, IndexMerge, IndexPermute, IndexSplit, NodeName
 
-DataTensor = Union[TreeNetwork, CountableFunc]
+DataTensor = Union[TreeNetwork, CountingFunc]
 
 
 class SearchStats(pydantic.BaseModel):
@@ -42,6 +35,7 @@ class SearchStats(pydantic.BaseModel):
     count: int = 0
     preprocess_time: float = 0.0
     merge_time: float = 0.0
+    merge_transform_time: float = 0.0
     cross_time: float = 0.0
     search_start: float = 0.0
     search_end: float = 0.0
@@ -61,6 +55,9 @@ class SearchStats(pydantic.BaseModel):
         """Merge the other search stats into the current one."""
         self.search_cross_evals += other.search_cross_evals
         self.preprocess_time += other.preprocess_time
+        self.merge_time += other.merge_time
+        self.merge_transform_time += other.merge_transform_time
+        self.cross_time += other.cross_time
 
 
 class SearchResult:
@@ -526,6 +523,8 @@ def to_splits(net: TreeNetwork) -> List[OSplit]:
             child = n2
         elif parent[n1] == n2:
             child = n1
+        else:
+            raise ValueError("The tree structure is invalid.")
 
         inds1 = subtree_indices[child]
         inds2 = [
