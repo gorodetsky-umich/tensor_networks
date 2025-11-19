@@ -45,10 +45,10 @@ class TnTorchCrossRunner(CrossRunner):
             tntorch_wrapper(f),
             domains,
             eps=eps,
-            kickrank=2,
+            kickrank=10,
             max_iter=100,
             val_size=2500,
-            rmax=500,
+            rmax=1000,
             verbose=False,
         )
         net = tntorch_to_tt(res, f.indices)

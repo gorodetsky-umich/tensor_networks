@@ -330,9 +330,10 @@ class PartitionSearch:
                 new_indices.append(ind)
 
         assert len(new_indices) == len(data_tensor.free_indices())
-        ok, tt = data_tensor.reorder_by_cross(new_indices, self.config.engine.eps)
-        if not ok:
-            tt = data_tensor.reorder_by_svd(new_indices, self.config.engine.eps)
+        tt = data_tensor.reorder_by_cross(new_indices, self.config.engine.eps * 0.25)
+        # if not ok:
+        #     print("warning: cross didn't reach the target eps")
+            # tt = data_tensor.reorder_by_svd(new_indices, self.config.engine.eps)
 
         # fold the indices according to merge ops
         for mop in merge_ops:

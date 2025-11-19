@@ -1123,8 +1123,8 @@ class TensorNetwork:  # pylint: disable=R0904
             # name1 = f"I{i}-{index.size}"
             for node, data in self.network.nodes(data=True):
                 if index in data["tensor"].indices:
-                    new_graph.add_edge(node, name1+"_node")
-                    new_graph.add_edge(name1+"_node", name1, len=0.75)
+                    new_graph.add_edge(node, name1 + "_node")
+                    new_graph.add_edge(name1 + "_node", name1, len=0.75)
 
         # To use graphviz layout,
         # you need to install both graphviz and pygraphviz.
@@ -1216,11 +1216,20 @@ class TensorNetwork:  # pylint: disable=R0904
             if str(v).endswith("_node") and str(v).startswith(str(u)):
                 invisible_edges.append((u, v))
                 continue
-            
+
             visible_edges.append((u, v))
 
-        nx.draw_networkx_edges(new_graph, pos, edgelist=visible_edges, ax=ax, width=2.0)
-        nx.draw_networkx_edges(new_graph, pos, edgelist=invisible_edges, ax=ax, width=0.0, edge_color="white")
+        nx.draw_networkx_edges(
+            new_graph, pos, edgelist=visible_edges, ax=ax, width=2.0
+        )
+        nx.draw_networkx_edges(
+            new_graph,
+            pos,
+            edgelist=invisible_edges,
+            ax=ax,
+            width=0.0,
+            edge_color="white",
+        )
         # nx.draw_networkx_edges(new_graph, pos, ax=ax, width=2.0, min_source_margin=5, min_target_margin=5)
         nx.draw_networkx_edge_labels(
             new_graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
@@ -1230,15 +1239,15 @@ class TensorNetwork:  # pylint: disable=R0904
         """Get the tensor size of the given node."""
         node_inds = self.node_tensor(node).indices
         return int(np.prod([ind.size for ind in node_inds]))
-    
+
     def ranks_along_path(self, path: Sequence[NodeName]) -> Sequence[int]:
         """Get the ranks between the nodes on the given path."""
         ranks = []
         for i, ni in enumerate(path[:-1]):
-            ranks.append(self.get_contraction_index(ni, path[i+1])[0].size)
+            ranks.append(self.get_contraction_index(ni, path[i + 1])[0].size)
 
         return ranks
-    
+
     def merge_along_path(self, path: Sequence[NodeName]) -> NodeName:
         """Merge the nodes on the given path."""
         node = path[0]
@@ -3061,81 +3070,33 @@ class TensorTrain(TreeNetwork):
 
         return htt
 
-    def reorder(
-        self, merge_ops: Sequence[IndexMerge], delta: float = 0
-    ) -> Self:
+    def reorder(self, indices: Sequence[Index]) -> Self:
         """Swap the indices so that indices in all merge ops are adjacent"""
         net = copy.deepcopy(self)
         free_indices = self.free_indices()
+        assert len(indices) == len(free_indices)
 
         left_end, right_end = net.end_nodes()
         ordered_nodes = nx.shortest_path(net.network, left_end, right_end)
-        ordered_indices = []
-        for n in ordered_nodes:
-            for ind in net.node_tensor(n).indices:
-                if ind in free_indices:
-                    ordered_indices.append(ind)
-                    break
 
-        assert len(ordered_indices) == len(free_indices)
-
-        # precompute the reverse counts between all pairs
-        seen = defaultdict(int)
-        colors = []
-        reverses = defaultdict(int)
-        for ind in ordered_indices:
-            for merge_idx, merge_op in enumerate(merge_ops):
-                if ind in merge_op.indices:
-                    for i in range(len(merge_ops)):
-                        reverses[(i, merge_idx)] += seen[i]
-                    colors.append(merge_idx)
-                    seen[merge_idx] += 1
-                    break
-
-        # for a fixed permutation of the partition sets, calculate the cost
-        assert len(merge_ops) <= 4, (
-            "there should be less than 4 merge operations"
-        )
-        smallest_perm = range(len(merge_ops))
-        smallest_cost = float("inf")
-        for permuted_merges in itertools.permutations(range(len(merge_ops))):
-            cost = 0
-            for j in range(1, len(merge_ops)):
-                for i in range(j):
-                    # enumerate all pair of i < j
-                    cost += reverses[(permuted_merges[j], permuted_merges[i])]
-
-            if cost < smallest_cost:
-                smallest_cost = cost
-                smallest_perm = permuted_merges
+        # align the indices from left to right or the reverse?
 
         # reorder the nodes according to the permuted merges
-        target_pos = 0
-        for c in smallest_perm:
-            for i in range(len(ordered_indices)):
-                if colors[i] == c:
-                    # swap i to current available position
-                    curr_pos = i
-                    while curr_pos > target_pos:
-                        net.swap_nbr(
-                            ordered_nodes[curr_pos],
-                            ordered_nodes[curr_pos - 1],
-                            delta / (smallest_cost**0.5),
-                        )
-                        (
-                            ordered_nodes[curr_pos],
-                            ordered_nodes[curr_pos - 1],
-                        ) = (
-                            ordered_nodes[curr_pos - 1],
-                            ordered_nodes[curr_pos],
-                        )
-                        colors[curr_pos], colors[curr_pos - 1] = (
-                            colors[curr_pos - 1],
-                            colors[curr_pos],
-                        )
-                        curr_pos -= 1
+        for target_pos, ind in enumerate(indices):
+            # swap i to current available position
+            curr_node = net.node_by_free_index(ind.name)
+            curr_pos = ordered_nodes.index(curr_node)
+            path = nx.shortest_path(net.network, curr_node, ordered_nodes[target_pos])
+            while curr_pos > target_pos:
+                prev_pos = curr_pos - 1
+                net.swap_nbr(path, ordered_nodes[curr_pos], ordered_nodes[prev_pos])
+                (ordered_nodes[curr_pos], ordered_nodes[prev_pos]) = (
+                    ordered_nodes[prev_pos],
+                    ordered_nodes[curr_pos],
+                )
+                curr_pos -= 1
 
-                    target_pos += 1
+            target_pos += 1
 
         return net
 
@@ -3672,22 +3633,27 @@ class TensorTrain(TreeNetwork):
     @profile
     def reorder_by_cross(
         self, indices: Sequence[Index], eps: float = 0.1
-    ) -> Tuple[bool, "TensorTrain"]:
+    ) -> "TensorTrain":
         """Reorder the tensor train so that the given indices are adjacent using cross approximation."""
         assert all(ind in self.free_indices() for ind in indices), (
             "all indices should be free"
         )
-        data = self.contract()
+        # data = self.contract()
         indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
         tt = self.rand_tt(indices)
-        # tmp_net = copy.deepcopy(self)
-        # tmp_net.compress()
-        # func = FuncTensorNetwork(list(indices), tmp_net)
+        tmp_net = copy.deepcopy(self)
+        tmp_net.compress()
+        func = FuncTensorNetwork(list(indices), tmp_net)
 
-        perm = [data.indices.index(ind) for ind in indices]
-        func = FuncData(indices, data.permute(perm).value)
-        res = cross(func, tt, tt.end_nodes()[0], eps=eps, max_iters=100, kickrank=5)
-        return res.ranks_and_errors[-1][-1] < eps, tt
+        # perm = [data.indices.index(ind) for ind in indices]
+        # func = FuncData(indices, data.permute(perm).value)
+        res = cross(
+            func, tt, tt.end_nodes()[0], eps=eps, max_iters=100, kickrank=10
+        )
+        if res.ranks_and_errors[-1][-1] < eps:
+            return tt
+        
+        return self.reorder(indices)
 
     @staticmethod
     @profile
@@ -3703,9 +3669,13 @@ class TensorTrain(TreeNetwork):
             left_inds = tt.node_tensor(r).indices
             lefts = [left_inds.index(ind)]
             if l is not None:
-                lefts.append(left_inds.index(tt.get_contraction_index(l, r)[0]))
+                lefts.append(
+                    left_inds.index(tt.get_contraction_index(l, r)[0])
+                )
             [l, s, r], _ = tt.svd(
-                r, lefts, SVDConfig(delta=norm * eps / ((len(indices)-1) ** 0.5))
+                r,
+                lefts,
+                SVDConfig(delta=norm * eps / ((len(indices) - 1) ** 0.5)),
             )
             tt.merge(r, s)
 

@@ -87,6 +87,7 @@ def select_indices_greedy(
     np.argmax(diff, axis=1)
     return (np.empty(0), np.empty(0))
 
+# def deim()
 
 @profile
 def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
@@ -266,7 +267,7 @@ def cross(
         # print(estimate.shape, real.shape)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        # print("rank:", trial, "error:", err)
+        # print("step:", trial, "error:", err)
         # print(net)
         if err <= eps or (max_iters is not None and trial >= max_iters):
             break

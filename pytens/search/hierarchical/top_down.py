@@ -15,10 +15,11 @@ import numpy as np
 import sympy
 from line_profiler import profile
 
-from pytens.algs import TensorTrain, TreeNetwork
+from pytens.algs import TensorTrain, TreeNetwork, tt_svd_round
 from pytens.cross.funcs import (
     CountingFunc,
     FuncTensorNetwork,
+    FuncNeutron,
     PermuteFunc,
     TensorFunc,
 )
@@ -157,6 +158,7 @@ class TopDownSearch:
         after_split = tmp_bn.free_indices()
 
         unused_delta = result.unused_delta**2 + st.unused_delta
+        # TODO: check do we get the correct next nets? Does converting them into TT make this wrong?
         next_nets = self._get_next_nets(result.best_state)
         best_st = HSearchState(st.free_indices, st.reshape_history, bn, 0)
 
@@ -172,6 +174,7 @@ class TopDownSearch:
         for subnet in next_nets:
             self._search_for_subnet(best_st, remaining_delta, subnet)
 
+        # after we replaced all subnets, we compress the additional edges
         best_st.unused_delta = unused_delta
         # self.memoization[tuple(st.network.free_indices())] = best_st
         return best_st
@@ -225,6 +228,14 @@ class TopDownSearch:
         best_st.network = best_res.network
         best_sn_st = best_res.subnet_state
 
+        # if nothing happened in the subnet, we contract the entire subnet
+        contraction_size = np.prod([ind.size for ind in best_sn_st.network.free_indices()])
+        if contraction_size < best_sn_st.network.cost():
+            node = best_sn_st.network.contract()
+            tmp_subnet = TreeNetwork()
+            tmp_subnet.add_node("G0", node)
+            best_sn_st.network = tmp_subnet
+        
         best_st.network.replace_with(
             best_res.subnet, best_sn_st.network, best_sn_st.reshape_history
         )
@@ -490,7 +501,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
         # we run index split to split as many as possible
         splits, f = self._gen_split_func(self.data_tensor)
         # run the cross approximation to avoid expensive error querying
-        net = self._run_init_cross(self.data_tensor, f)
+        net = self._run_init_cross(self.data_tensor, f, splits)
 
         return net, splits
 
@@ -535,13 +546,46 @@ class BlackBoxTopDownSearch(TopDownSearch):
         return PermuteFunc(perm_indices, split_f, unperm)
 
     def _run_init_cross(
-        self, data_tensor: CountingFunc, f: TensorFunc
+        self, data_tensor: CountingFunc, f: TensorFunc, splits: Sequence[IndexOp]
     ) -> TreeNetwork:
-        init_eps = self.config.engine.eps * self.config.cross.init_eps
-        cross_start = time.time()
-        net = self._cross_runner.run(f, init_eps)
-
         cross_res_file = f"{self.config.output.output_dir}/init_net.pkl"
+        cross_start = time.time()
+
+        init_eps = self.config.engine.eps * self.config.cross.init_eps
+
+        if isinstance(data_tensor, FuncTensorNetwork) and isinstance(data_tensor.net, TensorTrain):
+            # directly split the nodes into the target by svd
+            f_inds = f.indices
+            net = copy.deepcopy(data_tensor.net)
+
+            prev_node = None
+            for split_op in splits:
+                assert isinstance(split_op, IndexSplit)
+                curr_node = net.split_index(split_op)
+                assert curr_node is not None
+                assert split_op.result is not None
+                # split them into tensor train formats
+                for ind in split_op.result[:-1]:
+                    curr_inds = net.node_tensor(curr_node).indices
+                    lefts = [curr_inds.index(ind)]
+                    for jj, curr_ind in enumerate(curr_inds):
+                        if prev_node is not None and curr_ind in net.get_contraction_index(prev_node, curr_node):
+                            lefts.append(jj)
+
+                    prev_node, curr_node = net.qr(curr_node, lefts)
+                    tensor = net.node_tensor(prev_node)
+                    if len(tensor.indices) == 3:
+                        net.set_node_tensor(prev_node, tensor.permute([1,0,2]))
+
+                prev_node = curr_node
+
+            node_map = {n: i for i, n in enumerate(net.network.nodes)}
+            net.network = nx.relabel_nodes(net.network, node_map)
+            net = tt_svd_round(net, 1e-5)
+            print("TT round compression:", np.prod([ind.size for ind in net.free_indices()]) / net.cost())
+        else:
+            net = self._cross_runner.run(f, init_eps)
+
         with open(cross_res_file, "wb") as cross_writer:
             pickle.dump(net, cross_writer)
 
@@ -549,7 +593,16 @@ class BlackBoxTopDownSearch(TopDownSearch):
         self.stats.init_cross_size = net.cost()
         self.stats.init_cross_evals = data_tensor.num_calls()
 
+        # print(net)
+        if isinstance(data_tensor, FuncNeutron):
+            self._close_neutron_func(data_tensor)
+
         return net
+
+    def _close_neutron_func(self, data_tensor: FuncNeutron):
+        cache = f"output/neutron_diffusion_{data_tensor.d}.pkl"
+        with open(cache, "wb") as cache_file:
+            pickle.dump(data_tensor.cache, cache_file)
 
     def _trigger_merge(self, ind_cnt: int, is_top: bool) -> bool:
         """Determine whether to trigger the index merge operation before search"""
@@ -597,7 +650,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
             free_inds.append(ind.with_new_rng(range(ind.size)))
 
         func = FuncTensorNetwork(free_inds, net)
-        return self._cross_runner.run(func, eps=self.config.engine.eps)
+        return self._cross_runner.run(func, eps=self.config.engine.eps*0.1)
         # tmp_net = TreeNetwork()
         # tmp_net.add_node("G0", net.contract())
         # return tmp_net
