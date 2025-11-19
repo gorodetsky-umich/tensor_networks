@@ -1,6 +1,5 @@
 """Search algorithsm for tensor networks."""
 
-import itertools
 import time
 from abc import abstractmethod
 
@@ -10,25 +9,28 @@ from pytens.algs import TreeNetwork
 from pytens.cross.funcs import CountingFunc, TensorFunc
 from pytens.cross.runner import (
     CrossRunner,
+    FTTCrossRunner,
     HTCrossRunner,
     TnTorchCrossRunner,
     TTCrossRunner,
-    FTTCrossRunner,
 )
 from pytens.search.configuration import (
-    InitStructType,
-    InputFormat,
-    SearchConfig,
     ClusterMethod,
+    InitStructType,
+    SearchConfig,
 )
 from pytens.search.exhaustive import BFSSearch, DFSSearch
 from pytens.search.hierarchical.error_dist import AlphaErrorDist
+from pytens.search.hierarchical.index_cluster import (
+    RandomIndexCluster,
+    SVDIndexCluster,
+)
 from pytens.search.hierarchical.top_down import (
-    TopDownSearch,
     BlackBoxTopDownSearch,
+    TopDownSearch,
     WhiteBoxTopDownSearch,
 )
-from pytens.search.hierarchical.types import TopDownSearchResult, HSearchState
+from pytens.search.hierarchical.types import HSearchState, TopDownSearchResult
 from pytens.search.partition import PartitionSearch
 from pytens.search.state import SearchState
 from pytens.search.utils import (
@@ -37,10 +39,6 @@ from pytens.search.utils import (
     reshape_func,
     reshape_indices,
     rtol,
-)
-from pytens.search.hierarchical.index_cluster import (
-    SVDIndexCluster,
-    RandomIndexCluster,
 )
 
 
