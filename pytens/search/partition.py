@@ -330,7 +330,11 @@ class PartitionSearch:
                 new_indices.append(ind)
 
         assert len(new_indices) == len(data_tensor.free_indices())
-        tt = data_tensor.reorder_by_cross(new_indices, self.config.engine.eps * 0.25)
+        # print("reorder the indices into", new_indices)
+        # if len(new_indices) <= 15:
+        #     tt = data_tensor.reorder_by_svd(new_indices, 0)
+        # else:
+        tt = data_tensor.reorder_by_cross(new_indices, self.config.engine.eps * 0.1)
         # if not ok:
         #     print("warning: cross didn't reach the target eps")
             # tt = data_tensor.reorder_by_svd(new_indices, self.config.engine.eps)

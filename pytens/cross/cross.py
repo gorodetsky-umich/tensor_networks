@@ -12,7 +12,7 @@ from tntorch.maxvol import py_maxvol
 import scipy
 
 import pytens.algs as pt
-from pytens.cross.funcs import TensorFunc
+from pytens.cross.funcs import TensorFunc, PermuteFunc
 from pytens.types import DimTreeNode
 
 # logging.basicConfig(level=logging.DEBUG)
@@ -86,8 +86,6 @@ def select_indices_greedy(
     diff = np.abs(v - u)
     np.argmax(diff, axis=1)
     return (np.empty(0), np.empty(0))
-
-# def deim()
 
 @profile
 def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
@@ -279,3 +277,86 @@ def cross(
     ranks_and_errs = sorted(list(ranks_and_errs.items()))
     # print(ranks_and_errs)
     return CrossResult(tree, ranks_and_errs)
+
+def deim(u: np.ndarray, rmax: Optional[int] = None):
+    """
+    Select indices by Descrete Empirical Interpolation Method (DEIM)
+    """
+    m, r = u.shape
+
+    if rmax is None:
+        rmax = r
+    assert rmax is not None
+
+    indices = np.zeros(rmax, dtype=int)
+    p0 = np.argmax(np.abs(u[:, 0]))
+    indices[0] = p0
+
+    for j in range(1, rmax):
+        col_idx = j if j < r else (r - 1)
+        uselect = u[indices, : min(j, r)]
+        target = u[indices, col_idx]
+        try:
+            alpha, *_ = np.linalg.lstsq(uselect, target)
+        except np.linalg.LinAlgError:
+            alpha = np.linalg.pinv(uselect) @ target
+
+        # compute the residual
+        rvec = u[:, col_idx] - (u[:, : min(j, r)] @ alpha)
+        # find the maximum from the residual
+        p = np.argmax(np.abs(rvec))
+        indices[j] = p
+
+    return indices
+
+def cur_deim(f: TensorFunc, indices: np.ndarray):
+    """Compute the cross for a single point"""
+    v = f()
+    u, _, _ = np.linalg.svd(v[:, indices], full_matrices=False)
+    i = deim(u)
+    g = u @ u[i].T
+    return g, i
+
+def tt_cur_deim(v: TensorFunc, js: Sequence[np.ndarray]):
+    d = len(v.indices)
+    cores = [np.empty(0) for _ in range(d)]
+    ranks = [1 for _ in range(d+1)]
+    indices = [np.empty(0) for _ in range(d)]
+    cores[0], indices[0] = cur_deim(v, js[0])
+    r = v[indices[0]]
+    ranks[1] = len(r)
+    for z in range(1, d - 1):
+        cores[z], indices[z] = cur_deim(r, js[z])
+        r = v[indices[z]]
+        ranks[z+1] = len(r)
+
+    cores[d - 1] = r
+    for z in range(1, d+1):
+        cores[z] = cores[z].reshape(ranks[z-1], v.shape[0], ranks[z])
+
+    return cores, indices
+
+def random_right_indices(sizes: Sequence[int], r: int):
+    js = []
+    d = len(sizes)
+    for j in range(d):
+        indices = np.empty((d - j, r), dtype=int)
+        for i in range(j+1, d):
+            indices[i] = np.random.randint(0, sizes[i], size=(r,))
+
+        js.append(indices)
+
+    return js
+
+def tt_cur_deim_iterative(v: TensorFunc, eps: float, max_iters: int = 3, kickrank: int = 2):
+    # randomly sample right indices
+    d = len(v.shape)
+    js = random_right_indices(v.shape, kickrank)
+    while True:
+        for _ in range(max_iters):
+            cores, indices = tt_cur_deim(v, js)
+            v = PermuteFunc(v.indices[::-1], v, list(reversed(range(d))))
+            js = indices[::-1]
+
+        # check the error
+        # adaptively increase the ranks
