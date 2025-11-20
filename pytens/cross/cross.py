@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 import pytens.algs as pt
-from pytens.cross.funcs import TensorFunc
+from pytens.cross.funcs import TensorFunc, PermuteFunc
 from pytens.types import DimTreeNode
 
 # logging.basicConfig(level=logging.DEBUG)

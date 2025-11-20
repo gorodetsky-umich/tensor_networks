@@ -91,11 +91,12 @@ class TopDownSearch:
         init_st = HSearchState(free_indices[:], splits, net, 0)
         st = self._search(init_st, delta, True)
 
-        best_st = init_st
+        # best_st = init_st
+        best_st = None
         for n in st.network.network.nodes:
             network = copy.deepcopy(st.network)
             network.round(n, delta=math.sqrt(st.unused_delta))
-            if network.cost() < best_st.network.cost():
+            if best_st is None or network.cost() < best_st.network.cost():
                 best_st = st
                 best_st.network = network
 
@@ -229,13 +230,15 @@ class TopDownSearch:
         best_sn_st = best_res.subnet_state
 
         # if nothing happened in the subnet, we contract the entire subnet
-        contraction_size = np.prod([ind.size for ind in best_sn_st.network.free_indices()])
+        contraction_size = np.prod(
+            [ind.size for ind in best_sn_st.network.free_indices()]
+        )
         if contraction_size < best_sn_st.network.cost():
             node = best_sn_st.network.contract()
             tmp_subnet = TreeNetwork()
             tmp_subnet.add_node("G0", node)
             best_sn_st.network = tmp_subnet
-        
+
         best_st.network.replace_with(
             best_res.subnet, best_sn_st.network, best_sn_st.reshape_history
         )
@@ -546,14 +549,19 @@ class BlackBoxTopDownSearch(TopDownSearch):
         return PermuteFunc(perm_indices, split_f, unperm)
 
     def _run_init_cross(
-        self, data_tensor: CountingFunc, f: TensorFunc, splits: Sequence[IndexOp]
+        self,
+        data_tensor: CountingFunc,
+        f: TensorFunc,
+        splits: Sequence[IndexOp],
     ) -> TreeNetwork:
         cross_res_file = f"{self.config.output.output_dir}/init_net.pkl"
         cross_start = time.time()
 
         init_eps = self.config.engine.eps * self.config.cross.init_eps
 
-        if isinstance(data_tensor, FuncTensorNetwork) and isinstance(data_tensor.net, TensorTrain):
+        if isinstance(data_tensor, FuncTensorNetwork) and isinstance(
+            data_tensor.net, TensorTrain
+        ):
             # directly split the nodes into the target by svd
             f_inds = f.indices
             net = copy.deepcopy(data_tensor.net)
@@ -569,20 +577,30 @@ class BlackBoxTopDownSearch(TopDownSearch):
                     curr_inds = net.node_tensor(curr_node).indices
                     lefts = [curr_inds.index(ind)]
                     for jj, curr_ind in enumerate(curr_inds):
-                        if prev_node is not None and curr_ind in net.get_contraction_index(prev_node, curr_node):
+                        if (
+                            prev_node is not None
+                            and curr_ind
+                            in net.get_contraction_index(prev_node, curr_node)
+                        ):
                             lefts.append(jj)
 
                     prev_node, curr_node = net.qr(curr_node, lefts)
                     tensor = net.node_tensor(prev_node)
                     if len(tensor.indices) == 3:
-                        net.set_node_tensor(prev_node, tensor.permute([1,0,2]))
+                        net.set_node_tensor(
+                            prev_node, tensor.permute([1, 0, 2])
+                        )
 
                 prev_node = curr_node
 
             node_map = {n: i for i, n in enumerate(net.network.nodes)}
             net.network = nx.relabel_nodes(net.network, node_map)
-            net = tt_svd_round(net, 1e-5)
-            print("TT round compression:", np.prod([ind.size for ind in net.free_indices()]) / net.cost())
+            # net = tt_svd_round(net, self.config.engine.eps * 0.01)
+            # print(net)
+            print(
+                "TT before round compression:",
+                np.prod([ind.size for ind in net.free_indices()]) / net.cost(),
+            )
         else:
             net = self._cross_runner.run(f, init_eps)
 
@@ -650,7 +668,9 @@ class BlackBoxTopDownSearch(TopDownSearch):
             free_inds.append(ind.with_new_rng(range(ind.size)))
 
         func = FuncTensorNetwork(free_inds, net)
-        return self._cross_runner.run(func, eps=self.config.engine.eps*0.1)
+        return self._cross_runner.run(func, eps=self.config.engine.eps)
         # tmp_net = TreeNetwork()
         # tmp_net.add_node("G0", net.contract())
-        # return tmp_net
+        # return TensorTrain.tt_svd(
+        #     net.contract().value, free_inds, eps=self.config.engine.eps*0
+        # )
