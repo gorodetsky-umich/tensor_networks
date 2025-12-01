@@ -19,25 +19,7 @@ from pytens.algs import (
 )
 from pytens.cross.cross import TensorFunc
 from pytens.types import IndexMerge, PartitionStatus, SVDAlgorithm
-
-
-class Action:
-    """Base action."""
-
-    def __init__(self):
-        self.delta = None
-        self.target_size = None
-        self.indices = None
-
-    def __lt__(self, other) -> bool:
-        return str(self) < str(other)
-
-    def __hash__(self) -> int:
-        return hash(self.__str__())
-
-    def is_valid(self, past_actions: Sequence["Action"]) -> bool:
-        """Check whether the current action is valid against the history."""
-        return True
+from pytens.search.types import Action
 
 
 class OSplit(Action):
@@ -68,11 +50,9 @@ class OSplit(Action):
         if len(self.indices) != len(other.indices):
             return False
 
-        for i, j in zip(self.indices, other.indices):
-            if i.name != j.name:
-                return False
-
-        return True
+        self_names = set(i.name for i in self.indices)
+        other_names = set(i.name for i in other.indices)
+        return self_names == other_names
 
     def __hash__(self) -> int:
         return hash(self.__str__())
@@ -467,8 +447,14 @@ class SearchState:
                 if not found:
                     free_indices.append([ind])
 
-        for comb in SearchState.all_index_combs(free_indices):
+        sorted_free_indices = list(sorted(free_indices))
+        for comb in SearchState.all_index_combs(sorted_free_indices):
             ac = OSplit([ind for ind_group in comb for ind in ind_group])
+
+            # consider the complement index set
+            ac_comp = OSplit([ind for ind in self.network.free_indices() if ind not in ac.indices])
+            ac = min(ac, ac_comp)
+
             if not self.past_actions or (
                 self.past_actions[-1] < ac and ac.is_valid(self.past_actions)
             ):

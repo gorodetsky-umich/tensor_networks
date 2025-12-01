@@ -1,9 +1,11 @@
 """Runners for various cross approximation algorithms."""
 
 from abc import abstractmethod
+from typing import Optional
 
 import tntorch
 import torch
+import numpy as np
 
 from pytens.algs import (
     FoldedTensorTrain,
@@ -20,7 +22,7 @@ class CrossRunner:
     """Base class for running cross approximation."""
 
     @abstractmethod
-    def run(self, f: TensorFunc, eps: float) -> TreeNetwork:
+    def run(self, f: TensorFunc, eps: float, kickrank: int = 2, validation: Optional[np.ndarray] = None) -> TreeNetwork:
         """Run the cross approximation on the given function
         with the specified error.
         """
@@ -30,26 +32,38 @@ class CrossRunner:
 class TTCrossRunner(CrossRunner):
     """Runner for our tt-cross implementation."""
 
-    def run(self, f: TensorFunc, eps: float) -> TensorTrain:
+    def run(
+        self,
+        f: TensorFunc,
+        eps: float,
+        kickrank: int = 2,
+        validation: Optional[np.ndarray] = None,
+    ) -> TensorTrain:
         net = TensorTrain.rand_tt(f.indices)
-        cross(f, net, net.end_nodes()[0], eps=eps)
+        cross(f, net, net.end_nodes()[0], validation, eps=eps, kickrank=kickrank)
         return net
 
 
 class TnTorchCrossRunner(CrossRunner):
     """Runner for tntorch cross implementation."""
 
-    def run(self, f: TensorFunc, eps: float) -> TensorTrain:
+    def run(
+        self,
+        f: TensorFunc,
+        eps: float,
+        kickrank: int = 2,
+        validation: Optional[np.ndarray] = None,
+    ) -> TensorTrain:
         domains = [torch.arange(ind.size) for ind in f.indices]
         res = tntorch.cross(
             tntorch_wrapper(f),
             domains,
             eps=eps,
-            kickrank=10,
+            kickrank=kickrank,
             max_iter=100,
             val_size=2500,
             rmax=1000,
-            verbose=False,
+            verbose=True,
         )
         net = tntorch_to_tt(res, f.indices)
         return net
@@ -58,16 +72,28 @@ class TnTorchCrossRunner(CrossRunner):
 class HTCrossRunner(CrossRunner):
     """Runner for hierarchical tucker cross implementation."""
 
-    def run(self, f: TensorFunc, eps: float) -> HierarchicalTucker:
+    def run(
+        self,
+        f: TensorFunc,
+        eps: float,
+        kickrank: int = 2,
+        validation: Optional[np.ndarray] = None,
+    ) -> HierarchicalTucker:
         net = HierarchicalTucker.rand_ht(f.indices, 1)
-        cross(f, net, net.root(), eps=eps)
+        cross(f, net, net.root(), validation, eps=eps, kickrank=kickrank)
         return net
 
 
 class FTTCrossRunner(CrossRunner):
     """Runner for hierarchical tucker cross implementation."""
 
-    def run(self, f: TensorFunc, eps: float) -> FoldedTensorTrain:
+    def run(
+        self,
+        f: TensorFunc,
+        eps: float,
+        kickrank: int = 2,
+        validation: Optional[np.ndarray] = None,
+    ) -> FoldedTensorTrain:
         inds = f.indices
         grouped_inds = []
         group_size = len(inds) // 4
@@ -76,5 +102,12 @@ class FTTCrossRunner(CrossRunner):
             grouped_inds.append(inds[i:i+group_size])
             i += group_size
         net = FoldedTensorTrain.rand_ftt(grouped_inds)
-        cross(f, net, net.backbone_nodes[0], eps=eps)
+        cross(
+            f,
+            net,
+            net.backbone_nodes[0],
+            validation,
+            eps=eps,
+            kickrank=kickrank,
+        )
         return net

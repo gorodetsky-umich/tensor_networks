@@ -188,6 +188,7 @@ def cross(
     f: TensorFunc,
     net: "pt.TreeNetwork",
     root: "pt.NodeName",
+    validation: Optional[np.ndarray],
     eps: float = 0.1,
     val_size: int = 1000,
     max_iters: Optional[int] = None,
@@ -209,10 +210,12 @@ def cross(
 
     converged = False
 
-    validation = []
-    for ind in f.indices:
-        validation.append(np.random.randint(0, ind.size, size=val_size))
-    validation = np.stack(validation, axis=-1)
+    if validation is None:
+        valid_list = []
+        for ind in f.indices:
+            valid_list.append(np.random.randint(0, ind.size, size=val_size))
+        validation = np.stack(valid_list, axis=-1)
+
     real = f(validation)
     f_sizes = [ind.size for ind in tree.free_indices]
     f_vals = cartesian_product_arrays(
@@ -309,30 +312,41 @@ def deim(u: np.ndarray, rmax: Optional[int] = None):
 
     return indices
 
-def cur_deim(f: TensorFunc, indices: np.ndarray):
+def cur_deim(f: TensorFunc, left_indices: np.ndarray, right_indices: np.ndarray):
     """Compute the cross for a single point"""
-    v = f()
-    u, _, _ = np.linalg.svd(v[:, indices], full_matrices=False)
+    v = f(cartesian_product_arrays(left_indices, right_indices))
+    v = v.reshape(left_indices.shape[0], right_indices.shape[0])
+    u, _, _ = np.linalg.svd(v, full_matrices=False)
     i = deim(u)
     g = u @ u[i].T
     return g, i
 
-def tt_cur_deim(v: TensorFunc, js: Sequence[np.ndarray]):
-    d = len(v.indices)
+def tt_cur_deim(f: TensorFunc, js: Sequence[np.ndarray]):
+    d = len(f.indices)
     cores = [np.empty(0) for _ in range(d)]
     ranks = [1 for _ in range(d+1)]
     indices = [np.empty(0) for _ in range(d)]
-    cores[0], indices[0] = cur_deim(v, js[0])
-    r = v[indices[0]]
-    ranks[1] = len(r)
+
+    # print(np.arange(f.indices[0].size, dtype=int)[:, None], js[0])
+    cores[0], indices[0] = cur_deim(f, np.arange(f.indices[0].size, dtype=int)[:, None], js[0])
+    indices[0] = indices[0][:, None]
+    r = f(cartesian_product_arrays(indices[0], *[np.arange(ind.size, dtype=int)[:, None] for ind in f.indices[1:]]))
+    ranks[1] = indices[0].shape[0]
     for z in range(1, d - 1):
-        cores[z], indices[z] = cur_deim(r, js[z])
-        r = v[indices[z]]
-        ranks[z+1] = len(r)
+        print(z)
+        print(indices[z - 1])
+        left_indices = cartesian_product_arrays(indices[z-1], np.arange(f.indices[z].size, dtype=int)[:, None])
+        print(left_indices)
+        cores[z], group_indices = cur_deim(f, left_indices, js[z])
+        ranks[z+1] = len(group_indices)
+        print(group_indices, tuple(ranks[1:z] + [f.indices[z].size]))
+        local_indices = np.unravel_index(group_indices.astype(int), tuple(ranks[1:z+1] + [f.indices[z].size]))
+        indices[z] = np.stack([indices[z-1][:,i][inds] for i, inds in enumerate(local_indices[:-1])] + [local_indices[-1]], axis=-1)
+        r = f(cartesian_product_arrays(indices[z], local_indices[-1][:, None], *[np.arange(ind.size, dtype=int)[:, None] for ind in f.indices[z+1:]]))
 
     cores[d - 1] = r
     for z in range(1, d+1):
-        cores[z] = cores[z].reshape(ranks[z-1], v.shape[0], ranks[z])
+        cores[z] = cores[z].reshape(ranks[z-1], f.indices[z-1].size, ranks[z])
 
     return cores, indices
 
@@ -340,23 +354,58 @@ def random_right_indices(sizes: Sequence[int], r: int):
     js = []
     d = len(sizes)
     for j in range(d):
-        indices = np.empty((d - j, r), dtype=int)
-        for i in range(j+1, d):
-            indices[i] = np.random.randint(0, sizes[i], size=(r,))
+        indices = np.empty((r, d - j - 1), dtype=int)
+        for i in range(j + 1, d):
+            indices[:, i - j - 1] = np.random.randint(0, sizes[i], size=(r,))
 
         js.append(indices)
 
     return js
 
-def tt_cur_deim_iterative(v: TensorFunc, eps: float, max_iters: int = 3, kickrank: int = 2):
+def tt_cur_deim_iterative(f: TensorFunc, eps: float, max_iters: int = 3, kickrank: int = 2, val_size: int = 2500):
     # randomly sample right indices
-    d = len(v.shape)
-    js = random_right_indices(v.shape, kickrank)
+    d = len(f.indices)
+    js = random_right_indices(f.shape, kickrank)
+
+    validation = []
+    for ind in f.indices:
+        validation.append(np.random.randint(0, ind.size, size=val_size))
+    validation = np.stack(validation, axis=-1)
+    real = f(validation)
+
     while True:
         for _ in range(max_iters):
-            cores, indices = tt_cur_deim(v, js)
-            v = PermuteFunc(v.indices[::-1], v, list(reversed(range(d))))
+            cores, indices = tt_cur_deim(f, js)
+            f = PermuteFunc(f.indices[::-1], f, list(reversed(range(d))))
             js = indices[::-1]
 
         # check the error
+        tt = pt.TensorTrain()
+        for i, core in enumerate(cores):
+            core_indices = []
+            if i != 0:
+                core_indices.append(pt.Index(f"s_{i-1}", core.shape[0]))
+
+            core_indices.append(f.indices[i])
+
+            if i != len(cores) - 1:
+                core_indices.append(pt.Index(f"s_{i}", core.shape[2]))
+
+            tt.add_node(f"G{i}", pt.Tensor(core, core_indices))
+
+            if i != 0:
+                tt.add_edge(f"G{i-1}", f"G{i}")
+
+        estimate = tt.evaluate(f.indices, validation).reshape(-1)
+
+        # print("evaluate time:", time.time() - eval_start)
+        logger.debug("%s", tt)
+        # print(estimate.shape, real.shape)
+        err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
+        print(err)
+        if err < eps:
+            return tt
+        
         # adaptively increase the ranks
+        new_js = random_right_indices(f.shape, kickrank)
+        js = [np.concat([old, new], axis=0) for old, new in zip(js, new_js)]

@@ -15,7 +15,7 @@ class HSearchState:
         free_indices: List[Index],
         reshape_history: List[IndexOp],
         network: TreeNetwork,
-        unused_delta: float,
+        unused_delta: float = 0,
     ):
         self.free_indices = free_indices
         self.reshape_history = reshape_history

@@ -26,6 +26,12 @@ class InitStructType(Enum):
     FTT = auto()
     TT_CROSS = auto()
 
+class ReshapeOption(Enum):
+    """Different options to merge indices to produce a lower-dim data."""
+    RANDOM = auto()
+    ENUMERATE = auto()
+    CLUSTER = auto()
+
 class HeuristicConfig(pydantic.BaseModel):
     """Configuration for pruning heuristics"""
 
@@ -108,10 +114,6 @@ class SearchEngineConfig(pydantic.BaseModel):
         default=None,
         description="The maximum amount of time used for search",
     )
-    decomp_algo: Literal["svd", "cross"] = pydantic.Field(
-        default="svd",
-        description="Configure the decomposition algorithm",
-    )
     verbose: bool = pydantic.Field(
         default=False,
         description="Enable verbose logging for intermediate search steps",
@@ -167,17 +169,17 @@ class CrossConfig(pydantic.BaseModel):
 class TopDownConfig(pydantic.BaseModel):
     """Configuration for the top down structure search"""
 
-    enabled: bool = pydantic.Field(
+    reshape_enabled: bool = pydantic.Field(
         default=False,
-        description="Configure for enabling the top down search",
+        description="Configure for enabling index reshaping during top down search",
     )
     merge_mode: Literal["all", "not_first"] = pydantic.Field(
         default="not_first",
         description="Configure whether to merge indices at the first level",
     )
-    search_algo: Literal["random", "enumerate", "merge"] = (
+    reshape_algo: ReshapeOption = (
         pydantic.Field(
-            default="enumerate",
+            default=ReshapeOption.CLUSTER,
             description="Configure whether to use random algorithms",
         )
     )

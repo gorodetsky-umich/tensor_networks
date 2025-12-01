@@ -28,9 +28,10 @@ import opt_einsum as oe
 from line_profiler import profile
 from sklearn.utils.extmath import randomized_svd
 
-from .cross.cross import CrossResult, cross
-from .cross.funcs import FuncTensorNetwork, TensorFunc, FuncData
-from .types import (
+from pytens.cross.cross import CrossResult, cross
+from pytens.cross.funcs import FuncTensorNetwork, TensorFunc
+from pytens.search.types import Action
+from pytens.types import (
     DimTreeNode,
     FoldDir,
     Index,
@@ -45,7 +46,7 @@ from .types import (
     PartitionStatus,
     SVDConfig,
 )
-from .utils import delta_svd
+from pytens.utils import delta_svd
 
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -899,6 +900,11 @@ class TensorNetwork:  # pylint: disable=R0904
             cost += n_cost
 
         return int(cost)
+    
+    def size(self) -> int:
+        """Compute the size of the tensor network by multiplying the sizes of each free index."""
+        indices = self.free_indices()
+        return int(np.prod([ind.size for ind in indices]))
 
     def split_index(
         self, split_op: IndexSplit, compute_data: bool = True
@@ -1094,11 +1100,11 @@ class TensorNetwork:  # pylint: disable=R0904
     def draw(self, ax=None, node_label=False):
         """Draw a networkx representation of the network."""
 
-        _ = plt.figure(1, figsize=(12, 6), dpi=100)
+        _ = plt.figure(1, figsize=(15, 10), dpi=100)
 
         # Define color and shape maps
-        shape_map = {"A": "o", "B": "s", "C": "o"}
-        size_map = {"A": 800, "B": 100, "C": 0}
+        shape_map = {"A": "o", "B": "o", "C": "o"}
+        size_map = {"A": 800, "B": 500, "C": 100}
         node_groups = {"A": [], "B": [], "C": []}
 
         # with_label = {'A': True, 'B': False}
@@ -1111,8 +1117,6 @@ class TensorNetwork:  # pylint: disable=R0904
                 continue
 
             free_graph.add_node(f"{index.name}-{index.size}")
-            free_graph.add_node(f"{index.name}-{index.size}_node")
-            # free_graph.add_node(f"I{i}-{index.size}")
 
         new_graph = nx.compose(self.network, free_graph)
         for i, index in enumerate(free_indices):
@@ -1123,15 +1127,14 @@ class TensorNetwork:  # pylint: disable=R0904
             # name1 = f"I{i}-{index.size}"
             for node, data in self.network.nodes(data=True):
                 if index in data["tensor"].indices:
-                    new_graph.add_edge(node, name1 + "_node")
-                    new_graph.add_edge(name1 + "_node", name1, len=0.75)
+                    new_graph.add_edge(node, name1)
 
         # To use graphviz layout,
         # you need to install both graphviz and pygraphviz.
         pos = nx.drawing.nx_agraph.graphviz_layout(
             new_graph,
             prog="neato",
-            args="-Gsplines=true -Gnodesep=1.5 -Granksep=1.5 -Goverlap=false",
+            args="-Gnodesep=1.5 -Granksep=1.5 -Goverlap=false",
         )
         # pos = nx.planar_layout(new_graph)
 
@@ -1197,7 +1200,7 @@ class TensorNetwork:  # pylint: disable=R0904
                     ax=ax,
                     labels=node_labels,
                     font_size=12,
-                    verticalalignment="top",
+                    # verticalalignment="top",
                 )
 
         edge_labels = {}
@@ -1328,6 +1331,10 @@ class TreeNetwork(TensorNetwork):
             _, r = self.qr(node_name, left_indices)
 
         return r, delta
+
+    def _compress_index(self, node: NodeName):
+        """Compress consectutive indices that are decomposed from one index"""
+        #TODO: implement this
 
     def compress(self) -> None:
         """Compress the network by removing nodes
@@ -1809,7 +1816,7 @@ class TreeNetwork(TensorNetwork):
         new_indices = self.node_tensor(name).indices
         lefts = [new_indices.index(ind) for ind in node_indices]
         u, v = self.qr(name, lefts)
-        nx.relabel_nodes(self.network, {u: node2, v: node1}, copy=False)
+        self.network = nx.relabel_nodes(self.network, {u: node2, v: node1})
 
     def _anchor_distance(
         self,
@@ -2118,7 +2125,6 @@ class TreeNetwork(TensorNetwork):
         subnet.network = nx.subgraph(net.network, include_nodes).copy()
         subnet, anchor = subnet.fold_hierarchical(anchors, max_dist + 1)
 
-        # FIXME: after this fold, one of the connection nodes might disappear, how to avoid that?
         subnet = subnet.network
         for e, subgraph in connections:
             subnet = nx.compose(subnet, subgraph.network)
@@ -2304,13 +2310,17 @@ class TreeNetwork(TensorNetwork):
         orthonormal: Optional[NodeName] = None,
         delta: float = 0,
     ) -> np.ndarray:
-        """Compute the singular values for a hierarchical tucker."""
+        """Compute the singular values for a tree network structure."""
+        assert len(indices) == 2
         # print(indices)
         # net = self.move_to(indices, delta=delta)
         net = copy.deepcopy(self)
         nodes = [net.node_by_free_index(ind.name) for ind in indices]
-        net.fold(nodes)
+        unique_nodes = list(set(nodes))
+        if len(unique_nodes) > 1:
+            net.fold(unique_nodes)
 
+        nodes = [net.node_by_free_index(ind.name) for ind in indices]
         unique_nodes = list(set(nodes))
         assert len(unique_nodes) == 1, "more than one node after folding"
 
@@ -2430,7 +2440,11 @@ class TreeNetwork(TensorNetwork):
         # print(svd_ls, svd_rs, perm)
         # print(tensor.value.shape)
         tensor_val = tensor.value.transpose(perm).reshape(int(lsize), -1)
-        _, s, _ = randomized_svd(tensor_val, max_rank)
+        try:
+            _, s, _ = randomized_svd(tensor_val, max_rank)
+        except np.linalg.LinAlgError:
+            s = np.linalg.svdvals(tensor_val)
+
         return s
 
     @profile
@@ -2518,6 +2532,51 @@ class TreeNetwork(TensorNetwork):
         for u, v in new_subnet.network.edges:
             self.add_edge(u, v)
 
+    def longest_path(self) -> Sequence[NodeName]:
+        """Get the longest path in the current tree."""
+        u = list(self.network.nodes())[0]
+        dist = nx.single_source_shortest_path_length(self.network, u)
+        a = max(dist, key=dist.get)
+
+        dist = nx.single_source_shortest_path_length(self.network, a)
+        b = max(dist, key=dist.get)
+
+        return nx.shortest_path(self.network, a, b)
+
+    # def _nbr_to_tt(self, path: Sequence[NodeName], node: NodeName, )
+
+    # def to_tt(self, delta = 0) -> "TensorTrain":
+    #     """Convert an arbitrary tree to a tensor train format."""
+    #     tt = TensorTrain()
+    #     tt.network = copy.deepcopy(self.network)
+
+    #     # choose the longest diameter in the tree throught two DFS
+    #     path = tt.longest_path()
+    #     # an over-approximation of number of split operations
+    #     svd_cnts = len(tt.network.nodes) - len(path)
+    #     visited = {}
+    #     for n in path:
+    #         while True:
+    #             nbrs = list(tt.network.neighbors(n))
+    #             if all(nbr in path for nbr in nbrs):
+    #                 break
+
+    #             tt.postorder_orthonormal(visited, None, n)
+    #             for nbr in nbrs:
+    #                 # if a neighbor is not on the path, merge and split
+    #                 if nbr not in path:
+    #                     tt.merge(n, nbr)
+    #                     # split the 
+
+    #         visited[n] = 2
+
+
+    def replay_preprocess(
+        self, actions: Sequence[Action]
+    ):
+        """Apply the given actions around the given ranks."""
+        pass
+        
 
 class HierarchicalTucker(TreeNetwork):
     """Class for hierarchical tuckers."""
@@ -2837,6 +2896,47 @@ class FoldedTensorTrain(TreeNetwork):
 
         return True
 
+    def move_to_end(self, backbone_targets: Sequence[NodeName]):
+        """Move the targets to one of the ends of the FTT"""
+        # swap the backbone targets to make them adjacent and at the end
+        ends = []
+        for n in self.backbone_nodes:
+            num_edges = 0
+            for m in self.backbone_nodes:
+                if n != m and self.network.has_edge(n, m):
+                    num_edges += 1
+
+            if num_edges == 1:
+                ends.append(n)
+
+        assert len(ends) == 2, "invalid backbone structure"
+
+        if len(backbone_targets) > 1:
+            anchor = ends[0]
+            best_dist = float("inf")
+            for end in ends:
+                if end in backbone_targets:
+                    anchor = end
+                    break
+
+                total_dist = 0
+                for n in backbone_targets:
+                    total_dist += self.distance(n, anchor)
+
+                if total_dist < best_dist:
+                    best_dist = total_dist
+                    anchor = end
+
+            backbone_targets = sorted(
+                backbone_targets, key=lambda x: self.distance(x, anchor)
+            )
+            for n in backbone_targets:
+                if n != anchor:
+                    path = nx.shortest_path(
+                        self.network, source=n, target=anchor
+                    )
+                    self.swap_along_path(path, n)
+
     def svals(
         self, indices: Sequence[Index], max_rank: int = 100
     ) -> np.ndarray:
@@ -2856,44 +2956,7 @@ class FoldedTensorTrain(TreeNetwork):
             "no backbone nodes contain the target indices"
         )
 
-        # swap the backbone targets to make them adjacent and at the end
-        ends = []
-        for n in net.backbone_nodes:
-            num_edges = 0
-            for m in net.backbone_nodes:
-                if n != m and net.network.has_edge(n, m):
-                    num_edges += 1
-
-            if num_edges == 1:
-                ends.append(n)
-
-        assert len(ends) == 2, "invalid backbone structure"
-
-        if len(backbone_targets) > 1:
-            anchor = ends[0]
-            best_dist = float("inf")
-            for end in ends:
-                if end in backbone_targets:
-                    anchor = end
-                    break
-
-                total_dist = 0
-                for n in backbone_targets:
-                    total_dist += net.distance(n, anchor)
-
-                if total_dist < best_dist:
-                    best_dist = total_dist
-                    anchor = end
-
-            backbone_targets = sorted(
-                backbone_targets, key=lambda x: net.distance(x, anchor)
-            )
-            for n in backbone_targets:
-                if n != anchor:
-                    path = nx.shortest_path(
-                        net.network, source=n, target=anchor
-                    )
-                    net.swap_along_path(path, n)
+        net.move_to_end(backbone_targets)
 
         # orthonormalize the backbone nodes
         visited = {}
@@ -2909,34 +2972,39 @@ class FoldedTensorTrain(TreeNetwork):
         self, indices: Sequence[Index]
     ) -> List[NodeName]:
         """Find the backbone nodes that contain the target indices."""
-        target_backbone_nodes = []
-        # cut the edges between backbone nodes and get the subtrees
-        tmp_net = self.network.copy()
-        for u in self.backbone_nodes:
-            for v in self.backbone_nodes:
-                if tmp_net.has_edge(u, v):
-                    tmp_net.remove_edge(u, v)
+        target_backbone_nodes = set()
+        # # cut the edges between backbone nodes and get the subtrees
+        # tmp_net = self.network.copy()
+        # for u in self.backbone_nodes:
+        #     for v in self.backbone_nodes:
+        #         if tmp_net.has_edge(u, v):
+        #             tmp_net.remove_edge(u, v)
 
-        free_inds = self.free_indices()
-        for comps in nx.connected_components(tmp_net):
-            subtree = nx.subgraph(self.network, comps)
-            tree = TreeNetwork()
-            tree.network = subtree
-            tree_inds = set(tree.free_indices()) & set(free_inds)
-            # check the relation with target indices
-            target_inds = set(indices)
-            overlap = tree_inds & target_inds
-            all_contained = len(overlap) == len(tree_inds)
-            none_contained = len(overlap) == 0
-            assert all_contained or none_contained, (
-                "Each subtree must either contain all or none of the target indices"
-            )
-            if all_contained:
-                for n in self.backbone_nodes:
-                    if n in comps:
-                        target_backbone_nodes.append(n)
+        # free_inds = self.free_indices()
+        # for comps in nx.connected_components(tmp_net):
+        #     subtree = nx.subgraph(self.network, comps)
+        #     tree = TreeNetwork()
+        #     tree.network = subtree
+        #     tree_inds = set(tree.free_indices()) & set(free_inds)
+        #     # check the relation with target indices
+        #     target_inds = set(indices)
+        #     overlap = tree_inds & target_inds
+        #     all_contained = len(overlap) == len(tree_inds)
+        #     none_contained = len(overlap) == 0
+        #     assert all_contained or none_contained, (
+        #         "Each subtree must either contain all or none of the target indices"
+        #     )
+        #     if all_contained:
+        #         for n in self.backbone_nodes:
+        #             if n in comps:
+        #                 target_backbone_nodes.append(n)
 
-        return target_backbone_nodes
+        for ind in indices:
+            ind_node = self.node_by_free_index(ind.name)
+            if ind_node in self.backbone_nodes:
+                target_backbone_nodes.add(ind_node)
+
+        return list(target_backbone_nodes)
 
     def fold_nodes(
         self, node1: NodeName, node2: NodeName, fold_dir: FoldDir
@@ -2970,6 +3038,40 @@ class FoldedTensorTrain(TreeNetwork):
 
         net.backbone_nodes.append(qrs[-1])
         return net, qrs[-1]
+
+    def is_end(self, node):
+        """Returns True if the given node is one of the ends"""
+        inds = self.node_tensor(node).indices
+        return len(inds) <= 3
+    
+    def _need_swap(self, operand_nodes: Sequence[NodeName]) -> bool:
+        """Whether these operand nodes need to be moved to ends"""
+        assert len(operand_nodes) == 2, (
+            "current implementation supports only two operands"
+        )
+
+        # if the two nodes are not adjacent
+        common_inds = self.get_contraction_index(
+            operand_nodes[0], operand_nodes[1]
+        )
+        if not common_inds:
+            return True
+
+        # if none of the nodes on the end
+        for operand in operand_nodes:
+            if self.is_end(operand):
+                return False
+
+        return True
+
+    def replay_preprocess(self, actions: Sequence[Action]):
+        """Apply the given actions around the given ranks."""
+        for ac in actions:
+            operand_nodes = self.target_backbone_nodes(ac.indices)
+            operand_nodes = list(set(operand_nodes))
+            # check whether the operands are adjacent
+            if len(operand_nodes) > 1 and self._need_swap(operand_nodes):
+                self.move_to_end(operand_nodes)
 
 
 class TensorTrain(TreeNetwork):
@@ -3632,7 +3734,7 @@ class TensorTrain(TreeNetwork):
 
     @profile
     def reorder_by_cross(
-        self, indices: Sequence[Index], eps: float = 0.1
+        self, indices: Sequence[Index], eps: float = 0.1, max_iters: int=100
     ) -> "TensorTrain":
         """Reorder the tensor train so that the given indices are adjacent using cross approximation."""
         assert all(ind in self.free_indices() for ind in indices), (
@@ -3648,7 +3750,7 @@ class TensorTrain(TreeNetwork):
         # perm = [data.indices.index(ind) for ind in indices]
         # func = FuncData(indices, data.permute(perm).value)
         res = cross(
-            func, tt, tt.end_nodes()[0], eps=eps, max_iters=100, kickrank=10
+            func, tt, tt.end_nodes()[0], eps=eps, max_iters=max_iters, kickrank=10
         )
         if res.ranks_and_errors[-1][-1] < eps:
             return tt

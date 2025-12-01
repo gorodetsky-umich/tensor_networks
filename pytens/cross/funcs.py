@@ -36,10 +36,10 @@ class TensorFunc:
 
     @property
     def shape(self) -> List[int]:
-        result = [0] * self.d
+        result = [0] * len(self.indices)
         for i, ind in enumerate(self.indices):
             if isinstance(ind.size, int):
-                result[i] = 1
+                result[i] = ind.size
             elif isinstance(ind.size, tuple):
                 result[i] = ind.size[-1]
             else:
