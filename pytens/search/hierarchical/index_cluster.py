@@ -1,7 +1,7 @@
 """Various index clustering algorithms."""
 
 from abc import abstractmethod
-from typing import Sequence
+from typing import Sequence, Dict
 import random
 import itertools
 import copy
@@ -74,7 +74,43 @@ class SVDIndexCluster(IndexCluster):
             return [], []
 
         comb_corr = {}
-        assert isinstance(net, TensorTrain), "clustering should happen on tensor trains"
+        if isinstance(net, TensorTrain):
+            comb_corr = self._tt_corr(net, indices)
+        elif len(net.network.nodes) == 1:
+            comb_corr = self._single_node_corr(net, indices)
+        else:
+            raise NotImplementedError(
+                "SVD-based clustering is only implemented for TT and single-node networks."
+            )
+
+        comb_corr = sorted(comb_corr.items(), key=lambda x: x[1])
+
+        # start from the largest group and expand until the threshold
+        group_size = len(indices) // threshold
+        index_sets = []
+        visited = set()
+        for i in range(threshold):
+            group = set()
+            for xs, _ in comb_corr:
+                if xs[0] in visited and xs[0] not in group:
+                    continue
+
+                if xs[1] in visited and xs[1] not in group:
+                    continue
+
+                group.update(xs)
+                visited.update(xs)
+
+                if len(group) >= group_size and i != threshold - 1:
+                    break
+
+            if group:
+                index_sets.append(sorted(list(group)))
+
+        return index_sets
+
+    def _tt_corr(self, net: TensorTrain, indices: Sequence[Index]) -> Dict[Sequence[Index], float]:
+        comb_corr = {}
         # remove duplicate node swapping
         ends = net.end_nodes()
         nodes = nx.shortest_path(net.network, ends[0], ends[1])
@@ -104,28 +140,18 @@ class SVDIndexCluster(IndexCluster):
                 else:
                     comb_corr[tuple(ac.indices)] = 0
 
-        comb_corr = sorted(comb_corr.items(), key=lambda x: x[1])
+        return comb_corr
 
-        # start from the largest group and expand until the threshold
-        group_size = len(indices) // threshold
-        index_sets = []
-        visited = set()
-        for i in range(threshold):
-            group = set()
-            for xs, _ in comb_corr:
-                if xs[0] in visited and xs[0] not in group:
-                    continue
+    def _single_node_corr(self, net: TreeNetwork, indices: Sequence[Index]) -> Dict[Sequence[Index], float]:
+        comb_corr = {}
+        # for single node networks, we can directly compute the SVDs
+        for i, ind_i in enumerate(indices):
+            for j, ind_j in enumerate(indices[i+1:]):
+                ac = OSplit([ind_i, ind_j])
+                svals = net.svals(ac.indices, max_rank=2, orthonormal=True)
+                if len(svals) >= 2:
+                    comb_corr[tuple(ac.indices)] = -svals[0] / svals[1]
+                else:
+                    comb_corr[tuple(ac.indices)] = 0
 
-                if xs[1] in visited and xs[1] not in group:
-                    continue
-
-                group.update(xs)
-                visited.update(xs)
-
-                if len(group) >= group_size and i != threshold - 1:
-                    break
-
-            if group:
-                index_sets.append(sorted(list(group)))
-
-        return index_sets
+        return comb_corr

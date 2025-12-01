@@ -8,7 +8,7 @@ import pickle
 import random
 import time
 from abc import abstractmethod
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Dict
 
 import networkx as nx
 import numpy as np
@@ -24,7 +24,7 @@ from pytens.cross.funcs import (
     TensorFunc,
 )
 from pytens.cross.runner import CrossRunner
-from pytens.search.configuration import SearchConfig
+from pytens.search.configuration import SearchConfig, ReshapeOption
 from pytens.search.hierarchical.error_dist import BaseErrorDist
 from pytens.search.hierarchical.index_cluster import IndexCluster
 from pytens.search.hierarchical.types import (
@@ -39,7 +39,13 @@ from pytens.search.hierarchical.utils import (
 )
 from pytens.search.partition import PartitionSearch
 from pytens.search.state import SearchState
-from pytens.search.utils import SearchStats, init_state, seed_all, to_splits
+from pytens.search.utils import (
+    SearchStats,
+    init_state,
+    seed_all,
+    to_splits,
+    index_partition,
+)
 from pytens.types import (
     Index,
     IndexMerge,
@@ -87,9 +93,12 @@ class TopDownSearch:
 
         seed_all(self.config.engine.seed)
         delta = net.norm() * self.config.engine.eps
+        # print("available delta:", delta)
         free_indices = net.free_indices()
         init_st = HSearchState(free_indices[:], splits, net, 0)
         st = self._search(init_st, delta, True)
+        # used_delta = net.norm() ** 2 - st.network.norm() ** 2
+        # print("unused delta:", st.unused_delta, "used delta:", used_delta, "actual remaining:", delta**2 - used_delta)
 
         # best_st = init_st
         best_st = None
@@ -109,7 +118,7 @@ class TopDownSearch:
     def _trigger_merge(self, ind_cnt: int, is_top: bool) -> bool:
         """Determine whether to trigger the index merge operation before search"""
         return (
-            (self.config.topdown.search_algo == "correlation")
+            (self.config.topdown.reshape_algo == ReshapeOption.CLUSTER)
             and (not is_top or self.config.topdown.merge_mode == "all")
             and ind_cnt > self.config.topdown.group_threshold
         )
@@ -124,12 +133,16 @@ class TopDownSearch:
     ) -> HSearchState:
         # print("search structure for initially")
         # print(st.network)
+
+        # TODO: handle the case when the network is a single node
         if not isinstance(st.network, TensorTrain):
             # tmp_net = TreeNetwork()
             # tmp_net.add_node("G0", st.network.contract())
             # st.network = tmp_net
             # turn it into a tensor train
             st.network = self._preprocess(st.network)
+            # print("after transforming to tt")
+            # print(st.network)
 
         # decrease the delta budget exponentially
         delta, remaining_delta = self.error_dist.split_delta(remaining_delta)
@@ -142,8 +155,8 @@ class TopDownSearch:
         # print("search structure for")
         # print(st.network)
         # print("*"*20)
-        search_engine = PartitionSearch(self.config)
-        result = search_engine.search(st.network, merge_ops, delta, exclusions)
+        search_engine = PartitionSearch(self.config, st.network)
+        result = search_engine.search(merge_ops, delta, exclusions)
         if result.best_state is None:
             return st
 
@@ -158,17 +171,18 @@ class TopDownSearch:
             tmp_bn.split_index(split_op)
         after_split = tmp_bn.free_indices()
 
-        unused_delta = result.unused_delta**2 + st.unused_delta
-        # TODO: check do we get the correct next nets? Does converting them into TT make this wrong?
         next_nets = self._get_next_nets(result.best_state)
         best_st = HSearchState(st.free_indices, st.reshape_history, bn, 0)
 
+        # print("result unused", result.unused_delta ** 2)
+
+        unused_delta = st.unused_delta + result.unused_delta**2
         if sorted(before_split) == sorted(after_split) and len(next_nets) == 1:
-            unused_delta += remaining_delta**2
-            best_st.unused_delta = unused_delta
+            best_st.unused_delta = unused_delta + remaining_delta**2
             # self.memoization[tuple(st.network.free_indices())] = best_st
             return best_st
 
+        # future work: it would be better to dynamically distribute errors
         # distribute delta equally to all subnets
         remaining_delta = remaining_delta / math.sqrt(len(next_nets))
         # enumerate nodes in the order of their scores
@@ -176,6 +190,7 @@ class TopDownSearch:
             self._search_for_subnet(best_st, remaining_delta, subnet)
 
         # after we replaced all subnets, we compress the additional edges
+        # print(best_st.network.norm() ** 2, sn_unused_delta)
         best_st.unused_delta = unused_delta
         # self.memoization[tuple(st.network.free_indices())] = best_st
         return best_st
@@ -217,7 +232,7 @@ class TopDownSearch:
             best_st, copy.deepcopy(subnet), remaining_delta
         )
         if not optimize_res:
-            return remaining_delta
+            return remaining_delta**2
 
         best_res = optimize_res[0]
         for res in optimize_res[1:]:
@@ -285,12 +300,11 @@ class TopDownSearch:
         raise NotImplementedError
 
     def _split_indices(
-        self, st: HSearchState, node: NodeName, compute_data: bool = True
+        self, st: HSearchState, indices: List[Index], compute_data: bool = True
     ) -> Sequence[IndexSplitResult]:
-        if self.config.engine.decomp_algo == "cross" and compute_data:
+        if not self.config.topdown.reshape_enabled and compute_data:
             return [IndexSplitResult(st, [])]
 
-        indices = st.network.node_tensor(node).indices
         index_splits = self._split_indices_on_budget(st, indices)
 
         seen = set()
@@ -308,14 +322,14 @@ class TopDownSearch:
             used_splits = []
             for split_op in index_split:
                 split_op = copy.deepcopy(split_op)
-                tmp_indices = new_st.network.node_tensor(node).indices
+                # tmp_indices = new_st.network.node_tensor(node).indices
 
-                ndims = len(tmp_indices) + len(split_op.shape) - 1
-                if (
-                    self.config.topdown.search_algo == "enumerate"
-                    and ndims > self.config.topdown.group_threshold
-                ):
-                    continue
+                # ndims = len(tmp_indices) + len(split_op.shape) - 1
+                # if (
+                #     self.config.topdown.reshape_algo == ReshapeOption.ENUMERATE
+                #     and ndims > self.config.topdown.group_threshold
+                # ):
+                #     continue
 
                 new_st = new_st.split_index(split_op, compute_data)
                 used_splits.append(split_op)
@@ -327,7 +341,7 @@ class TopDownSearch:
         return result_sts
 
     def _split_indices_on_budget(
-        self, st: HSearchState, indices: List[Index]
+        self, st: HSearchState, indices: Sequence[Index]
     ) -> List[List[IndexSplit]]:
         # distribute the allowed splits between indices
 
@@ -340,7 +354,10 @@ class TopDownSearch:
                 maxs.append(0)
 
         all_splits = []
-        if self.config.topdown.search_algo in ("enumerate", "random"):
+        if self.config.topdown.reshape_algo in (
+            ReshapeOption.RANDOM,
+            ReshapeOption.ENUMERATE,
+        ):
             budget = self.config.topdown.group_threshold - len(indices)
             budget = min(sum(maxs), budget)  # exhaust the budget as possible
             for ind_budget in itertools.product(*[range(x + 1) for x in maxs]):
@@ -357,7 +374,7 @@ class TopDownSearch:
 
             return all_splits
 
-        if self.config.topdown.search_algo == "merge":
+        if self.config.topdown.reshape_algo == ReshapeOption.CLUSTER:
             splits = []
             for i, ind in enumerate(indices):
                 ind_splits = self._get_split_op(st, ind, maxs[i])
@@ -367,6 +384,47 @@ class TopDownSearch:
             all_splits.extend(list(itertools.product(*splits)))
 
         return all_splits
+
+    def _split_scores(
+        self, st: HSearchState, index: Index
+    ) -> Dict[int, float]:
+        # get the svals decay for each split points of the index size
+        node = st.network.node_by_free_index(index.name)
+        st.network.orthonormalize(node)
+
+        split_scores = {}
+        for n in sympy.divisors(index.size):
+            if n in (1, index.size):
+                continue
+
+            tmp_net = TreeNetwork()
+            tmp_net.network = copy.deepcopy(st.network.network)
+            # get indices on one side of the node
+            nbr = list(tmp_net.network.neighbors(node))[0]
+            linds, rinds = index_partition(tmp_net, node, nbr)
+
+            lres = Index(str(index.name) + "_0", n)
+            rres = Index(str(index.name) + "_1", index.size // n)
+            tmp_net.split_index(
+                IndexSplit(
+                    index=index,
+                    shape=(n, index.size // n),
+                    result=[lres, rres],
+                )
+            )
+
+            target_inds = linds
+            if index in linds:
+                target_inds = rinds
+
+            target_inds.append(lres)
+
+            max_rank = 2
+            s = tmp_net.random_svals(node, target_inds, max_rank=max_rank)
+            split_scores[n] = s[0] / s[min(len(s), max_rank) - 1]
+            # print(target_inds, n, split_scores[n])
+
+        return split_scores
 
     def _get_split_op(
         self, st: HSearchState, index: Index, budget: int
@@ -379,16 +437,30 @@ class TopDownSearch:
         if len(factors) == 1:
             return []
 
-        if self.config.topdown.search_algo == "random":
+        if self.config.topdown.reshape_algo == ReshapeOption.RANDOM:
             k = np.random.randint(0, len(factors))
             selected = random.sample(factors, k=k)
             shape = _create_split_target(factors, selected)
             return [IndexSplit(index=index, shape=shape)]
 
+        # filter out the top few
+        scores = self._split_scores(st, index)
         # we always try our best to decompose the indices to
         # the maximum number and they subsume higher level reshapes
-        split_ops = []
+        shape_with_scores = []
         for shape in select_factors(res, budget):
+            sz = 1
+            score = 0
+            for k in shape[:-1]:
+                sz *= k
+                score += scores[sz]
+
+            shape_with_scores.append((score, shape))
+
+        shape_with_scores = list(sorted(shape_with_scores, reverse=True))
+
+        split_ops = []
+        for _, shape in shape_with_scores[:10]:
             # for selected in itertools.combinations(factors, r=k):
             split_ops.append(IndexSplit(index=index, shape=shape))
 
@@ -457,8 +529,8 @@ class WhiteBoxTopDownSearch(TopDownSearch):
             "only single node should be optimized in white box tensors"
         )
         node = subnet_nodes[0]
-
-        for split_result in self._split_indices(st, node):
+        node_indices = st.network.node_tensor(node).indices
+        for split_result in self._split_indices(st, node_indices):
             net = split_result.state.network
             net.orthonormalize(node)
 
@@ -491,10 +563,16 @@ class WhiteBoxTopDownSearch(TopDownSearch):
 class BlackBoxTopDownSearch(TopDownSearch):
     """Top down structural search for black box tensors."""
 
-    def __init__(self, config: SearchConfig, data_tensor: CountingFunc):
+    def __init__(
+        self,
+        config: SearchConfig,
+        data_tensor: CountingFunc,
+        validation_set: np.ndarray,
+    ):
         super().__init__(config)
         self.data_tensor = data_tensor
         self._cross_runner = CrossRunner()
+        self._validation_set = validation_set
 
     def set_cross_runner(self, runner: CrossRunner):
         """Modify the cross approximation algorithm."""
@@ -505,35 +583,40 @@ class BlackBoxTopDownSearch(TopDownSearch):
         splits, f = self._gen_split_func(self.data_tensor)
         # run the cross approximation to avoid expensive error querying
         net = self._run_init_cross(self.data_tensor, f, splits)
+        # revert the index splits by merging the neighbor nodes
+        for split_op in splits:
+            assert isinstance(split_op, IndexSplit)
 
         return net, splits
 
     def _gen_split_func(
         self, data_tensor: CountingFunc
     ) -> Tuple[List[IndexOp], TensorFunc]:
-        free_indices = data_tensor.indices
-        init_st = init_state(data_tensor, self.config.engine.eps)
+        # free_indices = data_tensor.indices
+        # init_st = init_state(data_tensor, self.config.engine.eps)
 
-        splits = []
+        # splits = []
 
-        # create index splits in the chosen order
-        st = HSearchState(free_indices[:], [], init_st.network, 0)
-        for n in st.network.network.nodes:
-            split_results = self._split_indices(st, n, compute_data=False)
-            if len(split_results) == 0:
-                continue
+        # # create index splits in the chosen order
+        # st = HSearchState(free_indices[:], [], init_st.network, 0)
+        # for n in st.network.network.nodes:
+        #     n_indices = st.network.node_tensor(n).indices
+        #     split_results = self._split_indices(st, n_indices, compute_data=False)
+        #     if len(split_results) == 0:
+        #         continue
 
-            st = split_results[0].state
-            splits.extend(split_results[0].splits)
+        #     st = split_results[0].state
+        #     splits.extend(split_results[0].splits)
 
-        split_indices = list(sorted(st.network.free_indices()))
-        split_f = split_func(data_tensor, split_indices, splits)
+        # split_indices = list(sorted(st.network.free_indices()))
+        # split_f = split_func(data_tensor, split_indices, splits)
 
-        if self.config.topdown.cluster_method == "rand_nbr":
-            split_f = self._rand_permute_indices(splits, split_f)
+        # if self.config.topdown.cluster_method == "rand_nbr":
+        #     split_f = self._rand_permute_indices(splits, split_f)
 
-        self.init_splits = len(splits)
-        return splits, split_f
+        # self.init_splits = len(splits)
+        # return splits, split_f
+        return [], data_tensor
 
     def _rand_permute_indices(
         self, splits: List[IndexOp], split_f: TensorFunc
@@ -556,53 +639,57 @@ class BlackBoxTopDownSearch(TopDownSearch):
     ) -> TreeNetwork:
         cross_res_file = f"{self.config.output.output_dir}/init_net.pkl"
         cross_start = time.time()
-
         init_eps = self.config.engine.eps * self.config.cross.init_eps
 
         if isinstance(data_tensor, FuncTensorNetwork) and isinstance(
             data_tensor.net, TensorTrain
         ):
-            # directly split the nodes into the target by svd
-            f_inds = f.indices
-            net = copy.deepcopy(data_tensor.net)
+            self.stats.init_cross_size = data_tensor.net.cost()
+            return data_tensor.net
+            # # directly split the nodes into the target by svd
+            # f_inds = f.indices
+            # net = copy.deepcopy(data_tensor.net)
 
-            prev_node = None
-            for split_op in splits:
-                assert isinstance(split_op, IndexSplit)
-                curr_node = net.split_index(split_op)
-                assert curr_node is not None
-                assert split_op.result is not None
-                # split them into tensor train formats
-                for ind in split_op.result[:-1]:
-                    curr_inds = net.node_tensor(curr_node).indices
-                    lefts = [curr_inds.index(ind)]
-                    for jj, curr_ind in enumerate(curr_inds):
-                        if (
-                            prev_node is not None
-                            and curr_ind
-                            in net.get_contraction_index(prev_node, curr_node)
-                        ):
-                            lefts.append(jj)
+            # prev_node = None
+            # for split_op in splits:
+            #     assert isinstance(split_op, IndexSplit)
+            #     curr_node = net.split_index(split_op)
+            #     assert curr_node is not None
+            #     assert split_op.result is not None
+            #     # split them into tensor train formats
+            #     for ind in split_op.result[:-1]:
+            #         curr_inds = net.node_tensor(curr_node).indices
+            #         lefts = [curr_inds.index(ind)]
+            #         for jj, curr_ind in enumerate(curr_inds):
+            #             if (
+            #                 prev_node is not None
+            #                 and curr_ind
+            #                 in net.get_contraction_index(prev_node, curr_node)
+            #             ):
+            #                 lefts.append(jj)
 
-                    prev_node, curr_node = net.qr(curr_node, lefts)
-                    tensor = net.node_tensor(prev_node)
-                    if len(tensor.indices) == 3:
-                        net.set_node_tensor(
-                            prev_node, tensor.permute([1, 0, 2])
-                        )
+            #         prev_node, curr_node = net.qr(curr_node, lefts)
+            #         tensor = net.node_tensor(prev_node)
+            #         if len(tensor.indices) == 3:
+            #             net.set_node_tensor(
+            #                 prev_node, tensor.permute([1, 0, 2])
+            #             )
 
-                prev_node = curr_node
+            #     prev_node = curr_node
 
-            node_map = {n: i for i, n in enumerate(net.network.nodes)}
-            net.network = nx.relabel_nodes(net.network, node_map)
-            # net = tt_svd_round(net, self.config.engine.eps * 0.01)
-            # print(net)
-            print(
-                "TT before round compression:",
-                np.prod([ind.size for ind in net.free_indices()]) / net.cost(),
-            )
+            # node_map = {n: i for i, n in enumerate(net.network.nodes)}
+            # net.network = nx.relabel_nodes(net.network, node_map)
+            # rounded_net = tt_svd_round(net, self.config.engine.eps)
+            # # print(net)
+            # print(
+            #     "TT before round compression:",
+            #     np.prod([ind.size for ind in net.free_indices()])
+            #     / rounded_net.cost(),
+            # )
         else:
-            net = self._cross_runner.run(f, init_eps)
+            net = self._cross_runner.run(
+                f, init_eps, kickrank=5, validation=self._validation_set
+            )
 
         with open(cross_res_file, "wb") as cross_writer:
             pickle.dump(net, cross_writer)
@@ -613,11 +700,11 @@ class BlackBoxTopDownSearch(TopDownSearch):
 
         # print(net)
         if isinstance(data_tensor, FuncNeutron):
-            self._close_neutron_func(data_tensor)
+            self._store_neutron_func(data_tensor)
 
         return net
 
-    def _close_neutron_func(self, data_tensor: FuncNeutron):
+    def _store_neutron_func(self, data_tensor: FuncNeutron):
         cache = f"output/neutron_diffusion_{data_tensor.d}.pkl"
         with open(cache, "wb") as cache_file:
             pickle.dump(data_tensor.cache, cache_file)
@@ -625,7 +712,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
     def _trigger_merge(self, ind_cnt: int, is_top: bool) -> bool:
         """Determine whether to trigger the index merge operation before search"""
         return (
-            (self.config.topdown.search_algo == "merge")
+            (self.config.topdown.reshape_algo == ReshapeOption.CLUSTER)
             and (not is_top or self.config.topdown.merge_mode == "all")
             and ind_cnt > self.config.topdown.group_threshold
         )
@@ -637,40 +724,56 @@ class BlackBoxTopDownSearch(TopDownSearch):
         remaining_delta: float,
     ) -> List[SubnetResult]:
         """Optimize the children nodes in a given network"""
-        net = st.network
-        net.orthonormalize(list(subnet.network.nodes)[0])
+        results = []
+        subnet_nodes = list(subnet.network.nodes)
 
-        # we need to remembers the indices after orthonormalize
-        new_subnet = TreeNetwork()
-        new_subnet.network = nx.subgraph(
-            net.network, subnet.network.nodes
-        ).copy()
+        node = subnet_nodes[0]
+        indices = subnet.free_indices()
+        for split_result in self._split_indices(st, indices):
+            net = split_result.state.network
+            net.orthonormalize(node)
 
-        free_indices, exclusions = [], []
-        for ind in subnet.free_indices():
-            if ind in st.free_indices:
-                free_indices.append(ind)
-            else:
-                exclusions.append(ind)
+            new_sn = TreeNetwork()
+            new_sn.network = nx.subgraph(
+                net.network, subnet.network.nodes
+            ).copy()
+            new_st = HSearchState(
+                split_result.state.free_indices,
+                split_result.state.reshape_history,
+                new_sn,
+            )
 
-        new_st = HSearchState(free_indices, st.reshape_history, new_subnet, 0)
-        logger.debug("splitted network: %s", new_st.network)
+            # new_st.network.orthonormalize(node)
+            logger.debug("splitted network: %s", new_st.network)
 
-        # exclude actions that split single internal indices
-        sn_st = self._search(new_st, remaining_delta, exclusions=exclusions)
+            # exclude actions that split single internal indices
+            exclusions = []
+            for ind in new_sn.free_indices():
+                if ind not in split_result.state.free_indices:
+                    exclusions.append(ind)
 
-        return [SubnetResult(net, new_subnet, sn_st)]
+            sn_st = self._search(
+                new_st, remaining_delta, exclusions=exclusions
+            )
+            results.append(SubnetResult(net, new_sn, sn_st))
+
+        return results
 
     @profile
     def _preprocess(self, net: TreeNetwork) -> TreeNetwork:
+        # print("preprocess subnet")
+        # print(net)
+
         free_inds = []
         for ind in net.free_indices():
             free_inds.append(ind.with_new_rng(range(ind.size)))
 
+        if len(net.network.nodes) == 1:
+            return TensorTrain.tt_svd(
+                net.contract().value, free_inds, eps=self.config.engine.eps * 0
+            )
+
         func = FuncTensorNetwork(free_inds, net)
-        return self._cross_runner.run(func, eps=self.config.engine.eps)
-        # tmp_net = TreeNetwork()
-        # tmp_net.add_node("G0", net.contract())
-        # return TensorTrain.tt_svd(
-        #     net.contract().value, free_inds, eps=self.config.engine.eps*0
-        # )
+        return self._cross_runner.run(
+            func, eps=self.config.engine.eps * 0.5, kickrank=10
+        )

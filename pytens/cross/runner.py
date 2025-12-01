@@ -18,7 +18,7 @@ class CrossRunner:
     """Base class for running cross approximation."""
 
     @abstractmethod
-    def run(self, f: TensorFunc, eps: float) -> TreeNetwork:
+    def run(self, f: TensorFunc, eps: float, kickrank: int = 2, validation: Optional[np.ndarray] = None) -> TreeNetwork:
         """Run the cross approximation on the given function
         with the specified error.
         """
