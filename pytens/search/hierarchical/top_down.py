@@ -4,6 +4,7 @@ import copy
 import itertools
 import logging
 import math
+import operator
 import pickle
 import random
 import time
@@ -154,6 +155,8 @@ class TopDownSearch:
 
         # print("search structure for")
         # print(st.network)
+        # print(merge_ops)
+        # print(split_ops)
         # print("*"*20)
         search_engine = PartitionSearch(self.config, st.network)
         result = search_engine.search(merge_ops, delta, exclusions)
@@ -449,15 +452,12 @@ class TopDownSearch:
         # the maximum number and they subsume higher level reshapes
         shape_with_scores = []
         for shape in select_factors(res, budget):
-            sz = 1
-            score = 0
-            for k in shape[:-1]:
-                sz *= k
-                score += scores[sz]
-
+            # Calculate cumulative product sizes and sum their scores
+            cumulative_sizes = itertools.accumulate(shape[1:-1], operator.mul, initial=shape[0])
+            score = sum(scores[size] for size in cumulative_sizes)
             shape_with_scores.append((score, shape))
 
-        shape_with_scores = list(sorted(shape_with_scores, reverse=True))
+        shape_with_scores.sort(reverse=True)
 
         split_ops = []
         for _, shape in shape_with_scores[:10]:
@@ -645,7 +645,6 @@ class BlackBoxTopDownSearch(TopDownSearch):
             data_tensor.net, TensorTrain
         ):
             self.stats.init_cross_size = data_tensor.net.cost()
-            return data_tensor.net
             # # directly split the nodes into the target by svd
             # f_inds = f.indices
             # net = copy.deepcopy(data_tensor.net)
@@ -677,18 +676,23 @@ class BlackBoxTopDownSearch(TopDownSearch):
 
             #     prev_node = curr_node
 
-            # node_map = {n: i for i, n in enumerate(net.network.nodes)}
+            # net = copy.deepcopy(data_tensor.net)
+            # print(net)
+            # node_map = {n: i for i, n in enumerate(sorted(net.network.nodes))}
             # net.network = nx.relabel_nodes(net.network, node_map)
             # rounded_net = tt_svd_round(net, self.config.engine.eps)
+            # print("tt-round before reshape", data_tensor.net.cost() / rounded_net.cost())
+            # print(rounded_net)
             # # print(net)
             # print(
             #     "TT before round compression:",
             #     np.prod([ind.size for ind in net.free_indices()])
             #     / rounded_net.cost(),
             # )
+            return data_tensor.net
         else:
             net = self._cross_runner.run(
-                f, init_eps, kickrank=5, validation=self._validation_set
+                f, init_eps, kickrank=self.config.cross.init_kickrank, validation=self._validation_set
             )
 
         with open(cross_res_file, "wb") as cross_writer:
@@ -775,5 +779,5 @@ class BlackBoxTopDownSearch(TopDownSearch):
 
         func = FuncTensorNetwork(free_inds, net)
         return self._cross_runner.run(
-            func, eps=self.config.engine.eps * 0.5, kickrank=10
+            func, eps=self.config.engine.eps * 0.01, kickrank=10
         )

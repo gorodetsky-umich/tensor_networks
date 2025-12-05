@@ -155,6 +155,7 @@ class OSplit(Action):
         max_rank=100,
         orthonormal=None,
         delta=0,
+        rand: bool = True,
     ) -> np.ndarray:
         """Compute the singular values of the split action."""
         if isinstance(net, TensorTrain):
@@ -164,7 +165,7 @@ class OSplit(Action):
             # if algo == SVDAlgorithm.FOLD:
             #     return net.svals_by_fold(self.indices, max_rank=max_rank)
 
-            return net.svals_by_merge(self.indices, max_rank=max_rank)
+            return net.svals_by_merge(self.indices, max_rank=max_rank, rand=rand)
 
             # return net.svals(self.indices, max_rank=max_rank, delta=delta)
 
@@ -174,7 +175,7 @@ class OSplit(Action):
             )
 
         if isinstance(net, FoldedTensorTrain):
-            return net.svals(self.indices, max_rank=max_rank)
+            return net.svals(self.indices, max_rank=max_rank, rand=rand)
 
         ac = self.to_isplit(net)
         return ac.svals(net, svd)

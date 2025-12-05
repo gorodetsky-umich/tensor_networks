@@ -148,6 +148,10 @@ class PreprocessConfig(pydantic.BaseModel):
         default=100,
         description="Config the maximum number of singular values in randomized SVD",
     )
+    rand_svd: bool = pydantic.Field(
+        default=True,
+        description="Whether to use random SVD in the computation of preprocessing singular values",
+    )
 
 class CrossConfig(pydantic.BaseModel):
     """Configuration for cross approximation"""
@@ -163,6 +167,10 @@ class CrossConfig(pydantic.BaseModel):
     init_dim: int = pydantic.Field(
         default=100,
         description="Configure the number of initial cross dimensions",
+    )
+    init_kickrank: int = pydantic.Field(
+        default=2,
+        description="Number of rank steps for initial cross approximation"
     )
 
 

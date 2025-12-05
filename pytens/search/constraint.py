@@ -4,26 +4,27 @@ import copy
 import itertools
 import logging
 import os
-from typing import List, Optional, Sequence, Dict
+from typing import Dict, List, Optional, Sequence
 
 import gurobipy as gp
 import numpy as np
-from gurobipy import GRB
 import tntorch
 import torch
+from gurobipy import GRB
 
-from pytens.algs import Index, Tensor, TreeNetwork, TensorTrain
-from pytens.cross.funcs import TensorFunc, FuncTensorNetwork, MergeFunc
-from pytens.types import IndexMerge
+from pytens.algs import Index, Tensor, TensorTrain, TreeNetwork
+from pytens.cross.funcs import FuncTensorNetwork, MergeFunc, TensorFunc
 from pytens.search.configuration import SearchConfig
+from pytens.search.hierarchical.utils import tntorch_wrapper
 from pytens.search.state import OSplit, SearchState
 from pytens.search.utils import DataTensor, reshape_func
-from pytens.search.hierarchical.utils import tntorch_wrapper
+from pytens.types import IndexMerge
 
 BAD_SCORE = 9999999999999
 
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
 
 class ILPSolver:
     """An ILP solver to find near-optimal rank assignments."""
@@ -138,7 +139,7 @@ class ConstraintSearch:
         cnt = 0
         if len(s) == 0:
             return None
-        
+
         s_sizes = [1]
         s_sums = [s[-1] ** 2]
 
@@ -163,7 +164,9 @@ class ConstraintSearch:
             s_sums.append(prev_sum)
 
         # the final sizes need to be accumulated
-        final_sizes = [max(len(s) - x, 1) for x in np.cumsum(np.array(s_sizes))]
+        final_sizes = [
+            max(len(s) - x, 1) for x in np.cumsum(np.array(s_sizes))
+        ]
 
         # print(s_sizes, list(zip(final_sizes, s_sums)))
         return s_sums, final_sizes
@@ -181,18 +184,43 @@ class ConstraintSearch:
         assert isinstance(data_tensor, TensorTrain)
         # create a merge func that merges comb into one index and the rest into the other
         data_indices = data_tensor.free_indices()
-        
+
         comb_size = int(np.prod([i.size for i in comb]))
-        comb_merge = IndexMerge(indices=comb, result=Index("_".join([str(i.name) for i in comb]), comb_size, range(comb_size)))
+        comb_merge = IndexMerge(
+            indices=comb,
+            result=Index(
+                "_".join([str(i.name) for i in comb]),
+                comb_size,
+                range(comb_size),
+            ),
+        )
 
         other_indices = [ind for ind in data_indices if ind not in comb]
         other_size = int(np.prod([i.size for i in other_indices]))
-        other_merge = IndexMerge(indices=other_indices, result=Index("_".join([str(i.name) for i in other_indices]), other_size, range(other_size)))
-        merge_func = reshape_func([comb_merge, other_merge], FuncTensorNetwork(data_tensor.free_indices(), data_tensor))
+        other_merge = IndexMerge(
+            indices=other_indices,
+            result=Index(
+                "_".join([str(i.name) for i in other_indices]),
+                other_size,
+                range(other_size),
+            ),
+        )
+        merge_func = reshape_func(
+            [comb_merge, other_merge],
+            FuncTensorNetwork(data_tensor.free_indices(), data_tensor),
+        )
 
         # get ranks and errors for the comb
         domains = [torch.arange(s) for s in [comb_size, other_size]]
-        _, info = tntorch.cross(tntorch_wrapper(merge_func), domains, eps=err, kickrank=1, max_iter=self.config.preprocess.max_rank, verbose=False, return_info=True)
+        _, info = tntorch.cross(
+            tntorch_wrapper(merge_func),
+            domains,
+            eps=err,
+            kickrank=1,
+            max_iter=self.config.preprocess.max_rank,
+            verbose=False,
+            return_info=True,
+        )
         errors = info["epss"]
         # TODO: process the errors
         sizes, sums = zip(*reversed(ranks_and_errors))
@@ -241,7 +269,10 @@ class ConstraintSearch:
         logger.debug("%s", data_tensor)
 
         if cross:
-            self._preprocess_cross(FuncTensorNetwork(data_tensor.free_indices(), data_tensor), comb)
+            self._preprocess_cross(
+                FuncTensorNetwork(data_tensor.free_indices(), data_tensor),
+                comb,
+            )
             return
 
         ac = OSplit(comb)
@@ -258,19 +289,11 @@ class ConstraintSearch:
             self.first_steps[ac] = file_name
         else:
             net = copy.deepcopy(data_tensor)
-            # (u, s, v), _ = ac.svd(net, compute_uv=compute_uv)
-            # u = net.value(u)
-            # s = np.diag(net.value(s))
-            # v = net.value(v)
-            # if compute_uv:
-            #     # save to file to avoid memory explosion
-            #     if not os.path.exists(self.config.output.output_dir):
-            #         os.makedirs(self.config.output.output_dir)
-
-            #     np.savez(file_name, u=u, s=s, v=v)
-            #     self.first_steps[OSplit(comb)] = file_name
-            #     self.temp_files.append(file_name)
-            s = ac.svals(net, max_rank=self.config.preprocess.max_rank)
+            s = ac.svals(
+                net,
+                max_rank=self.config.preprocess.max_rank,
+                rand=self.config.preprocess.rand_svd,
+            )
 
         res = self.abstract(s)
         if res is not None:
