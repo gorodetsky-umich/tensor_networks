@@ -18,6 +18,8 @@ from pytens.types import DimTreeNode
 # logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+ALGO = "maxvol"
+
 def cartesian_product_arrays(*arrays):
     """
     Compute the Cartesian product of multiple arrays of shape (ni, di),
@@ -76,6 +78,36 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     q, _ = np.linalg.qr(v)
     return py_maxvol(q)
 
+def deim(u: np.ndarray):
+    """
+    Select indices by Descrete Empirical Interpolation Method (DEIM)
+    """
+    r = u.shape[1]
+    indices = np.empty(r, dtype=int)
+    indices[0] = np.argmax(np.abs(u[:, 0]))
+
+    for j in range(1, r):
+        uselect = u[indices[:j], :j]
+        target = u[indices[:j], j]
+        try:
+            alpha, *_ = np.linalg.lstsq(uselect, target)
+        except np.linalg.LinAlgError:
+            alpha = np.linalg.pinv(uselect) @ target
+
+        # compute the residual
+        rvec = u[:, j] - (u[:, :j] @ alpha)
+        # find the maximum from the residual
+        indices[j] = np.argmax(np.abs(rvec))
+
+    # print(indices)
+    return indices
+
+def select_indices_deim(v: np.ndarray):
+    """Compute the cross for a single point"""
+    u, _, _ = np.linalg.svd(v, full_matrices=False)
+    i = deim(u)
+    g = u @ np.linalg.pinv(u[i])
+    return g, i
 
 def select_indices_greedy(
     v: np.ndarray, u: np.ndarray
@@ -118,7 +150,13 @@ def root_to_leaves(tensor_func: TensorFunc, node: DimTreeNode) -> None:
             (node.up_info.indices, node.up_info.vals),
             (node.down_info.indices, down_vals),
         )
-        ind, _ = select_indices(v)
+        if ALGO == "maxvol":
+            ind, _ = select_indices(v)
+        elif ALGO == "deim":
+            _, ind = select_indices_deim(v)
+        else:
+            raise Exception("unsupported algo")
+        # print(ind)
         node.down_info.vals = down_vals[ind, :]
         node.down_info.rank = len(ind)
 
@@ -145,7 +183,13 @@ def leaves_to_root(
         (node.down_info.indices, node.down_info.vals),
         (node.up_info.indices, up_vals),
     )
-    ind, b = select_indices(v)
+    if ALGO == "maxvol":
+        ind, b = select_indices(v)
+    elif ALGO == "deim":
+        b, ind = select_indices_deim(v)
+    else:
+        raise Exception("unsupported algo")
+    # print(ind)
     node.up_info.vals = up_vals[ind, :]
     node.up_info.rank = len(ind)
     # print("====>", node.values.up_vals)
@@ -188,7 +232,7 @@ def cross(
     f: TensorFunc,
     net: "pt.TreeNetwork",
     root: "pt.NodeName",
-    validation: Optional[np.ndarray],
+    validation: Optional[np.ndarray] = None,
     eps: float = 0.1,
     val_size: int = 1000,
     max_iters: Optional[int] = None,
@@ -268,7 +312,7 @@ def cross(
         # print(estimate.shape, real.shape)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        # print("step:", trial, "error:", err)
+        print("step:", trial, "error:", err)
         # print(net)
         if err <= eps or (max_iters is not None and trial >= max_iters):
             break
@@ -281,131 +325,108 @@ def cross(
     # print(ranks_and_errs)
     return CrossResult(tree, ranks_and_errs)
 
-def deim(u: np.ndarray, rmax: Optional[int] = None):
-    """
-    Select indices by Descrete Empirical Interpolation Method (DEIM)
-    """
-    m, r = u.shape
+# def tt_cur_deim(f: TensorFunc, js: Sequence[np.ndarray]):
+#     d = len(f.indices)
+#     cores = [np.empty(0) for _ in range(d)]
+#     ranks = [1 for _ in range(d+1)]
+#     indices = [np.empty(0) for _ in range(d-1)]
 
-    if rmax is None:
-        rmax = r
-    assert rmax is not None
+#     # print(np.arange(f.indices[0].size, dtype=int)[:, None], js[0])
+#     cores[0], indices[0] = cur_deim(f, np.arange(f.indices[0].size, dtype=int)[:, None], js[0])
+#     indices[0] = indices[0][:, None]
+#     # r = f(cartesian_product_arrays(indices[0], *[np.arange(ind.size, dtype=int)[:, None] for ind in f.indices[1:]]))
+#     ranks[1] = indices[0].shape[0]
+#     for z in range(1, d - 1):
+#         # print(z)
+#         # print(indices[z - 1])
+#         left_indices = cartesian_product_arrays(indices[z-1], np.arange(f.indices[z].size, dtype=int)[:, None])
+#         # print(left_indices)
+#         cores[z], group_indices = cur_deim(f, left_indices, js[z])
+#         ranks[z+1] = len(group_indices)
+#         # print(group_indices, tuple(ranks[1:z] + [f.indices[z].size]))
+#         local_indices = np.unravel_index(group_indices.astype(int), tuple(ranks[1:z+1] + [f.indices[z].size]))
+#         indices[z] = np.stack([indices[z-1][:,i][inds] for i, inds in enumerate(local_indices[:-1])] + [local_indices[-1]], axis=-1)
+#         # r = f(cartesian_product_arrays(indices[z], *[np.arange(ind.size, dtype=int)[:, None] for ind in f.indices[z+1:]]))
 
-    indices = np.zeros(rmax, dtype=int)
-    p0 = np.argmax(np.abs(u[:, 0]))
-    indices[0] = p0
+#     cores[d - 1] = f(cartesian_product_arrays(indices[d-2], np.arange(f.indices[d-1].size, dtype=int)[:, None]))
+#     for z in range(1, d+1):
+#         cores[z-1] = cores[z-1].reshape(ranks[z-1], f.indices[z-1].size, ranks[z])
 
-    for j in range(1, rmax):
-        col_idx = j if j < r else (r - 1)
-        uselect = u[indices, : min(j, r)]
-        target = u[indices, col_idx]
-        try:
-            alpha, *_ = np.linalg.lstsq(uselect, target)
-        except np.linalg.LinAlgError:
-            alpha = np.linalg.pinv(uselect) @ target
+#     return cores, indices
 
-        # compute the residual
-        rvec = u[:, col_idx] - (u[:, : min(j, r)] @ alpha)
-        # find the maximum from the residual
-        p = np.argmax(np.abs(rvec))
-        indices[j] = p
+# def random_right_indices(sizes: Sequence[int], r: int):
+#     js = []
+#     d = len(sizes)
+#     for j in range(d):
+#         indices = np.empty((r, d - j - 1), dtype=int)
+#         for i in range(j + 1, d):
+#             indices[:, i - j - 1] = np.random.randint(0, sizes[i], size=(r,))
 
-    return indices
+#         js.append(indices)
 
-def cur_deim(f: TensorFunc, left_indices: np.ndarray, right_indices: np.ndarray):
-    """Compute the cross for a single point"""
-    v = f(cartesian_product_arrays(left_indices, right_indices))
-    v = v.reshape(left_indices.shape[0], right_indices.shape[0])
-    u, _, _ = np.linalg.svd(v, full_matrices=False)
-    i = deim(u)
-    g = u @ u[i].T
-    return g, i
+#     return js
 
-def tt_cur_deim(f: TensorFunc, js: Sequence[np.ndarray]):
-    d = len(f.indices)
-    cores = [np.empty(0) for _ in range(d)]
-    ranks = [1 for _ in range(d+1)]
-    indices = [np.empty(0) for _ in range(d)]
+# def tt_cur_deim_iterative(f: TensorFunc, eps: float, max_iters: int = 2, kickrank: int = 2, val_size: int = 2500):
+#     # randomly sample right indices
+#     d = len(f.indices)
+#     js = random_right_indices(f.shape, kickrank)
 
-    # print(np.arange(f.indices[0].size, dtype=int)[:, None], js[0])
-    cores[0], indices[0] = cur_deim(f, np.arange(f.indices[0].size, dtype=int)[:, None], js[0])
-    indices[0] = indices[0][:, None]
-    r = f(cartesian_product_arrays(indices[0], *[np.arange(ind.size, dtype=int)[:, None] for ind in f.indices[1:]]))
-    ranks[1] = indices[0].shape[0]
-    for z in range(1, d - 1):
-        print(z)
-        print(indices[z - 1])
-        left_indices = cartesian_product_arrays(indices[z-1], np.arange(f.indices[z].size, dtype=int)[:, None])
-        print(left_indices)
-        cores[z], group_indices = cur_deim(f, left_indices, js[z])
-        ranks[z+1] = len(group_indices)
-        print(group_indices, tuple(ranks[1:z] + [f.indices[z].size]))
-        local_indices = np.unravel_index(group_indices.astype(int), tuple(ranks[1:z+1] + [f.indices[z].size]))
-        indices[z] = np.stack([indices[z-1][:,i][inds] for i, inds in enumerate(local_indices[:-1])] + [local_indices[-1]], axis=-1)
-        r = f(cartesian_product_arrays(indices[z], local_indices[-1][:, None], *[np.arange(ind.size, dtype=int)[:, None] for ind in f.indices[z+1:]]))
+#     validation = []
+#     f_indices = f.indices
+#     for ind in f_indices:
+#         validation.append(np.random.randint(0, ind.size, size=val_size))
+#     validation = np.stack(validation, axis=-1)
+#     real = f(validation)
 
-    cores[d - 1] = r
-    for z in range(1, d+1):
-        cores[z] = cores[z].reshape(ranks[z-1], f.indices[z-1].size, ranks[z])
+#     while True:
+#         itr = 0
+#         indices = [[], []]
+#         while True:
+#             cores, indices[itr%2] = tt_cur_deim(f, js)
+#             itr += 1
 
-    return cores, indices
+#             if itr >= max_iters:
+#                 break
 
-def random_right_indices(sizes: Sequence[int], r: int):
-    js = []
-    d = len(sizes)
-    for j in range(d):
-        indices = np.empty((r, d - j - 1), dtype=int)
-        for i in range(j + 1, d):
-            indices[:, i - j - 1] = np.random.randint(0, sizes[i], size=(r,))
+#             f = PermuteFunc(f.indices[::-1], f, list(reversed(range(d))))
+#             js = [ind[:,::-1] for ind in indices[(itr+1)%2][::-1]]
 
-        js.append(indices)
+#         # check the error
+#         tt = pt.TensorTrain()
+#         for i, core in enumerate(cores):
+#             core_indices = []
+#             if i != 0:
+#                 core_indices.append(pt.Index(f"s_{i-1}", core.shape[0]))
 
-    return js
+#             core_indices.append(f.indices[i])
 
-def tt_cur_deim_iterative(f: TensorFunc, eps: float, max_iters: int = 3, kickrank: int = 2, val_size: int = 2500):
-    # randomly sample right indices
-    d = len(f.indices)
-    js = random_right_indices(f.shape, kickrank)
+#             if i != len(cores) - 1:
+#                 core_indices.append(pt.Index(f"s_{i}", core.shape[2]))
 
-    validation = []
-    for ind in f.indices:
-        validation.append(np.random.randint(0, ind.size, size=val_size))
-    validation = np.stack(validation, axis=-1)
-    real = f(validation)
+#             if i == 0:
+#                 core = core.squeeze(0)
+            
+#             if i == len(cores) - 1:
+#                 core = core.squeeze(-1)
 
-    while True:
-        for _ in range(max_iters):
-            cores, indices = tt_cur_deim(f, js)
-            f = PermuteFunc(f.indices[::-1], f, list(reversed(range(d))))
-            js = indices[::-1]
+#             tt.add_node(f"G{i}", pt.Tensor(core, core_indices))
 
-        # check the error
-        tt = pt.TensorTrain()
-        for i, core in enumerate(cores):
-            core_indices = []
-            if i != 0:
-                core_indices.append(pt.Index(f"s_{i-1}", core.shape[0]))
+#             if i != 0:
+#                 tt.add_edge(f"G{i-1}", f"G{i}")
 
-            core_indices.append(f.indices[i])
+#         tt_indices = tt.free_indices()
+#         perm = [tt_indices.index(ind) for ind in f_indices]
+#         # print(perm)
+#         estimate = tt.evaluate(tt_indices, validation[:, perm]).reshape(-1)
 
-            if i != len(cores) - 1:
-                core_indices.append(pt.Index(f"s_{i}", core.shape[2]))
-
-            tt.add_node(f"G{i}", pt.Tensor(core, core_indices))
-
-            if i != 0:
-                tt.add_edge(f"G{i-1}", f"G{i}")
-
-        estimate = tt.evaluate(f.indices, validation).reshape(-1)
-
-        # print("evaluate time:", time.time() - eval_start)
-        logger.debug("%s", tt)
-        # print(estimate.shape, real.shape)
-        err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
-        print(err)
-        if err < eps:
-            return tt
+#         # print("evaluate time:", time.time() - eval_start)
+#         logger.debug("%s", tt)
+#         # print(estimate.shape, real.shape)
+#         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
+#         print(err)
+#         if err < eps:
+#             return tt
         
-        # adaptively increase the ranks
-        new_js = random_right_indices(f.shape, kickrank)
-        js = [np.concat([old, new], axis=0) for old, new in zip(js, new_js)]
+#         # adaptively increase the ranks
+#         new_js = random_right_indices(f.shape, kickrank)
+#         js = [np.concat([old, new], axis=0) for old, new in zip(js, new_js)]

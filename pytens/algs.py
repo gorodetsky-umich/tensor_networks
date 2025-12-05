@@ -2429,7 +2429,7 @@ class TreeNetwork(TensorNetwork):
         return nodes
 
     def random_svals(
-        self, node: NodeName, indices: Sequence[Index], max_rank: int = 100
+        self, node: NodeName, indices: Sequence[Index], max_rank: int = 100, rand: bool = True
     ) -> np.ndarray:
         tensor = self.node_tensor(node)
         svd_node_inds = tensor.indices
@@ -2440,9 +2440,9 @@ class TreeNetwork(TensorNetwork):
         # print(svd_ls, svd_rs, perm)
         # print(tensor.value.shape)
         tensor_val = tensor.value.transpose(perm).reshape(int(lsize), -1)
-        try:
+        if rand:
             _, s, _ = randomized_svd(tensor_val, max_rank)
-        except np.linalg.LinAlgError:
+        else:
             s = np.linalg.svdvals(tensor_val)
 
         return s
@@ -2938,7 +2938,7 @@ class FoldedTensorTrain(TreeNetwork):
                     self.swap_along_path(path, n)
 
     def svals(
-        self, indices: Sequence[Index], max_rank: int = 100
+        self, indices: Sequence[Index], max_rank: int = 100, rand: bool = True
     ) -> np.ndarray:
         """Compute the singular values for a folded tensor train.
 
@@ -2966,7 +2966,7 @@ class FoldedTensorTrain(TreeNetwork):
 
         res = net.partition_node(indices)
         net.postorder_orthonormal(visited, None, res.lca_node)
-        return net.random_svals(res.lca_node, indices, max_rank)
+        return net.random_svals(res.lca_node, indices, max_rank, rand=rand)
 
     def target_backbone_nodes(
         self, indices: Sequence[Index]
@@ -3661,7 +3661,7 @@ class TensorTrain(TreeNetwork):
 
     @profile
     def svals_by_merge(
-        self, indices: Sequence[Index], max_rank: int = 100
+        self, indices: Sequence[Index], max_rank: int = 100, rand: bool = True
     ) -> np.ndarray:
         """Compute the singular values for a tensor train."""
         ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
@@ -3688,7 +3688,10 @@ class TensorTrain(TreeNetwork):
         left_size = np.prod([ind.size for ind in indices])
         tensor_val = self.node_tensor(n).value
         tensor_val = tensor_val.transpose(perm).reshape(left_size, -1)
-        _, s, _ = randomized_svd(tensor_val, max_rank)
+        if rand:
+            _, s, _ = randomized_svd(tensor_val, max_rank)
+        else:
+            s = np.linalg.svdvals(tensor_val)
         return s
         # (_, s, _), _ = net.svd(n, lefts, SVDConfig(delta=0, compute_uv=False))
         # return np.diag(net.node_tensor(s).value)

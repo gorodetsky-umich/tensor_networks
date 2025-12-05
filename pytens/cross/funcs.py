@@ -3,6 +3,7 @@
 from typing import List
 from multiprocessing import Pool
 import subprocess
+import pickle
 
 import numpy as np
 
@@ -133,6 +134,9 @@ class FuncNeutron(CountingFunc):
 
         # print(results)
         # print("cache size", len(self.cache))
+        with open(f"outputs/neutron_diffusion_{self.d}.pkl", "wb") as cache_file:
+            pickle.dump(self.cache, cache_file)
+
         return results
 
 class FuncData(CountingFunc):
@@ -156,6 +160,9 @@ class FuncTensorNetwork(CountingFunc):
     def _run(self, args: np.ndarray) -> np.ndarray:
         return self.net.evaluate(self.indices, args.astype(int))
 
+
+    def cost(self) -> int:
+        return self.net.cost()
 
 class NodeFunc(TensorFunc):
     """Reduce the tensor function from one node to the complete one."""

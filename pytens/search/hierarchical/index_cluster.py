@@ -87,9 +87,10 @@ class SVDIndexCluster(IndexCluster):
 
         # start from the largest group and expand until the threshold
         group_size = len(indices) // threshold
+        num_groups = min(threshold, len(indices) - threshold)
         index_sets = []
         visited = set()
-        for i in range(threshold):
+        for i in range(num_groups):
             group = set()
             for xs, _ in comb_corr:
                 if xs[0] in visited and xs[0] not in group:
