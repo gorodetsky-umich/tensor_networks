@@ -133,7 +133,7 @@ class CachedFunc(TensorFunc):
         self.calls = np.concatenate([args, self.calls])
         return self._run(args)
 
-class FuncData(CountableFunc):
+class FuncData(CachedFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], data: np.ndarray):
@@ -144,7 +144,7 @@ class FuncData(CountableFunc):
         return self.data[*args.astype(int).T]
 
 
-class FuncTensorNetwork(CountingFunc):
+class FuncTensorNetwork(CachedFunc):
     """Class for data tensors as cross approximation targets."""
 
     def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):

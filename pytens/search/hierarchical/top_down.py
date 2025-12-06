@@ -46,6 +46,7 @@ from pytens.search.utils import (
     seed_all,
     to_splits,
     index_partition,
+    unravel_indices,
 )
 from pytens.types import (
     Index,
@@ -308,7 +309,7 @@ class TopDownSearch:
         if not self.config.topdown.reshape_enabled and compute_data:
             return [IndexSplitResult(st, [])]
 
-        index_splits = self._split_indices_on_budget(st, indices)
+        index_splits = self._split_indices_on_budget(st, indices, compute_data)
 
         seen = set()
         result_sts = []
@@ -344,7 +345,7 @@ class TopDownSearch:
         return result_sts
 
     def _split_indices_on_budget(
-        self, st: HSearchState, indices: Sequence[Index]
+        self, st: HSearchState, indices: Sequence[Index], compute_data: bool = True
     ) -> List[List[IndexSplit]]:
         # distribute the allowed splits between indices
 
@@ -380,7 +381,7 @@ class TopDownSearch:
         if self.config.topdown.reshape_algo == ReshapeOption.CLUSTER:
             splits = []
             for i, ind in enumerate(indices):
-                ind_splits = self._get_split_op(st, ind, maxs[i])
+                ind_splits = self._get_split_op(st, ind, maxs[i], compute_data)
                 if len(ind_splits) != 0:
                     splits.append(ind_splits)
 
@@ -403,8 +404,12 @@ class TopDownSearch:
             tmp_net = TreeNetwork()
             tmp_net.network = copy.deepcopy(st.network.network)
             # get indices on one side of the node
-            nbr = list(tmp_net.network.neighbors(node))[0]
-            linds, rinds = index_partition(tmp_net, node, nbr)
+            nbrs = list(tmp_net.network.neighbors(node))
+
+            if not nbrs:
+                linds, rinds = [], tmp_net.free_indices()
+            else:
+                linds, rinds = index_partition(tmp_net, node, nbrs[0])
 
             lres = Index(str(index.name) + "_0", n)
             rres = Index(str(index.name) + "_1", index.size // n)
@@ -430,7 +435,7 @@ class TopDownSearch:
         return split_scores
 
     def _get_split_op(
-        self, st: HSearchState, index: Index, budget: int
+        self, st: HSearchState, index: Index, budget: int, compute_data: bool = True
     ) -> Sequence[IndexSplit]:
         if index not in st.free_indices or budget <= 0:
             return []
@@ -446,18 +451,21 @@ class TopDownSearch:
             shape = _create_split_target(factors, selected)
             return [IndexSplit(index=index, shape=shape)]
 
-        # filter out the top few
-        scores = self._split_scores(st, index)
-        # we always try our best to decompose the indices to
-        # the maximum number and they subsume higher level reshapes
-        shape_with_scores = []
-        for shape in select_factors(res, budget):
-            # Calculate cumulative product sizes and sum their scores
-            cumulative_sizes = itertools.accumulate(shape[1:-1], operator.mul, initial=shape[0])
-            score = sum(scores[size] for size in cumulative_sizes)
-            shape_with_scores.append((score, shape))
+        if compute_data:
+            # filter out the top few
+            scores = self._split_scores(st, index)
+            # we always try our best to decompose the indices to
+            # the maximum number and they subsume higher level reshapes
+            shape_with_scores = []
+            for shape in select_factors(res, budget):
+                # Calculate cumulative product sizes and sum their scores
+                cumulative_sizes = itertools.accumulate(shape[1:-1], operator.mul, initial=shape[0])
+                score = sum(scores[size] for size in cumulative_sizes)
+                shape_with_scores.append((score, shape))
 
-        shape_with_scores.sort(reverse=True)
+            shape_with_scores.sort(reverse=True)
+        else:
+            shape_with_scores = [(1, shape) for shape in select_factors(res, budget)]
 
         split_ops = []
         for _, shape in shape_with_scores[:10]:
@@ -583,39 +591,53 @@ class BlackBoxTopDownSearch(TopDownSearch):
         splits, f = self._gen_split_func(self.data_tensor)
         # run the cross approximation to avoid expensive error querying
         net = self._run_init_cross(self.data_tensor, f, splits)
+        tree = TreeNetwork()
+        tree.network = net.network
         # revert the index splits by merging the neighbor nodes
         for split_op in splits:
             assert isinstance(split_op, IndexSplit)
+            assert split_op.result is not None
+            base_index = split_op.result[0]
+            base_node = tree.node_by_free_index(base_index.name)
+            for ind in split_op.result[1:]:
+                tree.merge(base_node, tree.node_by_free_index(ind.name))
 
-        return net, splits
+            tree.merge_index(IndexMerge(indices=split_op.result, result=split_op.index))
+
+        return net, []
 
     def _gen_split_func(
         self, data_tensor: CountingFunc
     ) -> Tuple[List[IndexOp], TensorFunc]:
-        # free_indices = data_tensor.indices
-        # init_st = init_state(data_tensor, self.config.engine.eps)
+        if self.config.cross.init_reshape:
+            free_indices = data_tensor.indices
+            init_st = init_state(data_tensor, self.config.engine.eps)
 
-        # splits = []
+            splits = []
 
-        # # create index splits in the chosen order
-        # st = HSearchState(free_indices[:], [], init_st.network, 0)
-        # for n in st.network.network.nodes:
-        #     n_indices = st.network.node_tensor(n).indices
-        #     split_results = self._split_indices(st, n_indices, compute_data=False)
-        #     if len(split_results) == 0:
-        #         continue
+            # create index splits in the chosen order
+            st = HSearchState(free_indices[:], [], init_st.network, 0)
+            for n in st.network.network.nodes:
+                n_indices = st.network.node_tensor(n).indices
+                split_results = self._split_indices(st, n_indices, compute_data=False)
+                if len(split_results) == 0:
+                    continue
 
-        #     st = split_results[0].state
-        #     splits.extend(split_results[0].splits)
+                st = split_results[0].state
+                splits.extend(split_results[0].splits)
 
-        # split_indices = list(sorted(st.network.free_indices()))
-        # split_f = split_func(data_tensor, split_indices, splits)
+            split_indices = list(sorted(st.network.free_indices()))
+            split_f = split_func(data_tensor, split_indices, splits)
 
-        # if self.config.topdown.cluster_method == "rand_nbr":
-        #     split_f = self._rand_permute_indices(splits, split_f)
+            if self.config.topdown.cluster_method == "rand_nbr":
+                split_f = self._rand_permute_indices(splits, split_f)
 
-        # self.init_splits = len(splits)
-        # return splits, split_f
+            self.init_splits = len(splits)
+            new_indices, self._validation_set = unravel_indices(splits, free_indices, self._validation_set)
+            perm = [new_indices.index(ind) for ind in split_f.indices]
+            self._validation_set = self._validation_set[:, perm]
+            return splits, split_f
+
         return [], data_tensor
 
     def _rand_permute_indices(
@@ -778,6 +800,8 @@ class BlackBoxTopDownSearch(TopDownSearch):
             )
 
         func = FuncTensorNetwork(free_inds, net)
+        max_rank = max(ind.size for ind in net.inner_indices())
+        kickrank = max(5, max_rank // 5)
         return self._cross_runner.run(
-            func, eps=self.config.engine.eps * 0.01, kickrank=10
+            func, eps=self.config.engine.eps * 0.01, kickrank=max_rank//5
         )
