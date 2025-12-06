@@ -301,7 +301,7 @@ class PartitionSearch:
 
         assert len(new_indices) == len(self._data_tensor.free_indices())
         # print("reorder the indices into", new_indices)
-        if self._data_tensor.size() < 1e8:
+        if self._data_tensor.size() < 1e8 or len(self._data_tensor.free_indices()) < 10:
             tt = self._data_tensor.reorder_by_svd(new_indices, 0)
         else:
             tt = self._data_tensor.reorder_by_cross(

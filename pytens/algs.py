@@ -3737,7 +3737,7 @@ class TensorTrain(TreeNetwork):
 
     @profile
     def reorder_by_cross(
-        self, indices: Sequence[Index], eps: float = 0.1, max_iters: int=100
+        self, indices: Sequence[Index], eps: float = 0.1, max_iters: int=50
     ) -> "TensorTrain":
         """Reorder the tensor train so that the given indices are adjacent using cross approximation."""
         assert all(ind in self.free_indices() for ind in indices), (
@@ -3752,6 +3752,9 @@ class TensorTrain(TreeNetwork):
 
         # perm = [data.indices.index(ind) for ind in indices]
         # func = FuncData(indices, data.permute(perm).value)
+        # max_rank = max(ind.size for ind in self.inner_indices())
+        # adaptive_kickrank = max(5, max_rank)
+        # print("adaptive kickrank:", adaptive_kickrank)
         res = cross(
             func, tt, tt.end_nodes()[0], eps=eps, max_iters=max_iters, kickrank=10
         )

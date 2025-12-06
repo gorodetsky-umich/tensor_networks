@@ -5,32 +5,41 @@ from enum import Enum, auto
 
 import pydantic
 
+
 class InputFormat(Enum):
     """Types for different input formats"""
+
     WHITE_BOX = auto()
     BLACK_BOX = auto()
 
+
 class ClusterMethod(Enum):
     """Different merge algorithms"""
+
     RAND = auto()
     CORR = auto()
     SVD = auto()
     NBR = auto()
     RAND_NBR = auto()
 
+
 class InitStructType(Enum):
     """Different initial structures"""
+
     TUCKER = auto()
     HT = auto()
     TT = auto()
     FTT = auto()
     TT_CROSS = auto()
 
+
 class ReshapeOption(Enum):
     """Different options to merge indices to produce a lower-dim data."""
+
     RANDOM = auto()
     ENUMERATE = auto()
     CLUSTER = auto()
+
 
 class HeuristicConfig(pydantic.BaseModel):
     """Configuration for pruning heuristics"""
@@ -99,6 +108,7 @@ class ProgramSearchConfig(pydantic.BaseModel):
         description="Config to replay a series of splits from a pickle file",
     )
 
+
 class SearchEngineConfig(pydantic.BaseModel):
     """Configuration for the search engine"""
 
@@ -153,6 +163,7 @@ class PreprocessConfig(pydantic.BaseModel):
         description="Whether to use random SVD in the computation of preprocessing singular values",
     )
 
+
 class CrossConfig(pydantic.BaseModel):
     """Configuration for cross approximation"""
 
@@ -170,7 +181,11 @@ class CrossConfig(pydantic.BaseModel):
     )
     init_kickrank: int = pydantic.Field(
         default=2,
-        description="Number of rank steps for initial cross approximation"
+        description="Number of rank steps for initial cross approximation",
+    )
+    init_reshape: bool = pydantic.Field(
+        default=False,
+        description="Reshape the data into smaller factors before running cross",
     )
 
 
@@ -185,17 +200,13 @@ class TopDownConfig(pydantic.BaseModel):
         default="not_first",
         description="Configure whether to merge indices at the first level",
     )
-    reshape_algo: ReshapeOption = (
-        pydantic.Field(
-            default=ReshapeOption.CLUSTER,
-            description="Configure whether to use random algorithms",
-        )
+    reshape_algo: ReshapeOption = pydantic.Field(
+        default=ReshapeOption.CLUSTER,
+        description="Configure whether to use random algorithms",
     )
-    cluster_method: ClusterMethod = (
-        pydantic.Field(
-            default=ClusterMethod.RAND,
-            description="Configure what heuristic to use during index merge",
-        )
+    cluster_method: ClusterMethod = pydantic.Field(
+        default=ClusterMethod.RAND,
+        description="Configure what heuristic to use during index merge",
     )
     aggregation: Literal["mean", "det", "norm", "sval"] = pydantic.Field(
         default="mean",
@@ -222,6 +233,7 @@ class InputConfig(pydantic.BaseModel):
         default=InputFormat.WHITE_BOX,
         description="Choose the input data format",
     )
+
 
 class SearchConfig(pydantic.BaseModel):
     """Configuration for the entire search process"""

@@ -134,7 +134,7 @@ class FuncNeutron(CountingFunc):
 
         # print(results)
         # print("cache size", len(self.cache))
-        with open(f"outputs/neutron_diffusion_{self.d}.pkl", "wb") as cache_file:
+        with open(f"output/neutron_diffusion_{self.d}.pkl", "wb") as cache_file:
             pickle.dump(self.cache, cache_file)
 
         return results
