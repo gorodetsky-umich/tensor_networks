@@ -1,9 +1,12 @@
 """Test functions for cross approximation"""
 
+from time import sleep
 from typing import List
 from multiprocessing import Pool
 import subprocess
 import pickle
+import os
+import sys
 
 import numpy as np
 
@@ -94,38 +97,49 @@ class FuncNeutron(CountingFunc):
         super().__init__(indices)
         self.name = f"neutron_diffusion_{len(indices)}"
         self.cache = {}
-        self.pool = Pool()
 
-        # compile the C++ code to the correct number of dimensions
-        # nassem_types = len(indices) + 1
-        # # modify the C++ code
-        # with open("scripts/neutron_diffusion/fiber.hpp", "r") as f:
-        #     lines = []
-        #     for ln in f.readlines():
-        #         if "constexpr size_t Nassem_types" in ln:
-        #             lines.append(f"constexpr size_t Nassem_types = {nassem_types};\n")
-        #         else:
-        #             lines.append(ln)
+    def _check_job_status(self) -> bool:
+        current_jobs = os.popen("sq").read()
+        return len(current_jobs.split("\n")) == 1
 
-        # with open("scripts/neutron_diffusion/fiber.hpp", "w+") as f:
-        #     f.writelines(lines)
+    def _dispatch_jobs(self, jobs):
+        print(f"dispatching {len(jobs)} jobs")
+        sys.stdout.flush()
+        
+        # write params to the file
+        params_file = "scripts/neutron_diffusion/slurm/batch_params.txt"
+        with open(params_file, "w", encoding="utf-8") as params_hd:
+            for job in jobs:
+                params_hd.write(" ".join(str(x) for x in job) + "\n")
 
-        # compile_cmd = "cd scripts/neutron_diffusion; g++ -o a.out -std=c++17 -O3 main.cpp"
-        # subprocess.run(compile_cmd, shell=True, check=True)
+        # modify the params
+        template = "scripts/neutron_diffusion/slurm/batch_neutron_template.sh"
+        with open(template, "r", encoding="utf-8") as template_hd:
+            content = template_hd.read()
+            content = content.replace("<num_total_tasks>", str(len(jobs)))
+            
+        script = "scripts/neutron_diffusion/slurm/batch_neutron.sh"
+        with open(script, "w+", encoding="utf-8") as script_hd:
+            script_hd.write(content)
+
+        # run the slurm script with the given keys
+        subprocess.run(f"sbatch {script}", check=False)
 
     def _run(self, args: np.ndarray) -> np.ndarray:
-        jobs = {}
+        jobs = set()
         for i in range(args.shape[0]):
             key = tuple(args[i].tolist())
-            # print("looking for", key)
             if key not in self.cache and key not in jobs:
-                # print("not found")
-                # print(self.cache.keys())
-                job = self.pool.apply_async(simulate_neutron_diffusion, args=(f"a_{self.d}.out", key))
-                jobs[key] = job
+                jobs.add(key)
 
-        for key, job in jobs.items():
-            self.cache[key] = job.get()
+        self._dispatch_jobs(jobs)
+
+        while not self._check_job_status():
+            sleep(10)
+
+        for job in jobs:
+            with open("_".join(str(x) for x in job), "r", encoding="utf-8") as job_result:
+                self.cache[job] = float(job_result.read())
 
         results = np.empty((args.shape[0],), dtype=float)
         for i in range(args.shape[0]):
