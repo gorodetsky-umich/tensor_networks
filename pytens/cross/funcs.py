@@ -123,7 +123,7 @@ class FuncNeutron(CountingFunc):
             script_hd.write(content)
 
         # run the slurm script with the given keys
-        subprocess.run(f"sbatch {script}", check=False)
+        subprocess.run(f"sbatch {script} ./scripts/neutron_diffusion/a_{self.d}.out", check=False)
 
     def _run(self, args: np.ndarray) -> np.ndarray:
         jobs = set()
