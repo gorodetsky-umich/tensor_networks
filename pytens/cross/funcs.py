@@ -98,9 +98,15 @@ class FuncNeutron(CountingFunc):
         self.name = f"neutron_diffusion_{len(indices)}"
         self.cache = {}
 
-    def _check_job_status(self) -> bool:
-        current_jobs = os.popen("sq").read()
-        return len(current_jobs.split("\n")) == 1
+    def _check_job_status(self, job_id: str) -> bool:
+        current_jobs = subprocess.check_output(
+            "squeue -u zhgguo",
+            stderr=subprocess.STDOUT,
+            shell=True).decode("utf-8")
+        
+        # print(current_jobs)
+        # print(job_id in current_jobs)
+        return job_id not in current_jobs
 
     def _dispatch_jobs(self, jobs):
         print(f"dispatching {len(jobs)} jobs")
@@ -116,30 +122,42 @@ class FuncNeutron(CountingFunc):
         template = "scripts/neutron_diffusion/slurm/batch_neutron_template.sh"
         with open(template, "r", encoding="utf-8") as template_hd:
             content = template_hd.read()
-            content = content.replace("<num_total_tasks>", str(len(jobs)))
-            
+            content = content.replace("<num_total_tasks>", str(len(jobs) - 1))
+
         script = "scripts/neutron_diffusion/slurm/batch_neutron.sh"
         with open(script, "w+", encoding="utf-8") as script_hd:
             script_hd.write(content)
 
         # run the slurm script with the given keys
-        subprocess.run(f"sbatch {script} ./scripts/neutron_diffusion/a_{self.d}.out", check=False)
+        res = subprocess.run(["sbatch", script, f"./a_{self.d}.out"], capture_output=True)
+        
+        return res.stdout.decode("utf-8").split(" ")[-1][:-1]
 
     def _run(self, args: np.ndarray) -> np.ndarray:
         jobs = set()
         for i in range(args.shape[0]):
-            key = tuple(args[i].tolist())
-            if key not in self.cache and key not in jobs:
-                jobs.add(key)
+            job = tuple(args[i].tolist())
+            job_result = f"/home/zhgguo/neutron_diffusion/{self.d}/" + "_".join(str(x) for x in job) + ".txt"
+            if os.path.exists(job_result):
+                with open(job_result, "r", encoding="utf-8") as job_result:
+                    self.cache[job] = float(job_result.read())
+                    continue
 
-        self._dispatch_jobs(jobs)
+            if job not in self.cache and job not in jobs:
+                jobs.add(job)
 
-        while not self._check_job_status():
-            sleep(10)
+        if jobs:
+            job_id = self._dispatch_jobs(jobs)
+            print("submitted job id", job_id)
 
-        for job in jobs:
-            with open("_".join(str(x) for x in job), "r", encoding="utf-8") as job_result:
-                self.cache[job] = float(job_result.read())
+            sleep(3)
+
+            while not self._check_job_status(job_id):
+                sleep(3)
+
+            for job in jobs:
+                with open(f"/home/zhgguo/neutron_diffusion/{self.d}/" + "_".join(str(x) for x in job) + ".txt", "r", encoding="utf-8") as job_result:
+                    self.cache[job] = float(job_result.read())
 
         results = np.empty((args.shape[0],), dtype=float)
         for i in range(args.shape[0]):
