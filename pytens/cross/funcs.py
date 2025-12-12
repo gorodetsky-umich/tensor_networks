@@ -146,14 +146,23 @@ class FuncNeutron(CountingFunc):
             if job not in self.cache and job not in jobs:
                 jobs.add(job)
 
+        jobs = list(jobs)
         if jobs:
-            job_id = self._dispatch_jobs(jobs)
-            print("submitted job id", job_id)
+            # separate jobs into chunks of size 4990
+            chunk_size = 4990
+            completed = 0
+            while completed < len(jobs):
+                batch_end = min(chunk_size + completed, len(jobs))
+                job_batch = jobs[completed:batch_end]
+                job_id = self._dispatch_jobs(jobs)
+                print("submitted job id", job_id)
 
-            sleep(3)
-
-            while not self._check_job_status(job_id):
                 sleep(3)
+
+                while not self._check_job_status(job_id):
+                    sleep(3)
+
+                completed += len(job_batch)
 
             for job in jobs:
                 with open(f"/home/zhgguo/neutron_diffusion/{self.d}/" + "_".join(str(x) for x in job) + ".txt", "r", encoding="utf-8") as job_result:
