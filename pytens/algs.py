@@ -1332,9 +1332,60 @@ class TreeNetwork(TensorNetwork):
 
         return r, delta
 
-    def _compress_index(self, node: NodeName):
+    def _compress_indices(self, node: NodeName) -> List[IndexMerge]:
+        merges = []
+        all_indices = self.free_indices()
+        node_indices = self.node_tensor(node).indices
+        ind_groups = {}
+        for ind in node_indices:
+            if ind not in all_indices:
+                continue
+
+            ind_parent = str(ind.name).split("_", maxsplit=1)[0]
+            if ind_parent not in ind_groups:
+                ind_groups[ind_parent] = []
+
+            ind_groups[ind_parent].append(ind)
+
+        # print(ind_groups)
+
+        
+        for parent, children in ind_groups.items():
+            children.sort()
+            all_children = []
+            for ind in all_indices:
+                if str(ind.name).startswith(parent):
+                    all_children.append(ind)
+
+            parent_size = math.prod(c.size for c in children)
+            if all(c in children for c in all_children):
+                parent_name = parent
+            else:
+                parent_name = children[0].name
+
+            parent_ind = Index(parent_name, parent_size)
+            merge_op = IndexMerge(indices=children, result=parent_ind)
+            merges.append(merge_op)
+
+        return merges
+
+
+    def compress_indices(self) -> List[IndexMerge]:
         """Compress consectutive indices that are decomposed from one index"""
-        #TODO: implement this
+        tree = TreeNetwork()
+        tree.network = self.network
+        merges = []
+
+        # collect all the indices in the current network by the original names
+        for node in tree.network.nodes:
+            node_merges = tree._compress_indices(node)
+            merges.extend(node_merges)
+
+        for merge_op in merges:
+            tree.merge_index(merge_op)
+
+        return merges
+
 
     def compress(self) -> None:
         """Compress the network by removing nodes
@@ -2508,15 +2559,15 @@ class TreeNetwork(TensorNetwork):
         # all free indices from the old subnet should be maintained
         old_free_indices = set(old_subnet.free_indices())
         new_free_indices = set(new_subnet.free_indices())
-        assert old_free_indices == new_free_indices, (
-            "the old and new subnets should have the same set of free indices"
-        )
+        # assert old_free_indices == new_free_indices, (
+        #     "the old and new subnets should have the same set of free indices"
+        # )
 
         for n in new_subnet.network.nodes:
             tensor = new_subnet.node_tensor(n)
             self.add_node(n, tensor)
             for ind in tensor.indices:
-                if ind not in new_free_indices:
+                if ind not in new_free_indices or ind not in old_free_indices:
                     continue
 
                 m = old_subnet.node_by_free_index(ind.name)
@@ -3736,9 +3787,38 @@ class TensorTrain(TreeNetwork):
     #     return net.random_svals(res.lca_node, indices, max_rank)
 
     @profile
+    def ttize(self):
+        """Split the indices into multiple tensor train carriages."""
+        # going from one end to the other end
+        ends = self.end_nodes()
+        path = nx.shortest_path(self.network, ends[0], ends[1])
+
+        free_indices = self.free_indices()
+        prev_node = None
+        for n in path:
+            n_indices = self.node_tensor(n).indices
+            n_free = set(n_indices) & set(free_indices)
+            if len(n_free) <= 1:
+                prev_node = n
+                continue
+
+            curr_node = n
+            for ind in list(n_free)[:-1]:
+                curr_indices = self.node_tensor(curr_node).indices
+                if prev_node is None:
+                    left_indices = [ind]
+                else:
+                    path_ind = self.get_contraction_index(curr_node, prev_node)
+                    left_indices = path_ind + [ind]
+                lefts = [curr_indices.index(i) for i in left_indices]
+                prev_node, curr_node = self.qr(curr_node, lefts)
+
+            prev_node = curr_node
+
+    @profile
     def reorder_by_cross(
         self, indices: Sequence[Index], eps: float = 0.1, max_iters: int=50
-    ) -> "TensorTrain":
+    ) -> Tuple[bool, "TensorTrain"]:
         """Reorder the tensor train so that the given indices are adjacent using cross approximation."""
         assert all(ind in self.free_indices() for ind in indices), (
             "all indices should be free"
@@ -3752,16 +3832,17 @@ class TensorTrain(TreeNetwork):
 
         # perm = [data.indices.index(ind) for ind in indices]
         # func = FuncData(indices, data.permute(perm).value)
-        # max_rank = max(ind.size for ind in self.inner_indices())
+        max_rank = max(ind.size for ind in self.inner_indices())
+        print("maximum rank in the current tt:", max_rank)
         # adaptive_kickrank = max(5, max_rank)
         # print("adaptive kickrank:", adaptive_kickrank)
         res = cross(
-            func, tt, tt.end_nodes()[0], eps=eps, max_iters=max_iters, kickrank=10
+            func, tt, tt.end_nodes()[0], eps=eps, max_iters=min(max_iters, max_rank // 2 + 5), kickrank=10, max_rank=int(max_rank * 5)
         )
         if res.ranks_and_errors[-1][-1] < eps:
-            return tt
-        
-        return self.reorder(indices)
+            return True, tt
+
+        return False, self
 
     @staticmethod
     @profile

@@ -18,7 +18,7 @@ from pytens.search.configuration import SearchConfig
 from pytens.search.hierarchical.utils import tntorch_wrapper
 from pytens.search.state import OSplit, SearchState
 from pytens.search.utils import DataTensor, reshape_func
-from pytens.types import IndexMerge
+from pytens.types import IndexMerge, SVDAlgorithm
 
 BAD_SCORE = 9999999999999
 
@@ -289,6 +289,9 @@ class ConstraintSearch:
             self.first_steps[ac] = file_name
         else:
             net = copy.deepcopy(data_tensor)
+            # print(net)
+            # import sys
+            # sys.stdout.flush()
             s = ac.svals(
                 net,
                 max_rank=self.config.preprocess.max_rank,

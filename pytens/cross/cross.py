@@ -195,10 +195,10 @@ def leaves_to_root(
     # print("====>", node.values.up_vals)
     net.node_tensor(node.node).update_val_size(b.reshape(*up_sizes, -1))
 
-def incr_ranks(tree: DimTreeNode, kickrank: int = 2, known: Optional[np.ndarray] = None) -> None:
+def incr_ranks(tree: DimTreeNode, kickrank: int = 2, max_rank: Optional[int] = None, known: Optional[np.ndarray] = None) -> None:
     """Increment the ranks for all edges"""
     # compute the target size of ranks
-    tree.increment_ranks(kickrank)
+    tree.increment_ranks(kickrank, max_rank)
     logger.debug("after increment %s", tree.ranks())
     new_ranks = tree.ranks()
     old_ranks = None
@@ -236,6 +236,7 @@ def cross(
     eps: float = 0.1,
     val_size: int = 1000,
     max_iters: Optional[int] = None,
+    max_rank: Optional[int] = None,
     initialization: Optional[np.ndarray] = None,
     known: Optional[np.ndarray] = None,
     kickrank: int = 2,
@@ -245,11 +246,11 @@ def cross(
     # print(net)
     tree = net.dimension_tree(root)
     if initialization is None:
-        tree.increment_ranks(1)
+        tree.increment_ranks(1, max_rank)
         up_vals = [np.random.randint(0, ind.size) for ind in tree.indices]
         tree.add_values(np.asarray([up_vals]))
     else:
-        tree.increment_ranks(len(initialization))
+        tree.increment_ranks(len(initialization), max_rank)
         tree.add_values(initialization)
 
     converged = False
@@ -313,12 +314,14 @@ def cross(
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
         print("step:", trial, "error:", err)
+        import sys
+        sys.stdout.flush()
         # print(net)
         if err <= eps or (max_iters is not None and trial >= max_iters):
             break
 
         trial += 1
-        incr_ranks(tree, kickrank=kickrank, known=known)
+        incr_ranks(tree, kickrank=kickrank, max_rank=max_rank, known=known)
 
     # print(net)
     ranks_and_errs = sorted(list(ranks_and_errs.items()))

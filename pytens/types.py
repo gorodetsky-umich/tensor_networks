@@ -69,6 +69,12 @@ class IndexMerge(pydantic.BaseModel):
     def __hash__(self) -> int:
         return hash((type(self),) + tuple(self.__dict__.values()))
 
+    def __lt__(self, other: "IndexMerge") -> bool:
+        if self.indices != other.indices:
+            return self.indices < other.indices
+
+        return tuple(self.result) < tuple(other.result)
+
 
 class IndexSplit(pydantic.BaseModel):
     """An index split request and response."""
@@ -79,6 +85,12 @@ class IndexSplit(pydantic.BaseModel):
 
     def __hash__(self) -> int:
         return hash((type(self),) + tuple(self.__dict__.values()))
+
+    def __lt__(self, other: "IndexSplit") -> bool:
+        if self.index != other.index:
+            return self.index < other.index
+            
+        return tuple(self.shape) < tuple(other.shape)
 
 
 class IndexPermute(pydantic.BaseModel):
@@ -165,11 +177,14 @@ class DimTreeNode:
 
         return list(results)
 
-    def increment_ranks(self, kickrank: int = 1) -> None:
+    def increment_ranks(self, kickrank: int = 1, max_rank: Optional[int] = None) -> None:
         """Increment the ranks without value modification"""
         self.up_info.rank += kickrank
+        if max_rank is not None:
+            self.up_info.rank = min(max_rank, self.up_info.rank)
+
         for c in self.down_info.nodes:
-            c.increment_ranks(kickrank)
+            c.increment_ranks(kickrank, max_rank)
 
     def ranks(self) -> List[int]:
         """Get all up ranks in the dimension tree."""
