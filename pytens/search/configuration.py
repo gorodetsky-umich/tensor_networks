@@ -40,6 +40,11 @@ class ReshapeOption(Enum):
     ENUMERATE = auto()
     CLUSTER = auto()
 
+class ReorderAlgo(Enum):
+    """Different algorithms to reorder the indices in a TT."""
+
+    CROSS = auto()
+    SVD = auto()
 
 class HeuristicConfig(pydantic.BaseModel):
     """Configuration for pruning heuristics"""
@@ -161,6 +166,14 @@ class PreprocessConfig(pydantic.BaseModel):
     rand_svd: bool = pydantic.Field(
         default=True,
         description="Whether to use random SVD in the computation of preprocessing singular values",
+    )
+    reorder_algo: ReorderAlgo = pydantic.Field(
+        default=ReorderAlgo.CROSS,
+        description="Config the algorithm used to reorder the indices before preprocessing",
+    )
+    reorder_eps: float = pydantic.Field(
+        default=0.5,
+        description="Configure the error tolerance for cross during reordering",
     )
 
 

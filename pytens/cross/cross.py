@@ -440,6 +440,8 @@ class CrossApproximation:
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
         print("step:", trial, "error:", err)
+        import sys
+        sys.stdout.flush()
         # print(net)
         ranks_and_errs = list(sorted(list(ranks_and_errs.items())))
         # print(ranks_and_errs)

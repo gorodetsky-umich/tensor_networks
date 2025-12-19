@@ -1,13 +1,13 @@
 """Type definitions for search related concepts."""
 
-from typing import Sequence
+from typing import Sequence, Optional
 
 class Action:
     """Base action."""
 
     def __init__(self):
-        self.delta = None
-        self.target_size = None
+        self.delta: Optional[float] = None
+        self.target_size: Optional[int] = None
         self.indices = []
 
     def __lt__(self, other) -> bool:
