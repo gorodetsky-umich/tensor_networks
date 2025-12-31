@@ -72,6 +72,7 @@ class SearchResult:
         self.stats = stats
         self.best_state = best_state
         self.unused_delta = unused_delta
+        self.replay_traces = []
 
     def __lt__(self, other: Self) -> bool:
         if self.best_state is None:
@@ -355,6 +356,9 @@ def unravel_indices(reshape_ops, indices, data):
 
                 new_indices.append(ind)
                 new_data.append(data[:, indices.index(ind)])
+
+        else:
+            continue
 
         data = np.stack(new_data, axis=-1)
         indices = new_indices

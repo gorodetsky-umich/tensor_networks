@@ -4,7 +4,7 @@ import copy
 import itertools
 import logging
 import os
-from typing import Dict, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 import gurobipy as gp
 import numpy as np
@@ -12,8 +12,8 @@ import tntorch
 import torch
 from gurobipy import GRB
 
-from pytens.algs import Index, Tensor, TensorTrain, TreeNetwork
-from pytens.cross.funcs import FuncTensorNetwork, MergeFunc, TensorFunc
+from pytens.algs import Index, Tensor, TensorTrain
+from pytens.cross.funcs import FuncTensorNetwork
 from pytens.search.configuration import SearchConfig
 from pytens.search.hierarchical.utils import tntorch_wrapper
 from pytens.search.state import OSplit, SearchState
@@ -22,9 +22,8 @@ from pytens.types import IndexMerge, SVDAlgorithm
 
 BAD_SCORE = 9999999999999
 
-# logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
+logger.setLevel(logging.INFO)
 
 class ILPSolver:
     """An ILP solver to find near-optimal rank assignments."""
@@ -69,8 +68,20 @@ class ILPSolver:
             for sz, p in zip(ind.value_choices, pfsums[ind.name]):
                 coeff[(ind.name, sz)] = p
 
-        # print(self.vars, delta ** 2)
-        self.model.addConstr(self.vars.prod(coeff) <= delta**2)
+        logger.trace("adding coeffs: %s", coeff)
+        logger.trace("allowed delta: %s", delta ** 2)
+
+        # rescale the numbers to avoid overflow
+        numbers = list(coeff.values()) + [delta ** 2]
+        scale = max(numbers) - min(numbers)
+        if scale == 0:
+            scale = 1.0
+
+        for k in coeff:
+            coeff[k] /= scale
+
+        self.model.addConstr(self.vars.prod(coeff) <= delta**2 / scale, name="total_error")
+        # self.model.update()
 
     def set_objective(
         self, free_indices: List[Index], nodes: List[Tensor], upper: int
@@ -132,7 +143,7 @@ class ConstraintSearch:
         self.temp_files = []
         self.delta = 0.0
 
-    def abstract(self, s):
+    def abstract(self, s, include_last: bool = False):
         """Separate the given set of singular values into chunks."""
         prev = 0
         prev_sum = 0
@@ -140,8 +151,12 @@ class ConstraintSearch:
         if len(s) == 0:
             return None
 
-        s_sizes = [1]
-        s_sums = [s[-1] ** 2]
+        if include_last:
+            s_sizes = [0, 1]
+            s_sums = [0, s[-1] ** 2]
+        else:
+            s_sizes = [1]
+            s_sums = [s[-1] ** 2]
 
         chunk_size = self.config.synthesizer.bin_size * self.delta**2
         truncation_values = [
@@ -289,16 +304,16 @@ class ConstraintSearch:
             self.first_steps[ac] = file_name
         else:
             net = copy.deepcopy(data_tensor)
-            # print(net)
-            # import sys
-            # sys.stdout.flush()
             s = ac.svals(
                 net,
                 max_rank=self.config.preprocess.max_rank,
                 rand=self.config.preprocess.rand_svd,
+                eps=self.config.engine.eps,
+                algo=SVDAlgorithm.SVD,
             )
 
-        res = self.abstract(s)
+        logger.debug("get singular values with sum: %s, net norm: %s", sum(s ** 2), net.norm() ** 2)
+        res = self.abstract(s, True)
         if res is not None:
             sums, sizes = res
             logger.debug("preprocess: %s, %s", comb, s)
@@ -345,6 +360,18 @@ class ConstraintSearch:
 
         nodes = [st.network.node_tensor(n) for n in st.network.network.nodes]
         solver.set_objective(free_indices, nodes, upper)
+
+        logger.trace("constraints to be solved:")
+        if logger.level == logging.TRACE:
+            for constr in solver.model.getConstrs():
+                # Get the value of the LHS expression in the current solution
+                lhs = solver.model.getRow(constr)
+                # Get the RHS value
+                rhs = constr.RHS
+                # Get the constraint sense
+                sense = constr.Sense
+                logger.trace("Constraint: %s, %s %s %s", constr.ConstrName, lhs, sense, rhs)
+
         solver.model.optimize()
 
         if solver.model.Status == GRB.INFEASIBLE:
@@ -357,6 +384,17 @@ class ConstraintSearch:
             for j in ind.value_choices:
                 if solver.vars[(ind.name, j)].x == 1:
                     relabel_map[ind.name] = int(j)
+
+        logger.trace("feasible rank assignment: %s", relabel_map)
+        if logger.level == logging.TRACE:
+            for constr in solver.model.getConstrs():
+                # Get the value of the LHS expression in the current solution
+                lhs_value = solver.model.getRow(constr).getValue()
+                # Get the RHS value
+                rhs_value = constr.RHS
+                # Get the constraint sense
+                sense = constr.Sense
+                logger.trace("Constraint: %s, %s %s %s", constr.ConstrName, lhs_value, sense, rhs_value)
 
         st.network.relabel_indices(relabel_map)
         st.network.rerange_indices(rerange_map)

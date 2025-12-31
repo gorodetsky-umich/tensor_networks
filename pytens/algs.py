@@ -4,6 +4,7 @@ import copy
 import itertools
 import logging
 import math
+import sys
 import typing
 from collections import Counter, defaultdict
 from collections.abc import Sequence
@@ -30,6 +31,7 @@ from sklearn.utils.extmath import randomized_svd
 
 from pytens.cross.cross import CrossResult, cross
 from pytens.cross.funcs import FuncTensorNetwork, TensorFunc
+from pytens.logger import *
 from pytens.search.types import Action
 from pytens.types import (
     DimTreeNode,
@@ -48,9 +50,8 @@ from pytens.types import (
 )
 from pytens.utils import delta_svd
 
-# logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
+logger.setLevel(logging.INFO)
 
 @dataclass  # (frozen=True, eq=True)
 class Tensor:
@@ -506,6 +507,20 @@ class TensorNetwork:  # pylint: disable=R0904
         indices = [i for i, v in cnt.items() if v > 1]
         return indices
 
+    def nodes_by_contraction_index(self, ind: Index) -> List[NodeName]:
+        """Get the two nodes connected by the given index."""
+        assert ind not in self.free_indices(), f"{ind} is a free index"
+
+        nodes = []
+        for n in self.network.nodes:
+            n_indices = self.node_tensor(n).indices
+            if ind in n_indices:
+                nodes.append(n)
+
+        assert len(nodes) <= 2
+
+        return nodes
+
     def inner_indices(self) -> List[Index]:
         """Get hte interior indices."""
         icount = self.all_indices()
@@ -900,7 +915,7 @@ class TensorNetwork:  # pylint: disable=R0904
             cost += n_cost
 
         return int(cost)
-    
+
     def size(self) -> int:
         """Compute the size of the tensor network by multiplying the sizes of each free index."""
         indices = self.free_indices()
@@ -1062,7 +1077,7 @@ class TensorNetwork:  # pylint: disable=R0904
                 node_strs.append(node_str)
 
             estr = ",".join(node_strs) + "->" + ind_mapping[batch_ind]
-            logger.debug(
+            logger.trace(
                 "contraction args: %s, shapes: %s",
                 estr,
                 [n.shape for n in node_vals],
@@ -1349,7 +1364,6 @@ class TreeNetwork(TensorNetwork):
 
         # print(ind_groups)
 
-        
         for parent, children in ind_groups.items():
             children.sort()
             all_children = []
@@ -1369,7 +1383,6 @@ class TreeNetwork(TensorNetwork):
 
         return merges
 
-
     def compress_indices(self) -> List[IndexMerge]:
         """Compress consectutive indices that are decomposed from one index"""
         tree = TreeNetwork()
@@ -1385,7 +1398,6 @@ class TreeNetwork(TensorNetwork):
             tree.merge_index(merge_op)
 
         return merges
-
 
     def compress(self) -> None:
         """Compress the network by removing nodes
@@ -2360,6 +2372,7 @@ class TreeNetwork(TensorNetwork):
         max_rank: int = 100,
         orthonormal: Optional[NodeName] = None,
         delta: float = 0,
+        random_seed: int = 42,
     ) -> np.ndarray:
         """Compute the singular values for a tree network structure."""
         assert len(indices) == 2
@@ -2389,7 +2402,7 @@ class TreeNetwork(TensorNetwork):
         # print(svd_ls, svd_rs, perm)
         # print(tensor.value.shape)
         tensor_val = tensor.value.transpose(perm).reshape(int(lsize), -1)
-        _, s, _ = randomized_svd(tensor_val, max_rank)
+        _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
         return s
 
     def _check_indices(
@@ -2452,7 +2465,7 @@ class TreeNetwork(TensorNetwork):
                             break
 
                 assert len(lca_indices) == len(indices), (
-                    "each index should correspond to one of the edges"
+                    f"each index should correspond to one of the edges, but get {lca_indices}, {indices}"
                 )
 
                 if res.code == PartitionStatus.OK:
@@ -2480,7 +2493,12 @@ class TreeNetwork(TensorNetwork):
         return nodes
 
     def random_svals(
-        self, node: NodeName, indices: Sequence[Index], max_rank: int = 100, rand: bool = True
+        self,
+        node: NodeName,
+        indices: Sequence[Index],
+        max_rank: int = 100,
+        rand: bool = True,
+        random_seed: int = 42,
     ) -> np.ndarray:
         tensor = self.node_tensor(node)
         svd_node_inds = tensor.indices
@@ -2492,10 +2510,50 @@ class TreeNetwork(TensorNetwork):
         # print(tensor.value.shape)
         tensor_val = tensor.value.transpose(perm).reshape(int(lsize), -1)
         if rand:
-            _, s, _ = randomized_svd(tensor_val, max_rank)
+            _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
         else:
             s = np.linalg.svdvals(tensor_val)
 
+        return s
+
+    @profile
+    def svals_at(
+        self,
+        node: NodeName,
+        indices: Sequence[Index],
+        max_rank: int = 100,
+        with_orthonormal: bool = True,
+        random_seed: int = 42,
+    ) -> np.ndarray:
+        """Compute the singular values for a tensor train at a given node."""
+        logger.debug(
+            "computing singular values at node %s with indices %s",
+            node,
+            indices,
+        )
+        if with_orthonormal:
+            self.orthonormalize(node)
+
+        logger.debug("after orthonormalize: %s", self)
+
+        tensor = self.node_tensor(node)
+        lefts = []
+        for i, ind in enumerate(tensor.indices):
+            if ind in indices:
+                lefts.append(i)
+
+        logger.debug("get left indices %s", lefts)
+
+        perm = lefts + [
+            i for i in range(len(tensor.indices)) if i not in lefts
+        ]
+        left_size = np.prod([ind.size for ind in indices])
+        tensor_val = tensor.value.transpose(perm).reshape(left_size, -1)
+
+        if max_rank < 10:
+            return delta_svd(tensor_val, delta=0, compute_uv=False).s
+
+        _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
         return s
 
     @profile
@@ -2617,17 +2675,134 @@ class TreeNetwork(TensorNetwork):
     #                 # if a neighbor is not on the path, merge and split
     #                 if nbr not in path:
     #                     tt.merge(n, nbr)
-    #                     # split the 
+    #                     # split the
 
     #         visited[n] = 2
 
-
-    def replay_preprocess(
-        self, actions: Sequence[Action]
-    ):
+    def replay_preprocess(self, actions: Sequence[Action]):
         """Apply the given actions around the given ranks."""
         pass
-        
+
+    @profile
+    def svals_by_cross(
+        self, indices: Sequence[Index], max_rank: int = 100, eps: float = 0.1
+    ) -> np.ndarray:
+        """Compute the singular values for a tensor train by cross approximation."""
+        logger.debug("computing svals for %s by cross", indices)
+        # permute the indices so that the target indices are at the beginning
+        free_inds = self.free_indices()
+        target_inds = list(indices)[:]
+        for ind in free_inds:
+            if ind not in target_inds:
+                target_inds.append(ind)
+
+        tt = self
+        # if the indices are not adjacent
+        if not isinstance(self, TensorTrain) or not self.are_adjacent(indices):
+            inds = [ind.with_new_rng(range(ind.size)) for ind in target_inds]
+            tt = TensorTrain.rand_tt(inds)
+            func = FuncTensorNetwork(inds, self)
+            cross(
+                func,
+                tt,
+                tt.end_nodes()[0],
+                eps=eps,
+                max_iters=max_rank - 1,
+                kickrank=10,
+            )
+            res = tt.partition_node(indices)
+            return tt.svals_at(
+                res.lca_node, res.lca_indices, max_rank=max_rank
+            )
+
+        # find the correct node to split
+        ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
+        ind_nodes = list(set(ind_nodes))
+        ends = []
+        for n in ind_nodes:
+            nbrs = list(tt.network.neighbors(n))
+            if len(nbrs) == 1 or not all(nbr in ind_nodes for nbr in nbrs):
+                ends.append(n)
+
+        if len(ends) > 1:
+            tt, _ = tt.fold_nodes(ends[0], ends[1], FoldDir.IN_BOUND)
+
+        temp_tree = TreeNetwork()
+        temp_tree.network = tt.network
+        tt = temp_tree
+        logger.debug("after fold: %s", tt)
+
+        res = tt.partition_node(indices)
+        tt.orthonormalize(res.lca_node)
+        res = tt.partition_node(indices)
+        return tt.svals_at(
+            res.lca_node,
+            res.lca_indices,
+            max_rank=max_rank,
+            with_orthonormal=False,
+        )
+
+    def end_nodes(self) -> List[NodeName]:
+        """Return the first node in the tree."""
+        return [list(self.network.nodes)[0]]
+
+    @profile
+    def reorder_by_svd(
+        self, indices: Sequence[Index], eps: float = 0
+    ) -> "TensorTrain":
+        """Reorder the indices into the target indices through SVD"""
+        assert all(ind in self.free_indices() for ind in indices), (
+            "all indices should be free"
+        )
+        data = self.contract()
+        indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
+
+        perm = [data.indices.index(ind) for ind in indices]
+
+        return TensorTrain.tt_svd(data.permute(perm).value, indices, eps)
+
+    @profile
+    def reorder_by_cross(
+        self,
+        indices: Sequence[Index],
+        eps: float = 0.1,
+        max_iters: int = 50,
+        kickrank: int = 2,
+    ) -> Tuple[bool, "TensorTrain"]:
+        """
+        Reorder the tensor train so that the given indices are adjacent 
+        using cross approximation.
+        """
+        assert all(ind in self.free_indices() for ind in indices), (
+            "all indices should be free"
+        )
+        # data = self.contract()
+        indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
+        tt = TensorTrain.rand_tt(indices)
+        tmp_net = copy.deepcopy(self)
+        tmp_net.compress()
+        func = FuncTensorNetwork(list(indices), tmp_net)
+
+        # perm = [data.indices.index(ind) for ind in indices]
+        # func = FuncData(indices, data.permute(perm).value)
+        max_rank = max(ind.size for ind in self.inner_indices())
+        logger.debug("maximum rank in the current tt: %s", max_rank)
+        # adaptive_kickrank = max(5, max_rank)
+        # print("adaptive kickrank:", adaptive_kickrank)
+        res = cross(
+            func,
+            tt,
+            tt.end_nodes()[0],
+            eps=eps,
+            max_iters=min(max_iters, max_rank // 2 + 5),
+            kickrank=kickrank,
+            max_rank=int(max_rank * 5),
+        )
+        if res.ranks_and_errors[-1][-1] < eps:
+            return True, tt
+
+        return False, tt
+
 
 class HierarchicalTucker(TreeNetwork):
     """Class for hierarchical tuckers."""
@@ -2986,6 +3161,7 @@ class FoldedTensorTrain(TreeNetwork):
                     path = nx.shortest_path(
                         self.network, source=n, target=anchor
                     )
+                    logger.debug("swapping %s along the path %s", n, path)
                     self.swap_along_path(path, n)
 
     def svals(
@@ -2996,6 +3172,10 @@ class FoldedTensorTrain(TreeNetwork):
         A folded tensor train has a backbone tensor train structure,
         with each node representing the merged nodes in the original tensor train.
         """
+
+        logger.debug("computing singular values for indices %s", indices)
+        logger.debug(self)
+
         # For a given set of indices,
         # they should all belong to a set of backbone nodes.
         # We might need to swap the backbone nodes to make them adjacent
@@ -3008,6 +3188,9 @@ class FoldedTensorTrain(TreeNetwork):
         )
 
         net.move_to_end(backbone_targets)
+
+        logger.debug("after moving the target indices to the end")
+        logger.debug("%s", net)
 
         # orthonormalize the backbone nodes
         visited = {}
@@ -3094,7 +3277,7 @@ class FoldedTensorTrain(TreeNetwork):
         """Returns True if the given node is one of the ends"""
         inds = self.node_tensor(node).indices
         return len(inds) <= 3
-    
+
     def _need_swap(self, operand_nodes: Sequence[NodeName]) -> bool:
         """Whether these operand nodes need to be moved to ends"""
         assert len(operand_nodes) == 2, (
@@ -3239,10 +3422,14 @@ class TensorTrain(TreeNetwork):
             # swap i to current available position
             curr_node = net.node_by_free_index(ind.name)
             curr_pos = ordered_nodes.index(curr_node)
-            path = nx.shortest_path(net.network, curr_node, ordered_nodes[target_pos])
+            path = nx.shortest_path(
+                net.network, curr_node, ordered_nodes[target_pos]
+            )
             while curr_pos > target_pos:
                 prev_pos = curr_pos - 1
-                net.swap_nbr(path, ordered_nodes[curr_pos], ordered_nodes[prev_pos])
+                net.swap_nbr(
+                    path, ordered_nodes[curr_pos], ordered_nodes[prev_pos]
+                )
                 (ordered_nodes[curr_pos], ordered_nodes[prev_pos]) = (
                     ordered_nodes[prev_pos],
                     ordered_nodes[curr_pos],
@@ -3409,6 +3596,16 @@ class TensorTrain(TreeNetwork):
                 nx.relabel_nodes(net.network, {q: n}, copy=False)
 
         return net, nodes[0]
+
+    def are_adjacent(self, indices: Sequence[Index]):
+        """Check whether the specified indices are next to each other"""
+        end = self.end_nodes()[0]
+        ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
+        ind_nodes = list(set(ind_nodes))
+        ind_dists = sorted([self.distance(end, node) for node in ind_nodes])
+        # if there are adjacent, the distance should be consecutive
+        dist_diffs = [x - y for x, y in zip(ind_dists[1:], ind_dists[:-1])]
+        return all(d == 1 for d in dist_diffs)
 
     def __add__(self, other: Any) -> Self:
         """Add two tensor trains.
@@ -3687,6 +3884,7 @@ class TensorTrain(TreeNetwork):
         indices: Sequence[Index],
         max_rank: int = 100,
         with_orthonormal: bool = True,
+        random_seed: int = 42,
     ) -> np.ndarray:
         """Compute the singular values for a tensor train at a given node."""
         if with_orthonormal:
@@ -3704,15 +3902,15 @@ class TensorTrain(TreeNetwork):
         left_size = np.prod([ind.size for ind in indices])
         tensor_val = tensor.value.transpose(perm).reshape(left_size, -1)
 
-        if max_rank < 10:
-            return delta_svd(tensor_val, delta=0, compute_uv=False).s
+        # if max_rank < 10:
+        #     return delta_svd(tensor_val, delta=0, compute_uv=False).s
 
-        _, s, _ = randomized_svd(tensor_val, max_rank)
+        _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
         return s
 
     @profile
     def svals_by_merge(
-        self, indices: Sequence[Index], max_rank: int = 100, rand: bool = True
+        self, indices: Sequence[Index], max_rank: int = 100, rand: bool = True, random_seed: int = 42
     ) -> np.ndarray:
         """Compute the singular values for a tensor train."""
         ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
@@ -3740,40 +3938,12 @@ class TensorTrain(TreeNetwork):
         tensor_val = self.node_tensor(n).value
         tensor_val = tensor_val.transpose(perm).reshape(left_size, -1)
         if rand:
-            _, s, _ = randomized_svd(tensor_val, max_rank)
+            _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
         else:
             s = np.linalg.svdvals(tensor_val)
         return s
         # (_, s, _), _ = net.svd(n, lefts, SVDConfig(delta=0, compute_uv=False))
         # return np.diag(net.node_tensor(s).value)
-
-    @profile
-    def svals_by_cross(
-        self, indices: Sequence[Index], max_rank: int = 100, eps: float = 0.1
-    ) -> np.ndarray:
-        """Compute the singular values for a tensor train by cross approximation."""
-        # permute the indices so that the target indices are at the beginning
-        free_inds = self.free_indices()
-        target_inds = list(indices)[:]
-        for ind in free_inds:
-            if ind not in target_inds:
-                target_inds.append(ind)
-
-        inds = [ind.with_new_rng(range(ind.size)) for ind in target_inds]
-        tt = self.rand_tt(inds)
-        func = FuncTensorNetwork(inds, self)
-        cross(
-            func,
-            tt,
-            tt.end_nodes()[0],
-            eps=eps,
-            max_iters=max_rank - 1,
-            kickrank=1,
-        )
-
-        # find the correct node to split
-        res = tt.partition_node(indices)
-        return tt.svals_at(res.lca_node, res.lca_indices, max_rank=max_rank)
 
     # def svals_by_fold(
     #     self, indices: Sequence[Index], max_rank: int = 100
@@ -3815,35 +3985,6 @@ class TensorTrain(TreeNetwork):
 
             prev_node = curr_node
 
-    @profile
-    def reorder_by_cross(
-        self, indices: Sequence[Index], eps: float = 0.1, max_iters: int=50
-    ) -> Tuple[bool, "TensorTrain"]:
-        """Reorder the tensor train so that the given indices are adjacent using cross approximation."""
-        assert all(ind in self.free_indices() for ind in indices), (
-            "all indices should be free"
-        )
-        # data = self.contract()
-        indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
-        tt = self.rand_tt(indices)
-        tmp_net = copy.deepcopy(self)
-        tmp_net.compress()
-        func = FuncTensorNetwork(list(indices), tmp_net)
-
-        # perm = [data.indices.index(ind) for ind in indices]
-        # func = FuncData(indices, data.permute(perm).value)
-        max_rank = max(ind.size for ind in self.inner_indices())
-        print("maximum rank in the current tt:", max_rank)
-        # adaptive_kickrank = max(5, max_rank)
-        # print("adaptive kickrank:", adaptive_kickrank)
-        res = cross(
-            func, tt, tt.end_nodes()[0], eps=eps, max_iters=min(max_iters, max_rank // 2 + 5), kickrank=10, max_rank=int(max_rank * 5)
-        )
-        if res.ranks_and_errors[-1][-1] < eps:
-            return True, tt
-
-        return False, self
-
     @staticmethod
     @profile
     def tt_svd(
@@ -3871,27 +4012,13 @@ class TensorTrain(TreeNetwork):
         return tt
 
     @profile
-    def reorder_by_svd(
-        self, indices: Sequence[Index], eps: float = 0
-    ) -> "TensorTrain":
-        """Reorder the indices into the target indices through SVD"""
-        assert all(ind in self.free_indices() for ind in indices), (
-            "all indices should be free"
-        )
-        data = self.contract()
-        indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
-
-        perm = [data.indices.index(ind) for ind in indices]
-
-        return TensorTrain.tt_svd(data.permute(perm).value, indices, eps)
-
-    @profile
     def svals_nbr(
         self,
         node1: NodeName,
         node2: NodeName,
         max_rank: int = 100,
         orthonormal: bool = False,
+        random_seed: int = 42,
     ) -> np.ndarray:
         """Compute the singular values for two neighbor nodes."""
         if not orthonormal:
@@ -3901,7 +4028,7 @@ class TensorTrain(TreeNetwork):
         left = tensor.indices.index(left_ind)
         perm = [left] + [i for i in range(len(tensor.indices)) if i != left]
         tensor_val = tensor.value.transpose(perm).reshape(left_ind.size, -1)
-        _, s, _ = randomized_svd(tensor_val, max_rank)
+        _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
         return s
         # (_, s, _), _ = self.svd(node1, [left], SVDConfig(delta=0, compute_uv=False))
         # return np.diag(self.node_tensor(s).value)

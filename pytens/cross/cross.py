@@ -14,9 +14,10 @@ import scipy
 import pytens.algs as pt
 from pytens.cross.funcs import TensorFunc, PermuteFunc
 from pytens.types import DimTreeNode
+from pytens.logger import *
 
-# logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 ALGO = "maxvol"
 
@@ -75,7 +76,8 @@ def select_indices(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     # #     print("Warning: cutting internal ranks")
     # q = q[:, :real_rank]
     # # print(v)
-    q, _ = np.linalg.qr(v)
+    q = v
+    q, _ = np.linalg.qr(q)
     return py_maxvol(q)
 
 def deim(u: np.ndarray):
@@ -199,12 +201,12 @@ def incr_ranks(tree: DimTreeNode, kickrank: int = 2, max_rank: Optional[int] = N
     """Increment the ranks for all edges"""
     # compute the target size of ranks
     tree.increment_ranks(kickrank, max_rank)
-    logger.debug("after increment %s", tree.ranks())
+    logger.trace("after increment %s", tree.ranks())
     new_ranks = tree.ranks()
     old_ranks = None
     while new_ranks != old_ranks:
         tree.bound_ranks()
-        logger.debug("after bounding %s", tree.ranks())
+        logger.trace("after bounding %s", tree.ranks())
         old_ranks = new_ranks
         new_ranks = tree.ranks()
         
@@ -276,9 +278,11 @@ def cross(
             if len(n.up_info.nodes) == 0:
                 continue
 
+            logger.trace("root to leaves: %s, up indices: %s, down indices: %s", n.node, [ind.name for ind in n.up_info.indices], [ind.name for ind in n.down_info.indices])
             root_to_leaves(f, n)
 
         for n in reversed(tree_nodes[1:]):
+            logger.trace("leaves to root: %s, up indices: %s, down indices: %s", n.node, [ind.name for ind in n.up_info.indices], [ind.name for ind in n.down_info.indices])
             leaves_to_root(f, n, net)
 
         # get the value for the root node
@@ -309,13 +313,13 @@ def cross(
         estimate = net.evaluate(f.indices, validation).reshape(-1)
 
         # print("evaluate time:", time.time() - eval_start)
-        logger.debug("%s", net)
+        # logger.debug("%s", net)
         # print(estimate.shape, real.shape)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        print("step:", trial, "error:", err)
-        import sys
-        sys.stdout.flush()
+        logger.debug("step: %s, error: %s", trial, err)
+        # import sys
+        # sys.stdout.flush()
         # print(net)
         if err <= eps or (max_iters is not None and trial >= max_iters):
             break

@@ -17,9 +17,10 @@ class ClusterMethod(Enum):
     """Different merge algorithms"""
 
     RAND = auto()
-    CORR = auto()
+    CROSS = auto()
     SVD = auto()
     NBR = auto()
+    SVD_NBR = auto()
     RAND_NBR = auto()
 
 
@@ -45,6 +46,12 @@ class ReorderAlgo(Enum):
 
     CROSS = auto()
     SVD = auto()
+
+class SweepAlgo(Enum):
+    """Different traversal algorithms for local structure sweeps."""
+
+    RANDOM = auto()
+    TRAVERSAL = auto()
 
 class HeuristicConfig(pydantic.BaseModel):
     """Configuration for pruning heuristics"""
@@ -150,6 +157,10 @@ class OutputConfig(pydantic.BaseModel):
         default=True,
         description="Configuration for removing temp data before termination",
     )
+    collect_stats: bool = pydantic.Field(
+        default=True,
+        description="Whether to compute the detailed stats for the run",
+    )
 
 
 class PreprocessConfig(pydantic.BaseModel):
@@ -248,6 +259,22 @@ class InputConfig(pydantic.BaseModel):
     )
 
 
+class SweepConfig(pydantic.BaseModel):
+    """Configuration for sweeping operations"""
+
+    sweep_algo: SweepAlgo = pydantic.Field(
+        default=SweepAlgo.TRAVERSAL,
+        description="How to sweep the local structures during refinement",
+    )
+    max_iters: int = pydantic.Field(
+        default=5,
+        description="Choose the number of sweep operations",
+    )
+    subnet_size: int = pydantic.Field(
+        default=8,
+        description="Configure the maximum horizon during sweeping",
+    )
+
 class SearchConfig(pydantic.BaseModel):
     """Configuration for the entire search process"""
 
@@ -286,6 +313,10 @@ class SearchConfig(pydantic.BaseModel):
     cross: CrossConfig = pydantic.Field(
         default_factory=CrossConfig,
         description="Configurations for cross approximation",
+    )
+    sweep: SweepConfig = pydantic.Field(
+        default_factory=SweepConfig,
+        description="Configurations for structure refinements",
     )
 
     @staticmethod

@@ -3,6 +3,7 @@
 import copy
 import itertools
 from typing import Dict, Generator, List, Optional, Self, Sequence, Tuple
+import logging
 
 import networkx as nx
 import numpy as np
@@ -21,6 +22,8 @@ from pytens.cross.cross import TensorFunc
 from pytens.types import IndexMerge, PartitionStatus, SVDAlgorithm
 from pytens.search.types import Action
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class OSplit(Action):
     """Class for output-directed splits."""
@@ -157,14 +160,17 @@ class OSplit(Action):
         algo: SVDAlgorithm = SVDAlgorithm.SVD,
         max_rank=100,
         orthonormal=None,
-        delta=0,
+        eps=0,
         rand: bool = True,
     ) -> np.ndarray:
         """Compute the singular values of the split action."""
-        if isinstance(net, TensorTrain):
-            if algo == SVDAlgorithm.CROSS:
-                return net.svals_by_cross(self.indices, max_rank=max_rank)
+        logger.debug("performing actions: %s", self)
 
+        if algo == SVDAlgorithm.CROSS:
+            return net.svals_by_cross(self.indices, max_rank=max_rank, eps=eps)
+        
+        if isinstance(net, TensorTrain):
+            logger.debug("computing singular values for a tensor train: %s", net)
             # if algo == SVDAlgorithm.FOLD:
             #     return net.svals_by_fold(self.indices, max_rank=max_rank)
 
@@ -178,6 +184,7 @@ class OSplit(Action):
             )
 
         if isinstance(net, FoldedTensorTrain):
+            logger.debug("computing singular values for a folded tensor train")
             return net.svals(self.indices, max_rank=max_rank, rand=rand)
 
         ac = self.to_isplit(net)

@@ -10,12 +10,14 @@ import numpy as np
 from pytens.algs import (
     FoldedTensorTrain,
     HierarchicalTucker,
+    Tensor,
     TensorTrain,
     TreeNetwork,
 )
 from pytens.cross.cross import cross
 from pytens.cross.funcs import TensorFunc
 from pytens.search.hierarchical.utils import tntorch_to_tt, tntorch_wrapper
+from pytens.types import Index
 
 
 class CrossRunner:
@@ -39,7 +41,8 @@ class TTCrossRunner(CrossRunner):
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
     ) -> TensorTrain:
-        net = TensorTrain.rand_tt(f.indices)
+        indices = f.indices[:]
+        net = TensorTrain.rand_tt(indices)
         cross(f, net, net.end_nodes()[0], validation, eps=eps, kickrank=kickrank)
         return net
 
@@ -83,6 +86,22 @@ class HTCrossRunner(CrossRunner):
         cross(f, net, net.root(), validation, eps=eps, kickrank=kickrank)
         return net
 
+class TuckerCrossRunner(CrossRunner):
+    """Runner for tucker cross implementation."""
+
+    def run(self, f: TensorFunc, eps: float, kickrank: int = 2, validation: Optional[np.ndarray] = None) -> TreeNetwork:
+        tucker = TreeNetwork()
+        root_val = np.random.random([1] * f.d)
+        root_inds = [Index(f"s_{i}", 1) for i in range(f.d)]
+        tucker.add_node("root", Tensor(root_val, root_inds))
+        for i, ind in enumerate(f.indices):
+            tensor_val = np.random.random((ind.size, 1))
+            tensor_inds = [ind, Index(f"s_{i}", 1)]
+            tucker.add_node(f"G{i}", Tensor(tensor_val, tensor_inds))
+            tucker.add_edge(f"G{i}", "root")
+
+        cross(f, tucker, "root", validation, eps=eps, kickrank=kickrank)
+        return tucker
 
 class FTTCrossRunner(CrossRunner):
     """Runner for hierarchical tucker cross implementation."""

@@ -1,5 +1,6 @@
 """Search algorithsm for tensor networks."""
 
+import copy
 import time
 from abc import abstractmethod
 
@@ -13,30 +14,27 @@ from pytens.cross.runner import (
     HTCrossRunner,
     TnTorchCrossRunner,
     TTCrossRunner,
+    TuckerCrossRunner,
 )
+from pytens.search.algs.exhaustive import BFSSearch, DFSSearch
+from pytens.search.algs.partition import PartitionSearch
 from pytens.search.configuration import (
     ClusterMethod,
     InitStructType,
     SearchConfig,
 )
-from pytens.search.exhaustive import BFSSearch, DFSSearch
 from pytens.search.hierarchical.error_dist import AlphaErrorDist
 from pytens.search.hierarchical.index_cluster import (
+    CrossIndexCluster,
     RandomIndexCluster,
     SVDIndexCluster,
+    SVDNbrIndexCluster,
 )
-from pytens.search.hierarchical.top_down import (
-    BlackBoxTopDownSearch,
-    TopDownSearch,
-    WhiteBoxTopDownSearch,
-)
+from pytens.search.hierarchical.top_down import BlackBoxTopDownSearch, TopDownSearch, WhiteBoxTopDownSearch
 from pytens.search.hierarchical.types import HSearchState, TopDownSearchResult
-from pytens.search.partition import PartitionSearch
 from pytens.search.state import SearchState
 from pytens.search.utils import (
-    DataTensor,
     approx_error,
-    reshape_func,
     reshape_indices,
     rtol,
     unravel_indices,
@@ -49,11 +47,11 @@ class SearchEngine:
     def __init__(self, config: SearchConfig):
         self.config = config
 
-    def partition_search(self, data_tensor: DataTensor):
+    def partition_search(self, data_tensor: TreeNetwork):
         """Perform an search with output-directed splits + constraint solve."""
 
-        engine = PartitionSearch(self.config)
-        result = engine.search(data_tensor, [])
+        engine = PartitionSearch(self.config, data_tensor)
+        result = engine.search([], [])
         assert result.best_state is not None
 
         free_indices = data_tensor.free_indices()
@@ -145,7 +143,6 @@ class TopDownSearchEngine(SearchEngine):
     def top_down(self) -> TopDownSearchResult:
         """Start point of a top down hierarchical search."""
         self._initialize()
-        self._set_cluster()
         self._top_down_runner.error_dist = AlphaErrorDist(
             alpha=self.config.topdown.alpha
         )
@@ -162,18 +159,12 @@ class TopDownSearchEngine(SearchEngine):
         result.stats = self._top_down_runner.stats
         result.stats.search_start = start
         result.stats.search_end = end
+        result.replay_traces = best_st.replay_traces
 
-        self._collect_stats(result, best_st)
+        if self.config.output.collect_stats:
+            self._collect_stats(result, best_st)
         return result
 
-    def _set_cluster(self):
-        threshold = self.config.topdown.group_threshold
-        cluster_method = {
-            ClusterMethod.SVD: SVDIndexCluster(threshold),
-            ClusterMethod.RAND: RandomIndexCluster(threshold),
-            ClusterMethod.NBR: RandomIndexCluster(threshold, False),
-        }.get(self.config.topdown.cluster_method, ClusterMethod(threshold))
-        self._top_down_runner.set_cluster(cluster_method)
 
     @abstractmethod
     def _initialize(self):
@@ -233,7 +224,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
 
     def _initialize(self):
         top_down_runner = BlackBoxTopDownSearch(
-            self.config, self._data_tensor, self._validation_set
+            self.config, copy.deepcopy(self._data_tensor), self._validation_set
         )
 
         cross_runner = {
@@ -241,6 +232,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
             InitStructType.TT_CROSS: TnTorchCrossRunner(),
             InitStructType.HT: HTCrossRunner(),
             InitStructType.FTT: FTTCrossRunner(),
+            InitStructType.TUCKER: TuckerCrossRunner(),
         }.get(self.config.cross.init_struct, CrossRunner())
 
         top_down_runner.set_cross_runner(cross_runner)
@@ -261,6 +253,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
 
         data_val = self._data_tensor(self._validation_set)
 
+        # print(best_st.reshape_history)
         new_inds, new_valid = unravel_indices(
             best_st.reshape_history, free_indices, self._validation_set
         )

@@ -5,12 +5,13 @@ import time
 import copy
 
 from pytens.algs import TreeNetwork
+from pytens.search.algs.base import SearchAlgo
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import SearchState
 from pytens.search.utils import log_stats, SearchStats, SearchResult
 
 
-class ExhaustiveSearch:
+class ExhaustiveSearch(SearchAlgo):
     """Base class for exhaustive search"""
 
     def __init__(self, config: SearchConfig):

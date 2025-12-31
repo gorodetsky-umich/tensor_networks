@@ -1,10 +1,12 @@
 """Type definitions for hierarchical search"""
 
+from dataclasses import dataclass
 from typing import List, Sequence, Self
 import copy
+from pytens.search.types import Action
 from pytens.search.utils import SearchResult, SearchStats
 from pytens.algs import TreeNetwork
-from pytens.types import Index, IndexOp, IndexMerge, IndexSplit
+from pytens.types import Index, IndexOp, IndexMerge, IndexSplit, IndexName
 
 
 class HSearchState:
@@ -21,6 +23,8 @@ class HSearchState:
         self.reshape_history = reshape_history
         self.network = network
         self.unused_delta = unused_delta
+        self.replay_traces = []
+        self.level = 0
 
     # after the cross, we do the normal but the data tensor is a tensor network.
     def merge_index(self, merge_op: IndexMerge) -> Self:
@@ -51,6 +55,9 @@ class HSearchState:
         # print("applying split", split_op)
         new_st = copy.deepcopy(self)
         new_net = new_st.network
+        if len(split_op.shape) == 1:
+            return new_st
+
         new_net.split_index(split_op, compute_data=compute_data)
         # print(node)
 
@@ -88,7 +95,10 @@ class TopDownSearchResult(SearchResult):
 
 class SubnetResult:
     """Result for optimizing a subnet."""
-    def __init__(self, network: TreeNetwork, subnet: TreeNetwork, state: HSearchState):
+
+    def __init__(
+        self, network: TreeNetwork, subnet: TreeNetwork, state: HSearchState
+    ):
         self.subnet_state = state
         self.subnet = subnet
         self.network = network
@@ -96,6 +106,29 @@ class SubnetResult:
 
 class IndexSplitResult:
     """Result for index splits of one node."""
+
     def __init__(self, state: HSearchState, splits: Sequence[IndexSplit]):
         self.state = state
         self.splits = splits
+
+
+class SuperIndex(Index):
+    """A symbolic grouping of indices."""
+
+    def __init__(
+        self,
+        name: IndexName,
+        size: int,
+        constituents: Sequence[Index],
+        values: Sequence[float] = tuple([]),
+    ):
+        super().__init__(name, size, values)
+        self.constituents = constituents
+
+@dataclass
+class ReplayTrace:
+    level: int
+    splits: Sequence[IndexSplit]
+    merge_ops: Sequence[IndexMerge]
+    split_ops: Sequence[IndexSplit]
+    actions: Sequence[Action]
