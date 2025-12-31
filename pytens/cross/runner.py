@@ -63,7 +63,6 @@ class HTCrossRunner(CrossRunner):
         )
         return net
 
-
 class TuckerCrossRunner(CrossRunner):
     """Runner for tucker cross implementation."""
 

@@ -20,9 +20,10 @@ logger.setLevel(logging.DEBUG)
 import pytens.algs as pt
 from pytens.cross.funcs import TensorFunc, PermuteFunc
 from pytens.types import DimTreeNode
+from pytens.logger import *
 
-# logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class CrossAlgo(Enum):
     """Enumeration of cross algorithms."""
@@ -323,6 +324,7 @@ class CrossApproximation:
             if len(n.up_info.nodes) == 0:
                 continue
 
+            logger.trace("root to leaves: %s, up indices: %s, down indices: %s", n.node, [ind.name for ind in n.up_info.indices], [ind.name for ind in n.down_info.indices])
             root_to_leaves(f, n)
 
             logger.debug(
@@ -435,13 +437,13 @@ class CrossApproximation:
             self._incr_ranks(tree, known=known)
 
         # print("evaluate time:", time.time() - eval_start)
-        logger.debug("%s", net)
+        # logger.debug("%s", net)
         # print(estimate.shape, real.shape)
         err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
         ranks_and_errs[len(up_vals)] = err
-        print("step:", trial, "error:", err)
-        import sys
-        sys.stdout.flush()
+        logger.debug("step: %s, error: %s", trial, err)
+        # import sys
+        # sys.stdout.flush()
         # print(net)
         ranks_and_errs = list(sorted(list(ranks_and_errs.items())))
         # print(ranks_and_errs)

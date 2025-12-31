@@ -680,4 +680,4 @@ class SVDAlgorithm(Enum):
     SVD = auto()
     MERGE = auto()
     CROSS = auto()
-    # FOLD = auto()
+    FOLD = auto()
