@@ -68,12 +68,12 @@ class ILPSolver:
             for sz, p in zip(ind.value_choices, pfsums[ind.name]):
                 coeff[(ind.name, sz)] = p
 
-        logger.trace("adding coeffs: %s", coeff)
-        logger.trace("allowed delta: %s", delta ** 2)
+        logger.debug("adding coeffs: %s", coeff)
+        logger.debug("allowed delta: %s", delta ** 2)
 
         # rescale the numbers to avoid overflow
-        numbers = list(coeff.values()) + [delta ** 2]
-        scale = max(numbers) - min(numbers)
+        numbers = [v for v in coeff.values() if v > 1e-6] + [delta ** 2]
+        scale = (max(numbers) ** 0.5) *  (min(numbers) ** 0.5)
         if scale == 0:
             scale = 1.0
 
@@ -361,8 +361,8 @@ class ConstraintSearch:
         nodes = [st.network.node_tensor(n) for n in st.network.network.nodes]
         solver.set_objective(free_indices, nodes, upper)
 
-        logger.trace("constraints to be solved:")
-        if logger.level == logging.TRACE:
+        logger.debug("constraints to be solved:")
+        if logger.level == logging.DEBUG:
             for constr in solver.model.getConstrs():
                 # Get the value of the LHS expression in the current solution
                 lhs = solver.model.getRow(constr)
@@ -370,7 +370,7 @@ class ConstraintSearch:
                 rhs = constr.RHS
                 # Get the constraint sense
                 sense = constr.Sense
-                logger.trace("Constraint: %s, %s %s %s", constr.ConstrName, lhs, sense, rhs)
+                logger.debug("Constraint: %s, %s %s %s", constr.ConstrName, lhs, sense, rhs)
 
         solver.model.optimize()
 
@@ -385,8 +385,8 @@ class ConstraintSearch:
                 if solver.vars[(ind.name, j)].x == 1:
                     relabel_map[ind.name] = int(j)
 
-        logger.trace("feasible rank assignment: %s", relabel_map)
-        if logger.level == logging.TRACE:
+        logger.debug("feasible rank assignment: %s", relabel_map)
+        if logger.level == logging.DEBUG:
             for constr in solver.model.getConstrs():
                 # Get the value of the LHS expression in the current solution
                 lhs_value = solver.model.getRow(constr).getValue()
@@ -394,10 +394,12 @@ class ConstraintSearch:
                 rhs_value = constr.RHS
                 # Get the constraint sense
                 sense = constr.Sense
-                logger.trace("Constraint: %s, %s %s %s", constr.ConstrName, lhs_value, sense, rhs_value)
+                logger.debug("Constraint: %s, %s %s %s", constr.ConstrName, lhs_value, sense, rhs_value)
 
         st.network.relabel_indices(relabel_map)
         st.network.rerange_indices(rerange_map)
         solver.model.dispose()
         solver.env.dispose()
+        
+        logger.debug("Get cost %s for network %s", st.network.cost(), st.network)
         return st

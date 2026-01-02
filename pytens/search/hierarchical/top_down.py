@@ -366,6 +366,7 @@ class TopDownSearch:
         for n in st.network.network.nodes:
             network = copy.deepcopy(st.network)
             try:
+                logger.debug("unused delta: %s", st.unused_delta)
                 network.round(n, delta=math.sqrt(st.unused_delta))
             except np.linalg.LinAlgError:
                 continue
@@ -541,6 +542,7 @@ class TopDownSearch:
         delta, remaining_delta = self.error_dist.split_delta(remaining_delta)
 
         ind_map, reverse_map = _rename_data_tensor(st, st.network)
+        logger.debug("reverse name mapping is %s", reverse_map)
         before_split = st.network.free_indices()
         # merge_ops, split_ops = [], []
 
@@ -572,21 +574,20 @@ class TopDownSearch:
                 list(sweep.free_indices), sweep.reshape_history, bn, 0
             )
 
+        best_merge = st
+        best_result = SearchResult()
+        tmp_st, merge_ops, split_ops = self._to_lower_dim(st, splits, is_top)
         if self.config.synthesizer.replay_from is None:
-            merge_ops, split_ops = [], []
-            if self._trigger_merge(len(before_split), is_top):
-                merge_ops, split_ops = self._to_lower_dim(st, splits)
-
-            search_engine = PartitionSearch(self.config, st.network)
+            search_engine = PartitionSearch(self.config, tmp_st.network)
         else:
-            logger.debug("popping out the trace %s", st.replay_traces[0])
-            trace = st.replay_traces.pop(0)
-            merge_ops = trace.merge_ops
-            split_ops = trace.split_ops
+            logger.debug(
+                "popping out the trace %s", tmp_st.replay_traces[0]
+            )
+            trace = tmp_st.replay_traces.pop(0)
             acs = trace.actions
             logger.debug("replaying actions %s", [str(ac) for ac in acs])
             # we need to update the index sizes in actions
-            net_indices = st.network.free_indices()
+            net_indices = tmp_st.network.free_indices()
             for ac in acs:
                 new_indices = []
                 for ind in ac.indices:
@@ -597,13 +598,16 @@ class TopDownSearch:
 
                 ac.indices = new_indices
 
-            search_engine = PartitionSearch(self.config, st.network, acs)
+            search_engine = PartitionSearch(
+                self.config, tmp_st.network, acs
+            )
 
         if exclusions is not None:
             renamed_exclusions = []
             for ind in exclusions:
                 renamed_exclusions.append(ind.with_new_name(ind_map.get(ind.name, ind.name)))
             exclusions = renamed_exclusions
+            logger.debug("exclusions: %s", exclusions)
 
         result = search_engine.search(copy.deepcopy(merge_ops), splits, delta, exclusions)
         if self.config.synthesizer.replay_from is not None:
@@ -612,7 +616,7 @@ class TopDownSearch:
         bn = result.best_state.network
 
         # self._revert_splits(splits, bn)
-        # print(bn)
+        logger.debug("get best structure %s", bn)
         tmp_bn = copy.deepcopy(bn)
         for split_op in reversed(split_ops):
             tmp_bn.split_index(split_op)
@@ -620,30 +624,33 @@ class TopDownSearch:
         
         if not self.config.synthesizer.replay_from:
             # save the splits and actions at the current level
-            st.replay_traces[0].merge_ops = merge_ops
-            st.replay_traces[0].split_ops = split_ops
+            tmp_st.replay_traces[0].merge_ops = merge_ops
+            tmp_st.replay_traces[0].split_ops = split_ops
             acs = to_splits(bn)
             logger.debug("applied actions %s", [str(ac) for ac in acs])
-            st.replay_traces[0].actions = list(
+            tmp_st.replay_traces[0].actions = list(
                 sorted(
-                    acs, key=lambda x: result.best_state.past_actions.index(x)
+                    acs,
+                    key=result.best_state.past_actions.index,
                 )
             )
 
         _apply_renaming(bn, reverse_map)
-        best_st = HSearchState(st.free_indices, st.reshape_history, bn, 0)
-        best_st.level = st.level
-        best_st.replay_traces = st.replay_traces
+        best_st = HSearchState(
+            tmp_st.free_indices, tmp_st.reshape_history, bn, 0
+        )
+        best_st.level = tmp_st.level
+        best_st.replay_traces = tmp_st.replay_traces
 
         logger.debug(
             "used delta: %s, budget: %s, unused: %s",
-            st.network.norm() ** 2 - bn.norm() ** 2,
+            tmp_st.network.norm() ** 2 - bn.norm() ** 2,
             delta**2,
             result.unused_delta**2,
         )
 
         next_nets = self._get_next_nets(bn)
-        unused_delta = st.unused_delta + result.unused_delta**2
+        unused_delta = tmp_st.unused_delta + result.unused_delta**2
         if sorted(before_split) == sorted(after_split) and len(next_nets) == 1:
             best_st.unused_delta = unused_delta + remaining_delta**2
         else:
@@ -661,11 +668,22 @@ class TopDownSearch:
             # print(best_st.network.norm() ** 2, sn_unused_delta)
             best_st.unused_delta = unused_delta
 
-        logger.debug("search result: new cost %s, %s", bn.cost(), bn)
+        if (
+            best_st.network.cost() <= best_merge.network.cost()
+            or self.config.synthesizer.replay_from is not None
+        ):
+            best_merge = best_st
+            best_result = result
 
-        self.stats.merge(result.stats)
+        logger.debug(
+            "search result: new cost %s, %s",
+            best_merge.network.cost(),
+            best_merge.network,
+        )
 
-        return best_st
+        self.stats.merge(best_result.stats)
+
+        return best_merge
 
     @profile
     def _preprocess(self, net: TreeNetwork) -> TreeNetwork:
@@ -682,7 +700,20 @@ class TopDownSearch:
         #         subgraph_nodes.union(*ac.reverse_edge)
 
         subnets = []
-        for group in sorted(subgraph_nodes.groups().values(), key=lambda xs: (len(xs), tuple(sorted([int(x[1:]) for x in xs])))):
+        free_indices = best_net.free_indices()
+        def _group_size(xs):
+            # it is safer if we sort by free indices
+            free_inds = []
+            ind_size = 1
+            for x in xs:
+                for ind in best_net.node_tensor(x).indices:
+                    if ind in free_indices:
+                        free_inds.append(ind)
+                        ind_size *= ind.size
+                        
+            return (ind_size, sorted(free_inds))
+
+        for group in sorted(subgraph_nodes.groups().values(), key=_group_size):
             # print("group:", group)
             tn = TreeNetwork()
             tn.network = nx.subgraph(best_net.network, group).copy()
@@ -712,13 +743,20 @@ class TopDownSearch:
 
             return remaining_delta**2
 
-        best_res = optimize_res[0]
-        for res in optimize_res[1:]:
-            res_cost = res.subnet_state.network.cost()
-            best_cost = best_res.subnet_state.network.cost()
-            if best_res is None or res_cost < best_cost:
-                best_res = res
+        optimize_res.sort(key=lambda x: x.subnet_state.network.cost())
+        # best_res = optimize_res[0]
+        # for res in optimize_res[1:]:
+        #     res_cost = res.subnet_state.network.cost()
+        #     best_cost = best_res.subnet_state.network.cost()
+        #     if best_res is None or res_cost < best_cost:
+        #         logger.debug("among subnets, select %s", res.subnet_state.network)
+        #         best_res = res
 
+        # if "space_1_0" in [ind.name for ind in optimize_res[0].subnet.free_indices()]:
+        #     best_res = optimize_res[3]
+        # else:
+        #     best_res = optimize_res[0]
+        best_res = optimize_res[0]
         best_st.network = best_res.network
         best_sn_st = best_res.subnet_state
 
@@ -748,10 +786,20 @@ class TopDownSearch:
             best_st.replay_traces.extend(best_sn_st.replay_traces)
         return best_sn_st.unused_delta
 
-    def _to_lower_dim(self, st: HSearchState, splits: Sequence[IndexOp]):
+    def _to_lower_dim(self, st: HSearchState, splits: Sequence[IndexOp], is_top: bool):
         merge_start = time.time()
 
-        best_net, best_ops = None, ([], [])
+        if not self._trigger_merge(len(st.network.free_indices()), is_top):
+            return (copy.deepcopy(st), [], [])
+
+        if self.config.synthesizer.replay_from is not None:
+            logger.debug("popping out the trace %s", st.replay_traces[0])
+            trace = st.replay_traces[0]
+            merge_ops = trace.merge_ops
+            split_ops = trace.split_ops
+            return (st, merge_ops, split_ops)
+
+        tts = []
         for index_sets in self._cluster.cluster(st.network, splits):
             merge_ops, split_ops = [], []
             for m_indices in index_sets:
@@ -772,23 +820,22 @@ class TopDownSearch:
                 )
                 split_ops.append(split_op)
 
-            if len(st.network.network.nodes) == 1:
-                best_ops = merge_ops, split_ops
-                best_net = st.network
-                break
+            # if len(st.network.network.nodes) == 1:
+            #     yield (copy.deepcopy(st), merge_ops, split_ops)
+            #     continue
 
             ok, tt = self._cross_to_tt(
                 copy.deepcopy(st.network), merge_ops, splits
             )
             logger.debug("after index merge, we get a tensor train %s", tt)
-            if ok and (best_net is None or tt.cost() < best_net.cost()):
-                best_net = tt
-                best_ops = merge_ops, split_ops
+            if ok:
+                tmp_st = copy.deepcopy(st)
+                tmp_st.network = tt
+                tts.append((tmp_st, merge_ops, split_ops))
 
+        tts.sort(key=lambda x: x[0].network.cost())
         self.stats.merge_time += time.time() - merge_start
-        assert best_net is not None
-        st.network = best_net
-        return best_ops
+        return tts[0]
 
     @abstractmethod
     def _optimize_node(
@@ -921,24 +968,24 @@ class TopDownSearch:
             # we always try our best to decompose the indices to
             # the maximum number and they subsume higher level reshapes
             shape_with_scores = set()
-            for shape in _select_factors(res, budget):
+            for shape in _select_factors(res, 3):
                 # Calculate cumulative product sizes and sum their scores
                 cumulative_sizes = itertools.accumulate(
                     shape[1:-1], operator.mul, initial=shape[0]
                 )
                 # transform the shape such that the low scores are excluded
                 cumulative_score = [scores[size] for size in cumulative_sizes]
-                pos = 0
-                while pos < len(shape) - 1:
-                    if cumulative_score[pos] < 1.5:
-                        shape = (
-                            tuple(shape[:pos])
-                            + (shape[pos] * shape[pos + 1],)
-                            + tuple(shape[pos + 2 :])
-                        )
-                        cumulative_score.pop(pos)
-                    else:
-                        pos += 1
+                # pos = 0
+                # while pos < len(shape) - 1:
+                #     if cumulative_score[pos] < 2:
+                #         shape = (
+                #             tuple(shape[:pos])
+                #             + (shape[pos] * shape[pos + 1],)
+                #             + tuple(shape[pos + 2 :])
+                #         )
+                #         cumulative_score.pop(pos)
+                #     else:
+                #         pos += 1
 
                     # print(shape)
 

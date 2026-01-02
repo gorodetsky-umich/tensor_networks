@@ -507,6 +507,7 @@ class SearchState:
 
                 (u, s, v), used_delta = res
                 new_net.merge(v, s)
+                logger.debug("current delta: %s, used delta: %s", self.curr_delta, used_delta)
                 remaining_delta = np.sqrt(self.curr_delta**2 - used_delta)
                 new_state.curr_delta = remaining_delta
 

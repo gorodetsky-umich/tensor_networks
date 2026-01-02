@@ -23,7 +23,7 @@ logger.setLevel(logging.INFO)
 
 
 def eff_rank(svals: np.ndarray):
-    s = svals
+    s = svals ** 2
     p = s / s.sum()
     return np.exp(-np.sum(p * np.log(p)))
 
@@ -115,7 +115,9 @@ class SVDIndexCluster(IndexCluster):
             return [], []
 
         comb_corr = {}
-        if isinstance(net, TensorTrain):
+        if len(net.network.nodes) == 1:
+            comb_corr = self._single_node_corr(net, indices)
+        elif isinstance(net, TensorTrain):
             comb_corr = self._tt_corr(net, indices)
             # model = SpectralClustering(n_clusters=threshold, affinity='precomputed_nearest_neighbors', random_state=42)
             # labels = model.fit_predict(similarity)
@@ -128,14 +130,12 @@ class SVDIndexCluster(IndexCluster):
             # clusters = self._cluster_dimensions(similarity, threshold, 3)
             # print("!!!!", clusters)
 
-        elif len(net.network.nodes) == 1:
-            comb_corr = self._single_node_corr(net, indices)
         else:
             raise NotImplementedError(
                 "SVD-based clustering is only implemented for TT and single-node networks."
             )
 
-        comb_corr = sorted(comb_corr.items(), key=lambda x: x[1], reverse=True)
+        comb_corr = sorted(comb_corr.items(), key=lambda x: x[1], reverse=False)
         logger.debug("sorted combs: %s", list(comb_corr))
 
         # start from the largest group and expand until the threshold
@@ -147,7 +147,7 @@ class SVDIndexCluster(IndexCluster):
         # Idea 2: randomly sample a few clusters and pick the top k
         # Idea 1: start from the topmost, second topmost, etc..
         k_ind_sets = []
-        for k in range(5):
+        for k in range(3):
             index_sets = []
             visited = set()
             for i in range(num_groups):
@@ -282,13 +282,13 @@ class SVDIndexCluster(IndexCluster):
                 logger.debug("after merge %s and %s: %s", ni, nj, merged_net)
                 # print(ni)
                 svals = merged_net.svals_at(
-                    ni, ac.indices, max_rank=2, with_orthonormal=False
+                    ni, ac.indices, max_rank=10, with_orthonormal=False
                 )
 
                 if len(svals) >= 2:
-                    comb_corr[tuple(ac.indices)] = svals[0] / svals[1]
+                    comb_corr[tuple(ac.indices)] = eff_rank(svals) #svals[0] / svals[1]
                 else:
-                    comb_corr[tuple(ac.indices)] = float('inf')
+                    comb_corr[tuple(ac.indices)] = 1
                 # for sval_idx in range(1, min(len(svals), 5)):
                 #     comb_corr[tuple(ac.indices)].append(svals[sval_idx - 1] / svals[sval_idx])
 
@@ -311,11 +311,11 @@ class SVDIndexCluster(IndexCluster):
         for i, ind_i in enumerate(indices):
             for j, ind_j in enumerate(indices[i + 1 :]):
                 ac = OSplit([ind_i, ind_j])
-                svals = net.svals(ac.indices, max_rank=2, orthonormal=True)
+                svals = net.svals(ac.indices, max_rank=10, orthonormal=True)
                 if len(svals) >= 2:
-                    comb_corr[tuple(ac.indices)] = svals[0] / svals[1]
+                    comb_corr[tuple(ac.indices)] = eff_rank(svals) #svals[0] / svals[1]
                 else:
-                    comb_corr[tuple(ac.indices)] = 0
+                    comb_corr[tuple(ac.indices)] = 1
 
         return comb_corr
 

@@ -247,6 +247,7 @@ class PartitionSearch(SearchAlgo):
         conflict_ac = get_conflicts(ac, to_splits(st.network))
         st = copy.deepcopy(st)
         while conflict_ac is not None:
+            logger.debug("reverting the action %s", conflict_ac)
             assert conflict_ac.reverse_edge is not None
             st.network.merge(*conflict_ac.reverse_edge)
             conflict_ac = get_conflicts(ac, to_splits(st.network))
