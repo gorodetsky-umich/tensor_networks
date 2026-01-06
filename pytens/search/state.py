@@ -288,9 +288,9 @@ class ISplit(Action):
         s_val = np.diag(net.node_tensor(s).value)
         trunc_error = np.cumsum(np.flip(s_val**2))
         if self.target_size is not None:
-            # max_sz = min(max_sz, len(trunc_error))
-            # r = min(max_sz, self.target_size)
-            r = self.target_size
+            max_sz = min(max_sz, len(trunc_error))
+            r = min(max_sz, self.target_size)
+            # r = self.target_size
             if r < max_sz:
                 err = trunc_error[max_sz - r - 1]
             else:

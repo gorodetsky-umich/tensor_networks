@@ -325,7 +325,7 @@ def cross(
             break
 
         trial += 1
-        incr_ranks(tree, kickrank=kickrank, max_rank=max_rank, known=known)
+        incr_ranks(tree, kickrank=kickrank+trial, max_rank=max_rank, known=known)
 
     # print(net)
     ranks_and_errs = sorted(list(ranks_and_errs.items()))

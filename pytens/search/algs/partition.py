@@ -64,6 +64,7 @@ class PartitionSearch(SearchAlgo):
     ) -> Optional[SearchState]:
         """Call a constraint solver to estimate the cost of a given network."""
         if self.config.rank_search.search_mode == "topk":
+            logger.debug("getting cost for %s", new_st.network)
             return self.constraint_engine.solve(new_st, best_costs[-1])
 
         if self.config.rank_search.search_mode == "all":

@@ -132,3 +132,8 @@ class ReplayTrace:
     merge_ops: Sequence[IndexMerge]
     split_ops: Sequence[IndexSplit]
     actions: Sequence[Action]
+
+@dataclass
+class ReplaySweep:
+    indices: Sequence[Index]
+    traces: Sequence[ReplayTrace]
