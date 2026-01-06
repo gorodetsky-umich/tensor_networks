@@ -151,10 +151,12 @@ class ConstraintSearch:
         if len(s) == 0:
             return None
 
+        s_sizes, s_sums = [], []
         if include_last:
-            s_sizes = [0, 1]
-            s_sums = [0, s[-1] ** 2]
-        else:
+            s_sizes.append(0)
+            s_sums.append(0)
+
+        if len(s) > 1:
             s_sizes = [1]
             s_sums = [s[-1] ** 2]
 
@@ -179,9 +181,9 @@ class ConstraintSearch:
             s_sums.append(prev_sum)
 
         # the final sizes need to be accumulated
-        final_sizes = [
-            max(len(s) - x, 1) for x in np.cumsum(np.array(s_sizes))
-        ]
+        final_sizes = []
+        for x in np.cumsum(np.array(s_sizes)):
+            final_sizes.append(max(len(s) - x, 1))
 
         # print(s_sizes, list(zip(final_sizes, s_sums)))
         return s_sums, final_sizes
@@ -361,8 +363,8 @@ class ConstraintSearch:
         nodes = [st.network.node_tensor(n) for n in st.network.network.nodes]
         solver.set_objective(free_indices, nodes, upper)
 
-        logger.debug("constraints to be solved:")
         if logger.level == logging.DEBUG:
+            logger.debug("constraints to be solved:")
             for constr in solver.model.getConstrs():
                 # Get the value of the LHS expression in the current solution
                 lhs = solver.model.getRow(constr)
@@ -374,6 +376,7 @@ class ConstraintSearch:
 
         solver.model.optimize()
 
+        logger.debug("solving result: %s", solver.model.Status)
         if solver.model.Status == GRB.INFEASIBLE:
             solver.model.dispose()
             solver.env.dispose()

@@ -152,7 +152,7 @@ class SVDIndexCluster(IndexCluster):
             visited = set()
             for i in range(num_groups):
                 group = set()
-                for xs, _ in comb_corr[i+k if i == 0 else 0:]:
+                for xs, _ in comb_corr[(i+k) if i == 0 else 0:]:
                     # if (len(group) == 0 and (xs[0] in visited or xs[1] in visited)) or (len(group) > 0 and ((xs[0] not in group and xs[1] not in group) or (xs[1] in group and xs[0] in visited) or (xs[0] in group and xs[1] in visited))):
                     #     continue
 

@@ -3,6 +3,8 @@
 import copy
 import time
 from abc import abstractmethod
+from typing import Optional, Sequence
+import logging
 
 import numpy as np
 
@@ -31,7 +33,7 @@ from pytens.search.hierarchical.index_cluster import (
     SVDNbrIndexCluster,
 )
 from pytens.search.hierarchical.top_down import BlackBoxTopDownSearch, TopDownSearch, WhiteBoxTopDownSearch
-from pytens.search.hierarchical.types import HSearchState, TopDownSearchResult
+from pytens.search.hierarchical.types import HSearchState, ReplayTrace, TopDownSearchResult
 from pytens.search.state import SearchState
 from pytens.search.utils import (
     approx_error,
@@ -40,6 +42,8 @@ from pytens.search.utils import (
     unravel_indices,
 )
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 class SearchEngine:
     """Tensor network topology search engine."""
@@ -140,7 +144,7 @@ class TopDownSearchEngine(SearchEngine):
         super().__init__(config)
         self._top_down_runner = TopDownSearch(config)
 
-    def top_down(self) -> TopDownSearchResult:
+    def top_down(self, replay_traces: Optional[Sequence[ReplayTrace]] = None) -> TopDownSearchResult:
         """Start point of a top down hierarchical search."""
         self._initialize()
         self._top_down_runner.error_dist = AlphaErrorDist(
@@ -148,7 +152,7 @@ class TopDownSearchEngine(SearchEngine):
         )
 
         start = time.time()
-        best_st = self._top_down_runner.search()
+        best_st = self._top_down_runner.search(replay_traces=replay_traces)
         end = time.time()
 
         assert best_st is not None
@@ -186,7 +190,7 @@ class WhiteBoxTopDownSearchEngine(TopDownSearchEngine):
 
     def _initialize(self):
         self._top_down_runner = WhiteBoxTopDownSearch(
-            self.config, self._data_tensor
+            self.config, copy.deepcopy(self._data_tensor)
         )
 
     def _collect_stats(
@@ -242,6 +246,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
         self, result: TopDownSearchResult, best_st: HSearchState
     ):
         best_network = best_st.network
+        logger.debug("result best network %s", best_network)
         free_indices = self._data_tensor.indices
         unopt_size = float(np.prod([i.size for i in free_indices]))
         init_size = unopt_size
@@ -253,7 +258,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
 
         data_val = self._data_tensor(self._validation_set)
 
-        # print(best_st.reshape_history)
+        logger.debug("reshape history: %s", best_st.reshape_history)
         new_inds, new_valid = unravel_indices(
             best_st.reshape_history, free_indices, self._validation_set
         )

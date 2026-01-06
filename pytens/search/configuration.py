@@ -211,6 +211,10 @@ class CrossConfig(pydantic.BaseModel):
         default=False,
         description="Reshape the data into smaller factors before running cross",
     )
+    init_cross: bool = pydantic.Field(
+        default=True,
+        description="Whether to convert the input network into a tensor train"
+    )
 
 
 class TopDownConfig(pydantic.BaseModel):
@@ -267,7 +271,7 @@ class SweepConfig(pydantic.BaseModel):
         description="How to sweep the local structures during refinement",
     )
     max_iters: int = pydantic.Field(
-        default=5,
+        default=8,
         description="Choose the number of sweep operations",
     )
     subnet_size: int = pydantic.Field(

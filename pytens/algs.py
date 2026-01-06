@@ -473,7 +473,7 @@ class EinsumArgs:
 class TensorNetwork:  # pylint: disable=R0904
     """Tensor Network Base Class."""
 
-    next_index_id = 0
+    _id_counter = itertools.count(start=1)
 
     def __init__(self) -> None:
         """Initialize the network."""
@@ -769,23 +769,16 @@ class TensorNetwork:  # pylint: disable=R0904
 
         return out
 
-    @classmethod
-    def get_next_id(cls) -> int:
-        """Return the next available index id"""
-        i = cls.next_index_id
-        cls.next_index_id += 1
-        return i
-
     def fresh_index(
         self, used_indices: Optional[Sequence[IndexName]] = None
     ) -> str:
         """Generate an index that does not appear in the current network."""
         all_indices = [ind.name for ind in self.all_indices().keys()]
-        i = self.get_next_id()
+        i = next(self._id_counter)
         while f"s_{i}" in all_indices or (
             used_indices is not None and f"s_{i}" in used_indices
         ):
-            i = self.get_next_id()
+            i = next(self._id_counter)
 
         return f"s_{i}"
 
@@ -793,13 +786,13 @@ class TensorNetwork:  # pylint: disable=R0904
         self, used_nodes: Optional[Sequence[NodeName]] = None
     ) -> NodeName:
         """Generate a node name that does not appear in the current network."""
-        i = self.get_next_id()
+        i = next(self._id_counter)
         node = f"n{i}"
         while node in self.network.nodes or (
             used_nodes is not None and node in used_nodes
         ):
             node = f"n{i}"
-            i = self.get_next_id()
+            i = next(self._id_counter)
 
         return node
 
@@ -1135,7 +1128,7 @@ class TensorNetwork:  # pylint: disable=R0904
             # _, path_info = oe.contract_path(estr, *node_vals)
             # logger.debug("The cost of %s is %s", estr, path_info.opt_cost)
             results[chunk_start : chunk_start + batch_size] = oe.contract(
-                estr, *node_vals, optimize="auto"
+                estr, *node_vals, optimize="random-greedy"
             )
             chunk_start += batch_size
 
@@ -1541,7 +1534,7 @@ class TreeNetwork(TensorNetwork):
 
         return merges
 
-    def compress(self) -> None:
+    def compress(self) -> "TreeNetwork":
         """Compress the network by removing nodes
         where one index equals to the product of other indices.
         """
@@ -1561,6 +1554,10 @@ class TreeNetwork(TensorNetwork):
 
                     if deleted:
                         break
+
+        tree = TreeNetwork()
+        tree.network = self.network
+        return tree
 
     @profile
     def postorder_orthonormal(
@@ -2732,7 +2729,7 @@ class TreeNetwork(TensorNetwork):
         old_subnet: "TreeNetwork",
         new_subnet: "TreeNetwork",
         split_info: Optional[List[IndexOp]] = None,
-    ):
+    ) -> "TreeNetwork":
         """Replace a node with a sub-tensor network."""
         for n in old_subnet.network.nodes:
             if n not in self.network.nodes:
@@ -2768,6 +2765,10 @@ class TreeNetwork(TensorNetwork):
 
         for u, v in new_subnet.network.edges:
             self.add_edge(u, v)
+
+        tree = TreeNetwork()
+        tree.network = self.network
+        return tree
 
     def longest_path(self) -> Sequence[NodeName]:
         """Get the longest path in the current tree."""
@@ -2908,7 +2909,7 @@ class TreeNetwork(TensorNetwork):
         indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
         tt = TensorTrain.rand_tt(indices)
         tmp_net = copy.deepcopy(self)
-        tmp_net.compress()
+        tmp_net = tmp_net.compress()
         func = FuncTensorNetwork(list(indices), tmp_net)
 
         # perm = [data.indices.index(ind) for ind in indices]
@@ -3624,7 +3625,7 @@ class TensorTrain(TreeNetwork):
         # end node is the one with one neighbor or whose value is 2D
         end_nodes: List[NodeName] = []
         for node in self.network.nodes:
-            if len(list(self.network.neighbors(node))) == 1:
+            if len(list(self.network.neighbors(node))) <= 1:
                 end_nodes.append(node)
 
         return end_nodes
@@ -3970,6 +3971,7 @@ class TensorTrain(TreeNetwork):
     ) -> np.ndarray:
         """Compute the singular values for a hierarchical tucker."""
         ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
+        ind_nodes = list(set(ind_nodes))
         # svd_node = self.fold_hierarchical(ind_nodes)
         net, svd_node = self.fold_hierarchical(ind_nodes)
         # temporarily break one of the edges in the loop
