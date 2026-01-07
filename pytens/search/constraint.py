@@ -84,7 +84,7 @@ class ILPSolver:
         # self.model.update()
 
     def set_objective(
-        self, free_indices: List[Index], nodes: List[Tensor], upper: int
+        self, free_indices: List[Index], nodes: List[Tensor], upper: Optional[int]
     ):
         """Set the objective for the solver."""
         # max_cost = np.prod([i.size for i in free_indices])
@@ -128,7 +128,8 @@ class ILPSolver:
             cost += node_cost
             # print(cost)
 
-        self.model.addConstr(cost <= upper)
+        if upper is not None:
+            self.model.addConstr(cost <= upper)
         self.model.setObjective(cost, GRB.MINIMIZE)
 
 
@@ -157,8 +158,8 @@ class ConstraintSearch:
             s_sums.append(0)
 
         if len(s) > 1:
-            s_sizes = [1]
-            s_sums = [s[-1] ** 2]
+            s_sizes.append(1)
+            s_sums.append(s[-1] ** 2)
 
         chunk_size = self.config.synthesizer.bin_size * self.delta**2
         truncation_values = [
@@ -325,7 +326,7 @@ class ConstraintSearch:
             logger.debug("no truncation for %s", comb)
             self.split_actions[OSplit(comb)] = ([], [])
 
-    def solve(self, st: SearchState, upper: int) -> Optional[SearchState]:
+    def solve(self, st: SearchState, upper: Optional[int]) -> Optional[SearchState]:
         """Compute cost for a given set of splits."""
         solver = ILPSolver(self.config)
 

@@ -53,6 +53,12 @@ class SweepAlgo(Enum):
     RANDOM = auto()
     TRAVERSAL = auto()
 
+class SearchAlgo(Enum):
+    """Different search algorithms"""
+
+    RANDOM = auto()
+    ENUM = auto()
+
 class HeuristicConfig(pydantic.BaseModel):
     """Configuration for pruning heuristics"""
 
@@ -118,6 +124,10 @@ class ProgramSearchConfig(pydantic.BaseModel):
     replay_from: Optional[str] = pydantic.Field(
         default=None,
         description="Config to replay a series of splits from a pickle file",
+    )
+    algo: SearchAlgo = pydantic.Field(
+        default=SearchAlgo.ENUM,
+        description="Configure how to search for the sketch programs",
     )
 
 

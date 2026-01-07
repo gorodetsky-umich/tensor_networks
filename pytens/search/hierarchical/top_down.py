@@ -36,6 +36,7 @@ from pytens.search.configuration import (
     ClusterMethod,
     ReorderAlgo,
     ReshapeOption,
+    SearchAlgo,
     SearchConfig,
 )
 from pytens.search.hierarchical.error_dist import BaseErrorDist
@@ -610,6 +611,7 @@ class TopDownSearch:
         else:
             logger.debug("popping out the trace %s", tmp_st.replay_traces[0])
             trace = tmp_st.replay_traces.pop(0)
+            logger.debug("remaining traces: %s", tmp_st.replay_traces)
             acs = trace.actions
             logger.debug("replaying actions %s", [str(ac) for ac in acs])
             # we need to update the index sizes in actions
@@ -650,7 +652,7 @@ class TopDownSearch:
             tmp_bn.split_index(split_op)
         after_split = tmp_bn.free_indices()
 
-        if not self.config.synthesizer.replay_from:
+        if self.config.synthesizer.replay_from is None:
             # save the splits and actions at the current level
             tmp_st.replay_traces[0].merge_ops = merge_ops
             tmp_st.replay_traces[0].split_ops = split_ops
@@ -678,7 +680,7 @@ class TopDownSearch:
         best_st.level = tmp_st.level
         best_st.replay_traces = tmp_st.replay_traces
 
-        logger.debug("after revert renaming, we get %s", bn)
+        logger.debug("after revert renaming, we get %s with traces %s", bn, best_st.replay_traces)
         logger.debug(
             "used delta: %s, budget: %s, unused: %s",
             tmp_st.network.norm() ** 2 - bn.norm() ** 2,
@@ -824,11 +826,15 @@ class TopDownSearch:
         )
         logger.debug("==after replace subnet==")
         logger.debug(best_st.network)
+        logger.debug(best_st.replay_traces)
         logger.debug("-" * 20)
         best_st.free_indices = best_sn_st.free_indices
         best_st.reshape_history = best_sn_st.reshape_history
         if self.config.synthesizer.replay_from is None:
+            logger.debug("adding subnet replay traces to its parent")
             best_st.replay_traces.extend(best_sn_st.replay_traces)
+        else:
+            best_st.replay_traces = best_sn_st.replay_traces
         return best_sn_st.unused_delta
 
     def _to_lower_dim(
@@ -840,7 +846,7 @@ class TopDownSearch:
             return (copy.deepcopy(st), [], [])
 
         if self.config.synthesizer.replay_from is not None:
-            logger.debug("popping out the trace %s", st.replay_traces[0])
+            logger.debug("extracting the trace %s", st.replay_traces[0])
             trace = st.replay_traces[0]
             merge_ops = trace.merge_ops
             split_ops = trace.split_ops
@@ -901,6 +907,7 @@ class TopDownSearch:
             return [IndexSplitResult(st, [])]
 
         if self.config.synthesizer.replay_from is not None:
+            logger.debug("replaying index splits: %s", st.replay_traces[0].splits)
             index_splits = [st.replay_traces[0].splits]
         else:
             index_splits = self._split_indices_on_budget(
@@ -913,6 +920,7 @@ class TopDownSearch:
             for split_op in index_split:
                 if split_op.result is not None:
                     split_op.result = tuple(split_op.result)
+
             if tuple(index_split) in seen:
                 continue
 
@@ -959,10 +967,7 @@ class TopDownSearch:
                 maxs.append(0)
 
         all_splits = []
-        if self.config.topdown.reshape_algo in (
-            ReshapeOption.RANDOM,
-            ReshapeOption.ENUMERATE,
-        ):
+        if self.config.topdown.reshape_algo == ReshapeOption.ENUMERATE:
             budget = self.config.topdown.group_threshold - len(indices)
             budget = min(sum(maxs), budget)  # exhaust the budget as possible
             for ind_budget in itertools.product(*[range(x + 1) for x in maxs]):
@@ -979,7 +984,7 @@ class TopDownSearch:
 
             return all_splits
 
-        if self.config.topdown.reshape_algo == ReshapeOption.CLUSTER:
+        if self.config.topdown.reshape_algo in (ReshapeOption.RANDOM, ReshapeOption.CLUSTER):
             splits = []
             for i, ind in enumerate(indices):
                 ind_splits = self._get_split_op(st, ind, maxs[i], compute_data)
@@ -1009,7 +1014,7 @@ class TopDownSearch:
             k = np.random.randint(0, len(factors))
             selected = random.sample(factors, k=k)
             shape = _create_split_target(factors, selected)
-            return [IndexSplit(index=index, shape=shape)]
+            return [IndexSplit(index=index, shape=tuple(shape))]
 
         if compute_data:
             # filter out the top few
@@ -1068,46 +1073,6 @@ class TopDownSearch:
 
         return split_ops
 
-    def _get_merge_op(
-        self, merge_candidates: List[Index]
-    ) -> Sequence[IndexMerge]:
-        if self.config.topdown.random_algorithm == "random":
-            # yield one possible result
-            merge_indices = sorted(random.sample(merge_candidates, k=2))
-            return [IndexMerge(indices=merge_indices)]
-
-        merge_len = len(merge_candidates) - 1
-        if merge_len < 2:
-            return []
-
-        merge_ops = []
-        for i in range(2, merge_len):
-            for comb in itertools.combinations(merge_candidates, i):
-                merge_ops.append(IndexMerge(indices=comb))
-
-        return merge_ops
-
-    def _merge_indices(
-        self, st: HSearchState, node: NodeName
-    ) -> Sequence[HSearchState]:
-        indices = st.network.network.nodes[node]["tensor"].indices
-        if len(indices) > self.config.topdown.group_threshold:
-            merge_candidates = []
-            for ind in indices:
-                if ind in st.free_indices:
-                    merge_candidates.append(ind)
-
-            results = []
-            for merge_op in self._get_merge_op(merge_candidates):
-                if merge_op is not None:
-                    new_st = st.merge_index(merge_op)
-                    results.extend(self._merge_indices(new_st, node))
-
-            return results
-
-        return [st]
-
-
 class WhiteBoxTopDownSearch(TopDownSearch):
     """Top down structural search for white box data tensors."""
 
@@ -1134,6 +1099,7 @@ class WhiteBoxTopDownSearch(TopDownSearch):
         node_indices = st.network.node_tensor(node).indices
         logger.debug("before split index, the network is %s", st.network)
         logger.debug("before split index, the norm is %s", st.network.norm())
+        logger.debug("before split index, replay traces are %s", st.replay_traces)
         for split_result in self._split_indices(st, node_indices):
             net = split_result.state.network
             logger.debug("split index get %s", net)
@@ -1153,7 +1119,6 @@ class WhiteBoxTopDownSearch(TopDownSearch):
                 split_result.state.free_indices,
                 split_result.state.reshape_history,
                 copy.deepcopy(new_sn),
-                split_result.state.unused_delta,
             )
             new_st.level = st.level + 1
             if self.config.synthesizer.replay_from is None:
