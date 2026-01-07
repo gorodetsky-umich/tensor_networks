@@ -5,6 +5,7 @@ import copy
 import heapq
 import logging
 import math
+import random
 import time
 from typing import List, Optional, Sequence
 
@@ -16,6 +17,7 @@ from pytens.cross.cross import cross
 from pytens.cross.funcs import FuncTensorNetwork
 from pytens.search.algs.base import SearchAlgo
 from pytens.search.configuration import ReorderAlgo, SearchConfig
+import pytens.search.configuration as config
 from pytens.search.constraint import ConstraintSearch, BAD_SCORE
 from pytens.search.hierarchical.index_cluster import RandomIndexCluster
 from pytens.search.state import Action, ISplit, OSplit, SearchState
@@ -65,7 +67,10 @@ class PartitionSearch(SearchAlgo):
         """Call a constraint solver to estimate the cost of a given network."""
         if self.config.rank_search.search_mode == "topk":
             logger.debug("getting cost for %s", new_st.network)
-            return self.constraint_engine.solve(new_st, best_costs[-1])
+            best_cost = None
+            if len(best_costs) > 0:
+                best_cost = best_costs[-1]
+            return self.constraint_engine.solve(new_st, best_cost)
 
         if self.config.rank_search.search_mode == "all":
             # equally distribute the errors between steps
@@ -101,6 +106,31 @@ class PartitionSearch(SearchAlgo):
         new_st.links.append(new_link.name)
         return new_st
 
+    def _random_actions(self, data_tensor: DataTensor, merge_ops: Sequence[IndexMerge], exclusions: Optional[Sequence[Index]]) -> Sequence[Action]:
+        assert self.config.synthesizer.algo == config.SearchAlgo.RANDOM
+        curr_st = init_state(data_tensor, self._delta)
+        for _ in range(1, self.config.engine.max_ops + 1):
+            if random.random() < 0.25:
+                continue
+
+            is_osplit = self.config.synthesizer.action_type == "osplit"
+            actions = curr_st.get_legal_actions(is_osplit, merge_ops)
+            if actions:
+                actions = random.choices(actions)
+
+            for action in actions:
+                if (
+                    is_osplit
+                    and exclusions is not None
+                    and len(action.indices) == 1
+                    and action.indices[0] in exclusions
+                ):
+                    continue
+
+                curr_st = self._sketch_execution(curr_st, action)
+
+        return curr_st.past_actions
+
     def _enumerate(
         self,
         data_tensor: DataTensor,
@@ -110,25 +140,13 @@ class PartitionSearch(SearchAlgo):
         """Enumerate all possible splits up to the maximum number of ops."""
         sts = [init_state(data_tensor, self._delta)]
         curr_sts = [init_state(data_tensor, self._delta)]
-        # merged_indices = []
-        # for merge_op in merge_ops:
-        #     merged_indices.append(merge_op.result)
-
-        # for ind in data_tensor.free_indices():
-        #     found = False
-        #     for merge_op in merge_ops:
-        #         if ind in merge_op.indices:
-        #             found = True
-        #             break
-
-        #     if not found:
-        #         merged_indices.append(ind)
 
         for _ in range(1, self.config.engine.max_ops + 1):
             next_sts = []
             for curr_st in curr_sts:
                 is_osplit = self.config.synthesizer.action_type == "osplit"
-                for action in curr_st.get_legal_actions(is_osplit, merge_ops):
+                actions = curr_st.get_legal_actions(is_osplit, merge_ops)
+                for action in actions:
                     if (
                         is_osplit
                         and exclusions is not None
@@ -298,252 +316,11 @@ class PartitionSearch(SearchAlgo):
             ac.target_size = None
             st = self._sketch_execution(st, ac)
 
-        return self.get_cost(st, [self._data_tensor.cost() if self.config.synthesizer.replay_from is None else BAD_SCORE])
-
-    def _cross_to_tt_to_ftt(
-        self, merge_ops: List[IndexMerge], ind_splits: Sequence[IndexOp]
-    ):
-        """Handle index merging during preprocessing for cross results."""
-        assert isinstance(self._data_tensor, TensorTrain)
-        # after we know how indices are merged, we create a permuted function
-        new_indices = []
-
-        end = self._data_tensor.end_nodes()[0]
-        for mop in sorted(
-            merge_ops, key=lambda x: merge_op_dist(x, self._data_tensor, end)
-        ):
-            # sort the indices before adding to the list according to positions
-            new_indices.extend(
-                sorted(
-                    mop.indices,
-                    key=lambda x: self._data_tensor.index_to_end_distance(
-                        end, x
-                    ),
-                )
-            )
-
-        # there exists some free indices are not merged
-        for ind in self._data_tensor.free_indices():
-            if ind not in new_indices:
-                new_indices.append(ind)
-
-        assert len(new_indices) == len(self._data_tensor.free_indices())
-        # print("reorder the indices into", new_indices)
-
-        reorder_start = time.time()
-        if self.config.preprocess.reorder_algo == ReorderAlgo.SVD:
-            tt = self._data_tensor.reorder_by_svd(
-                new_indices,
-                self.config.engine.eps
-                * self.config.preprocess.reorder_eps
-                * 0.01,
-            )
+        if self.config.synthesizer.algo == config.SearchAlgo.RANDOM or self.config.synthesizer.replay_from is not None:
+            best_costs = []
         else:
-            ok, tt = self._data_tensor.reorder_by_cross(
-                new_indices,
-                self.config.engine.eps * self.config.preprocess.reorder_eps,
-            )
-            if not ok:
-                print("reorder by cross failed, removing the reordering")
-                # restore the merge into the nbr merging
-                nbr_cluster = RandomIndexCluster(
-                    self.config.topdown.group_threshold, rand=False
-                )
-                indices = nbr_cluster.cluster(self._data_tensor, ind_splits)
-
-                # print("index clusters", indices)
-                # print("old merges", merge_ops)
-                merge_ops.clear()
-                for i, ind_group in enumerate(indices):
-                    if len(ind_group) == 1:
-                        continue
-
-                    merge_name = "_".join(str(ind.name) for ind in indices[i])
-                    merge_size = math.prod(ind.size for ind in indices[i])
-                    merge_op = IndexMerge(
-                        indices=ind_group, result=Index(merge_name, merge_size)
-                    )
-                    merge_ops.append(merge_op)
-
-                # split indices into tt
-                original_indices = [ind for inds in indices for ind in inds]
-                # print(original_indices)
-                _, tt = self._data_tensor.reorder_by_cross(
-                    original_indices,
-                    self.config.engine.eps
-                    * self.config.preprocess.reorder_eps,
-                )
-                if not ok:
-                    # print("running ttize")
-                    self._data_tensor.ttize()
-            # if not ok:
-            #     print("warning: cross didn't reach the target eps")
-            # tt = data_tensor.reorder_by_svd(new_indices, self.config.engine.eps)
-
-        logger.debug("reorder time: %s", time.time() - reorder_start)
-        logger.debug("after reordering")
-        logger.debug(tt)
-        logger.debug(merge_ops)
-
-        # # fold the indices according to merge ops
-        # for mop in merge_ops:
-        #     # sort the nodes
-        #     nodes = [tt.node_by_free_index(ind.name) for ind in mop.indices]
-        #     # get the two ends where the nodes have only one nbr in nodes
-        #     ends = []
-        #     for n in nodes:
-        #         nbrs = list(tt.network.neighbors(n))
-        #         if len(nbrs) == 1 or not all(nbr in nodes for nbr in nbrs):
-        #             ends.append(n)
-
-        #     # print(tt)
-        #     # print(mop)
-        #     assert len(ends) == 2, f"expect 2 ends but get {len(ends)}: {ends}"
-        #     # start_node = tt.node_by_free_index(mop.indices[0].name)
-        #     # end_node = tt.node_by_free_index(mop.indices[-1].name)
-        #     # tt, _ = tt.fold_nodes(start_node, end_node, FoldDir.IN_BOUND)
-        #     tt, _ = tt.fold_nodes(ends[0], ends[1], FoldDir.IN_BOUND)
-
-        # # there exists some free indices are not merged
-        # for ind in self._data_tensor.free_indices():
-        #     found = False
-        #     for mop in merge_ops:
-        #         if ind in mop.indices:
-        #             found = True
-        #             break
-
-        #     if not found:
-        #         tt.backbone_nodes.append(tt.node_by_free_index(ind.name))
-
-        # # orthonormalize before proceeding
-        # if isinstance(tt, FoldedTensorTrain):
-        #     tt.orthonormalize(tt.backbone_nodes[0])
-        # else:
-        #     tt.orthonormalize(list(tt.network.nodes)[0])
-
-        # logger.debug("norm before reordering: %s", self._data_tensor.norm() ** 2)
-        # logger.debug("norm after reordering: %s", tt.norm() ** 2)
-        self._data_tensor = tt
-
-    def _cross_to_ftt(self, merge_ops: Sequence[IndexMerge]):
-        """Handle index merging during preprocessing for cross results."""
-        # after we know how indices are merged, we create a permuted function
-        new_indices = []
-        for mop in merge_ops:
-            new_indices.append(mop.indices)
-
-        # there exists some free indices are not merged
-        for ind in self._data_tensor.free_indices():
-            found = False
-            for mop in merge_ops:
-                if ind in mop.indices:
-                    found = True
-                    break
-
-            if not found:
-                new_indices.append([ind])
-
-        tt = FoldedTensorTrain.rand_ftt(new_indices)
-        finds = [
-            ind.with_new_rng(range(ind.size)) for ind in tt.free_indices()
-        ]
-        func = FuncTensorNetwork(finds, self._data_tensor)
-        cross(
-            func,
-            tt,
-            tt.backbone_nodes[0],
-            eps=self.config.engine.eps,
-            max_iters=100,
-            kickrank=1,
-        )
-
-        # orthonormalize before proceeding
-        if isinstance(tt, FoldedTensorTrain):
-            tt.orthonormalize(tt.backbone_nodes[0])
-        else:
-            tt.orthonormalize(list(tt.network.nodes)[0])
-
-        self._data_tensor = tt
-
-    def _cross_to_tucker(self, merge_ops: Sequence[IndexMerge]):
-        """Handle index merging during preprocessing for cross results."""
-        # after we know how indices are merged, we create a permuted function
-        new_indices = []
-        for mop in merge_ops:
-            new_indices.append(mop.indices)
-
-        # there exists some free indices are not merged
-        for ind in self._data_tensor.free_indices():
-            found = False
-            for mop in merge_ops:
-                if ind in mop.indices:
-                    found = True
-                    break
-
-            if not found:
-                new_indices.append([ind])
-
-        ftucker = TreeNetwork()
-        root_inds = [Index(f"root_{i}", 1) for i in range(len(new_indices))]
-        root_size = [1] * len(new_indices)
-        ftucker.add_node("root", Tensor(np.empty(root_size), root_inds))
-        for group_idx, ind_group in enumerate(new_indices):
-            for ind_idx, ind in enumerate(ind_group):
-                indices = [ind]
-                if ind_idx != 0:
-                    indices.append(Index(f"s_{group_idx}_{ind_idx - 1}", 1))
-
-                if ind_idx != len(ind_group) - 1:
-                    indices.append(Index(f"s_{group_idx}_{ind_idx}", 1))
-                else:
-                    indices.append(Index(f"root_{group_idx}", 1))
-
-                node_size = [i.size for i in indices]
-                node_tensor = Tensor(np.empty(node_size), indices)
-                ftucker.add_node(f"n_{group_idx}_{ind_idx}", node_tensor)
-
-                if ind_idx != 0:
-                    ftucker.add_edge(
-                        f"n_{group_idx}_{ind_idx - 1}",
-                        f"n_{group_idx}_{ind_idx}",
-                    )
-
-                if ind_idx == len(ind_group) - 1:
-                    ftucker.add_edge(f"n_{group_idx}_{ind_idx}", "root")
-
-        # ftucker.draw()
-        # import matplotlib.pyplot as plt
-        # plt.show()
-
-        finds = [
-            ind.with_new_rng(range(ind.size)) for ind in ftucker.free_indices()
-        ]
-        func = FuncTensorNetwork(finds, self._data_tensor)
-
-        cross_start = time.time()
-        cross(
-            func,
-            ftucker,
-            "root",
-            eps=self.config.engine.eps,
-            max_iters=100,
-            kickrank=5,
-        )
-        logger.debug("cross ftucker time: %s", time.time() - cross_start)
-
-        print(ftucker)
-
-        # # orthonormalize before proceeding
-        # if isinstance(tt, FoldedTensorTrain):
-        #     tt.orthonormalize(tt.backbone_nodes[0])
-        # else:
-        #     tt.orthonormalize(list(tt.network.nodes)[0])
-
-        # self._data_tensor = tt
-
-    # def _preprocess_ftt(self, data_tensor: FoldedTensorTrain) -> FoldedTensorTrain:
-    #     data_tensor.orthonormalize(data_tensor.backbone_nodes[0])
-    #     return data_tensor
+            best_costs = [self._data_tensor.cost()]
+        return self.get_cost(st, best_costs)
 
     def preprocess(
         self,
@@ -639,17 +416,13 @@ class PartitionSearch(SearchAlgo):
         )
         self.constraint_engine.delta = self._delta
 
-        # transform_start = time.time()
-        # if isinstance(self._data_tensor, TensorTrain):
-        #     if self.config.cross.init_struct == "ftt":
-        #         self._cross_to_ftt(merge_ops)
-        #     else:
-        #         self._cross_to_tt_to_ftt(merge_ops, ind_splits)
-        # self.stats.merge_transform_time = time.time() - transform_start
+        if self.config.synthesizer.algo == config.SearchAlgo.RANDOM:
+            empty_net = TreeNetwork()
+            empty_net.add_node(
+                "G", Tensor(np.empty(0), self._data_tensor.free_indices())
+            )
+            self._replay_from = self._random_actions(empty_net, merge_ops, exclusions)
 
-        # print(data_tensor)
-        # if isinstance(data_tensor, FoldedTensorTrain):
-        #     data_tensor = self._preprocess_ftt(data_tensor)
         preprocess_start = time.time()
         self.preprocess(merge_ops, exclusions)
         self.stats.preprocess_time = time.time() - preprocess_start
