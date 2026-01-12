@@ -24,6 +24,7 @@ logger.setLevel(logging.INFO)
 
 def eff_rank(svals: np.ndarray):
     s = svals ** 2
+    s = s[s > 1e-10]
     p = s / s.sum()
     return np.exp(-np.sum(p * np.log(p)))
 
@@ -316,6 +317,15 @@ class SVDIndexCluster(IndexCluster):
                     comb_corr[tuple(ac.indices)] = eff_rank(svals) #svals[0] / svals[1]
                 else:
                     comb_corr[tuple(ac.indices)] = 1
+
+                logger.debug(
+                    "indices: %s, eff rank: %s, norm: %s, svals: %s, score: %s",
+                    ac.indices,
+                    eff_rank(svals),
+                    sum(svals**2),
+                    svals,
+                    comb_corr[tuple(ac.indices)],
+                )
 
         return comb_corr
 

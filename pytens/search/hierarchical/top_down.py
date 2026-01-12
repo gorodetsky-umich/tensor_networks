@@ -568,15 +568,14 @@ class TopDownSearch:
         )
         if (
             not self.config.cross.init_cross
-            or len(st.network.network.nodes)
-            > self.config.sweep.subnet_size
+            or len(st.network.network.nodes) > 7
         ):
             logger.debug(
                 "running sweep with iterations %s", self.config.sweep.max_iters
             )
             config = copy.deepcopy(self.config)
             config.sweep.subnet_size = math.ceil(config.sweep.subnet_size / 2)
-            config.sweep.max_iters += 2
+            config.sweep.max_iters += 3
             logger.debug("current free indices: %s", st.free_indices)
             sweep = RandomStructureSweep(
                 config, copy.deepcopy(st.network), st.free_indices
@@ -651,6 +650,7 @@ class TopDownSearch:
         for split_op in reversed(split_ops):
             tmp_bn.split_index(split_op)
         after_split = tmp_bn.free_indices()
+        del tmp_bn
 
         if self.config.synthesizer.replay_from is None:
             # save the splits and actions at the current level
@@ -688,7 +688,7 @@ class TopDownSearch:
             result.unused_delta**2,
         )
 
-        next_nets = self._get_next_nets(bn)
+        next_nets = self._get_next_nets(bn, best_st.free_indices)
         unused_delta = tmp_st.unused_delta + result.unused_delta**2
         if sorted(before_split) == sorted(after_split) and len(next_nets) == 1:
             best_st.unused_delta = unused_delta + remaining_delta**2
@@ -733,7 +733,7 @@ class TopDownSearch:
     def _preprocess(self, net: TreeNetwork) -> TreeNetwork:
         return net
 
-    def _get_next_nets(self, best_net: TreeNetwork) -> List[TreeNetwork]:
+    def _get_next_nets(self, best_net: TreeNetwork, free_indices: Sequence[Index]) -> List[TreeNetwork]:
         """Get the next level nodes to optimize"""
         subgraph_nodes = DisjointSet()
         for node in best_net.network.nodes:
@@ -744,7 +744,6 @@ class TopDownSearch:
         #         subgraph_nodes.union(*ac.reverse_edge)
 
         subnets = []
-        free_indices = best_net.free_indices()
 
         def _group_size(xs):
             # it is safer if we sort by free indices
@@ -756,6 +755,7 @@ class TopDownSearch:
                         free_inds.append(ind)
                         ind_size *= ind.size
 
+            logger.debug(free_indices)
             return (ind_size, sorted(free_inds))
 
         for group in sorted(subgraph_nodes.groups().values(), key=_group_size):

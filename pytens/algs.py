@@ -53,6 +53,7 @@ from pytens.utils import delta_svd
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 @dataclass  # (frozen=True, eq=True)
 class Tensor:
     """Base class for a tensor."""
@@ -949,7 +950,7 @@ class TensorNetwork:  # pylint: disable=R0904
 
     def fresh_names(
         self, used_nodes: Sequence[NodeName], used_indices: Sequence[IndexName]
-    ):
+    ) -> Tuple[dict, dict]:
         """Create fresh node and index names"""
         node_subst = {}
         free_inds = self.free_indices()
@@ -970,6 +971,7 @@ class TensorNetwork:  # pylint: disable=R0904
             self.set_node_tensor(n, new_tensor)
 
         self.network = nx.relabel_nodes(self.network, node_subst, copy=True)
+        return node_subst, index_subst
 
     @profile
     def evaluate(
@@ -2399,7 +2401,9 @@ class TreeNetwork(TensorNetwork):
         # print(svd_ls, svd_rs, perm)
         # print(tensor.value.shape)
         tensor_val = tensor.value.transpose(perm).reshape(int(lsize), -1)
-        _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
+        _, s, _ = randomized_svd(
+            tensor_val, max_rank, random_state=random_seed
+        )
         return s
 
     def _check_indices(
@@ -2507,7 +2511,9 @@ class TreeNetwork(TensorNetwork):
         # print(tensor.value.shape)
         tensor_val = tensor.value.transpose(perm).reshape(int(lsize), -1)
         if rand:
-            _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
+            _, s, _ = randomized_svd(
+                tensor_val, max_rank, random_state=random_seed
+            )
         else:
             s = np.linalg.svdvals(tensor_val)
 
@@ -2550,7 +2556,9 @@ class TreeNetwork(TensorNetwork):
         if max_rank < 10:
             return delta_svd(tensor_val, delta=0, compute_uv=False).s
 
-        _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
+        _, s, _ = randomized_svd(
+            tensor_val, max_rank, random_state=random_seed
+        )
         return s
 
     @profile
@@ -2771,7 +2779,7 @@ class TreeNetwork(TensorNetwork):
         kickrank: int = 2,
     ) -> Tuple[bool, "TensorTrain"]:
         """
-        Reorder the tensor train so that the given indices are adjacent 
+        Reorder the tensor train so that the given indices are adjacent
         using cross approximation.
         """
         assert all(ind in self.free_indices() for ind in indices), (
@@ -2984,52 +2992,118 @@ class HierarchicalTucker(TreeNetwork):
 
         return subnet
 
-    # @profile
-    # def svals(
-    #     self,
-    #     indices: Sequence[Index],
-    #     max_rank: int = 100,
-    #     orthonormal: Optional[NodeName] = None,
-    #     delta: float = 0,
-    # ) -> np.ndarray:
-    #     """Compute the singular values for a hierarchical tucker."""
-    #     # print(indices)
-    #     net = self.move_to(indices, delta=delta)
-    #     dim_tree = net.dimension_tree(net.root())
-    #     frontier_nodes = dim_tree.highest_frontier(indices)
-    #     # print("after move")
-    #     # print(self)
-    #     # print(frontier_nodes)
-    #     assert len(frontier_nodes) == 1, "more than one node after swapping"
+    @staticmethod
+    def ht_svd(
+        data: np.ndarray, free_inds: Sequence[Index], eps: float
+    ) -> "HierarchicalTucker":
+        """Create a hierarchical tucker for the given data using SVD."""
 
-    #     svd_node = frontier_nodes[0]
+        ht = HierarchicalTucker()
+        delta = np.linalg.norm(data) * eps / np.sqrt(2 * len(data.shape) - 3)
 
-    #     if orthonormal is None:
-    #         net.orthonormalize(svd_node.node)
+        ind_sizes = [ind.size for ind in free_inds]
+        assert data.shape == tuple(ind_sizes)
 
-    #     tensor = net.node_tensor(svd_node.node)
-    #     svd_node_inds = tensor.indices
+        # first, build the dimension trees
+        layer = [free_inds]
+        layers = [layer]
+        while not all(len(ind_group) <= 1 for ind_group in layers[-1]):
+            layer = []
+            for ind_group in layers[-1]:
+                if len(ind_group) > 1:
+                    mid = len(ind_group) // 2
+                    layer.append(ind_group[:mid])
+                    layer.append(ind_group[mid:])
+                else:
+                    layer.append([])
 
-    #     svd_inds = []
-    #     for n in svd_node.down_info.nodes:
-    #         svd_inds.extend(net.get_contraction_index(svd_node.node, n.node))
+            layers.append(layer)
 
-    #     free_inds = net.free_indices()
-    #     for ind in svd_node_inds:
-    #         if ind in free_inds:
-    #             svd_inds.append(ind)
+        # from leaves to root
+        leaf_inds = list(free_inds)[:]
+        for level, layer in enumerate(layers[1:][::-1]):
+            i = 0
+            ind_cnt = 0
+            leaf_inds_copy = leaf_inds[:]
+            for i, inds in enumerate(layer):
+                if len(inds) == 0:
+                    ind_cnt += 1
+                    continue
+            
+                if len(inds) == 1:
+                    curr_data = np.moveaxis(data, ind_cnt, 0)
+                    res = delta_svd(
+                        curr_data.reshape(inds[0].size, -1), delta=delta
+                    )
+                    assert res.u is not None
+                    leaf_ind = Index(f"s_{level}_{i}", res.u.shape[1])
+                    ht.add_node(
+                        f"n_{level}_{i}",
+                        Tensor(res.u, [inds[0], leaf_ind]),
+                    )
+                    data = np.einsum("a...,ab->...b", curr_data, res.u)
+                    data = np.moveaxis(data, -1, i)
 
-    #     tensor = net.node_tensor(svd_node.node)
-    #     svd_node_inds = tensor.indices
-    #     svd_ls = [svd_node_inds.index(ind) for ind in svd_inds]
-    #     svd_rs = [i for i in range(len(tensor.indices)) if i not in svd_ls]
-    #     lsize = np.prod([ind.size for ind in svd_inds])
-    #     perm = svd_ls + svd_rs
-    #     # print(svd_ls, svd_rs, perm)
-    #     # print(tensor.value.shape)
-    #     tensor_val = tensor.value.transpose(perm).reshape(int(lsize), -1)
-    #     _, s, _ = randomized_svd(tensor_val, max_rank)
-    #     return s
+                    ind_pos = leaf_inds.index(inds[0])
+                    leaf_inds.pop(ind_pos)
+                    leaf_inds.insert(ind_pos, leaf_ind)
+                    ind_cnt += 1
+                else:
+                    # build transition nodes
+                    # take two leaf inds and make the reshape
+                    left_size = leaf_inds[ind_cnt].size * leaf_inds[ind_cnt + 1].size
+                    curr_data = np.moveaxis(
+                        data, [ind_cnt, ind_cnt + 1], [0, 1]
+                    )
+                    res = delta_svd(
+                        curr_data.reshape(left_size, -1), delta=delta
+                    )
+                    assert res.u is not None
+                    leaf_ind = Index(f"s_{level}_{i}", res.u.shape[1])
+                    ht.add_node(
+                        f"n_{level}_{i}",
+                        Tensor(
+                            res.u.reshape(
+                                leaf_inds[ind_cnt].size,
+                                leaf_inds[ind_cnt + 1].size,
+                                res.u.shape[1],
+                            ),
+                            [
+                                leaf_inds[ind_cnt],
+                                leaf_inds[ind_cnt + 1],
+                                leaf_ind,
+                            ],
+                        ),
+                    )
+                    data = np.einsum(
+                        "a...,ab->...b",
+                        curr_data.reshape(left_size, *curr_data.shape[2:]),
+                        res.u,
+                    )
+                    data = np.moveaxis(data, -1, i)
+                    
+                    ht.add_edge(
+                        f"n_{level}_{i}", f"n_{level - 1}_{leaf_inds_copy.index(leaf_inds[ind_cnt])}"
+                    )
+                    ht.add_edge(
+                        f"n_{level}_{i}",
+                        f"n_{level - 1}_{leaf_inds_copy.index(leaf_inds[ind_cnt + 1])}",
+                    )
+                    
+                    leaf_inds.pop(ind_cnt)
+                    leaf_inds.pop(ind_cnt)
+                    leaf_inds.insert(ind_cnt, leaf_ind)
+                    
+
+                    ind_cnt += 1
+
+        ht.add_node("root", Tensor(data, [leaf_inds[0], leaf_inds[1]]))
+
+        if len(layers) > 1:
+            ht.add_edge("root", f"n_{len(layers) - 2}_0")
+            ht.add_edge("root", f"n_{len(layers) - 2}_1")
+
+        return ht
 
 
 class FoldedTensorTrain(TreeNetwork):
@@ -3907,12 +3981,18 @@ class TensorTrain(TreeNetwork):
         # if max_rank < 10:
         #     return delta_svd(tensor_val, delta=0, compute_uv=False).s
 
-        _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
+        _, s, _ = randomized_svd(
+            tensor_val, max_rank, random_state=random_seed
+        )
         return s
 
     @profile
     def svals_by_merge(
-        self, indices: Sequence[Index], max_rank: int = 100, rand: bool = True, random_seed: int = 42
+        self,
+        indices: Sequence[Index],
+        max_rank: int = 100,
+        rand: bool = True,
+        random_seed: int = 42,
     ) -> np.ndarray:
         """Compute the singular values for a tensor train."""
         ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
@@ -3940,7 +4020,9 @@ class TensorTrain(TreeNetwork):
         tensor_val = self.node_tensor(n).value
         tensor_val = tensor_val.transpose(perm).reshape(left_size, -1)
         if rand:
-            _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
+            _, s, _ = randomized_svd(
+                tensor_val, max_rank, random_state=random_seed
+            )
         else:
             s = np.linalg.svdvals(tensor_val)
         return s
@@ -4030,7 +4112,9 @@ class TensorTrain(TreeNetwork):
         left = tensor.indices.index(left_ind)
         perm = [left] + [i for i in range(len(tensor.indices)) if i != left]
         tensor_val = tensor.value.transpose(perm).reshape(left_ind.size, -1)
-        _, s, _ = randomized_svd(tensor_val, max_rank, random_state=random_seed)
+        _, s, _ = randomized_svd(
+            tensor_val, max_rank, random_state=random_seed
+        )
         return s
         # (_, s, _), _ = self.svd(node1, [left], SVDConfig(delta=0, compute_uv=False))
         # return np.diag(self.node_tensor(s).value)
