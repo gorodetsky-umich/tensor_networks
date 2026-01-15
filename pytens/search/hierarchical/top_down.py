@@ -960,7 +960,7 @@ class TopDownSearch:
 
         maxs = []
         for ind in indices:
-            if ind in st.free_indices:
+            if ind in st.free_indices and ind.name not in self.config.topdown.disable_reshape:
                 factors = sympy.factorint(ind.size)
                 maxs.append(sum(factors.values()) - 1)
             else:

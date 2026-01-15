@@ -1,6 +1,6 @@
 """Configuration fields for the structure search process."""
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Sequence
 from enum import Enum, auto
 
 import pydantic
@@ -261,6 +261,10 @@ class TopDownConfig(pydantic.BaseModel):
     alpha: float = pydantic.Field(
         default=10,
         description="Configure the error distribution between steps",
+    )
+    disable_reshape: Sequence[str] = pydantic.Field(
+        default=[],
+        description="List of modes to disable reshaping for",
     )
 
 
