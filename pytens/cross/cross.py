@@ -18,9 +18,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 import pytens.algs as pt
-from pytens.cross.funcs import TensorFunc, PermuteFunc
+from pytens.cross.funcs import TensorFunc
 from pytens.types import DimTreeNode
-from pytens.logger import *
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -436,14 +435,117 @@ class CrossApproximation:
             trial += 1
             self._incr_ranks(tree, known=known)
 
-        # print("evaluate time:", time.time() - eval_start)
-        # logger.debug("%s", net)
-        # print(estimate.shape, real.shape)
-        err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
-        ranks_and_errs[len(up_vals)] = err
-        logger.debug("step: %s, error: %s", trial, err)
-        # import sys
-        # sys.stdout.flush()
+        return ind, b
+
+    @profile
+    def _root_to_leaves(self, node: DimTreeNode) -> None:
+        """Update the indices by propagating info from root to leaves."""
+        down_ranges = []
+
+        # the indices in the DimTreeNode are up indices
+        # when traversing from root to leaves, we need to consider
+        # the down indices of the root and the up indices of the siblings
+        if len(node.up_info.nodes) > 0:
+            p = node.up_info.nodes[0]
+            for ind in node.down_info.indices:
+                if ind in p.free_indices:
+                    down_ranges.append(np.arange(ind.size)[:, None])
+
+            if len(p.up_info.nodes) > 0:
+                down_ranges.append(p.down_info.vals)
+
+            for c in p.down_info.nodes:
+                if c.node != node.node:
+                    down_ranges.append(c.up_info.vals)
+
+            down_vals = _cartesian_product_arrays(*down_ranges)
+            # print(
+            #     (node.up_info.indices, node.up_info.vals),
+            #     (node.down_info.indices, down_vals),
+            # )
+            v = self._construct_matrix(
+                (node.up_info.indices, node.up_info.vals),
+                (node.down_info.indices, down_vals),
+            )
+
+            ind, _ = self._select_indices(v)
+            # print(ind)
+            node.down_info.vals = down_vals[ind, :]
+            node.down_info.rank = len(ind)
+
+    @profile
+    def _leaves_to_root(
+        self, node: DimTreeNode, net: "pt.TreeNetwork"
+    ) -> None:
+        """Update the down index values by sweeping from leaves to the root."""
+        up_ranges, up_sizes = [], []
+
+        for ind in node.up_info.indices:
+            if ind in node.free_indices:
+                up_sizes.append(ind.size)
+                up_ranges.append(np.arange(ind.size)[:, None])
+
+        for c in sorted(node.down_info.nodes):
+            up_sizes.append(len(c.up_info.vals))
+            up_ranges.append(c.up_info.vals)
+
+        up_vals = _cartesian_product_arrays(*up_ranges)
+        v = self._construct_matrix(
+            (node.down_info.indices, node.down_info.vals),
+            (node.up_info.indices, up_vals),
+        )
+        ind, b = self._select_indices(v)
+        # print(ind)
+        node.up_info.vals = up_vals[ind, :]
+        node.up_info.rank = len(ind)
+        # print("====>", node.values.up_vals)
+        net.node_tensor(node.node).update_val_size(b.reshape(*up_sizes, -1))
+
+    def _incr_ranks(
+        self, tree: DimTreeNode, known: Optional[np.ndarray] = None
+    ) -> None:
+        """Increment the ranks for all edges"""
+        # compute the target size of ranks
+        tree.increment_ranks(self._config.kickrank, self._config.max_rank)
+        logger.debug("after increment %s", tree.ranks())
+        new_ranks = tree.ranks()
+        old_ranks = None
+        while new_ranks != old_ranks:
+            tree.bound_ranks()
+            logger.debug("after bounding %s", tree.ranks())
+            old_ranks = new_ranks
+            new_ranks = tree.ranks()
+
+        if known is None:
+            up_vals = [
+                np.random.randint(0, ind.size, [self._config.kickrank, 1])
+                for ind in tree.indices
+            ]
+            up_vals = np.concatenate(up_vals, axis=-1)
+        else:
+            up_vals = known[
+                np.random.randint(
+                    0,
+                    len(known),
+                    [
+                        self._config.kickrank,
+                    ],
+                )
+            ]
+        tree.add_values(up_vals)
+
+    @profile
+    def cross(
+        self,
+        net: "pt.TreeNetwork",
+        root: "pt.NodeName",
+        validation: Optional[np.ndarray] = None,
+        eps: float = 0.1,
+        initialization: Optional[np.ndarray] = None,
+        known: Optional[np.ndarray] = None,
+    ) -> CrossResult:
+        """Cross approximation for the given network structure."""
+        # print("root is", root)
         # print(net)
         ranks_and_errs = list(sorted(list(ranks_and_errs.items())))
         # print(ranks_and_errs)

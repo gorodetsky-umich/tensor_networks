@@ -4,7 +4,6 @@ import atexit
 import copy
 import heapq
 import logging
-import math
 import random
 import time
 from typing import List, Optional, Sequence
@@ -12,14 +11,11 @@ from typing import List, Optional, Sequence
 import numpy as np
 from line_profiler import profile
 
-from pytens.algs import FoldedTensorTrain, Tensor, TensorTrain, TreeNetwork
-from pytens.cross.cross import cross
-from pytens.cross.funcs import FuncTensorNetwork
+from pytens.algs import Tensor, TreeNetwork
 from pytens.search.algs.base import SearchAlgo
-from pytens.search.configuration import ReorderAlgo, SearchConfig
+from pytens.search.configuration import SearchConfig
 import pytens.search.configuration as config
-from pytens.search.constraint import ConstraintSearch, BAD_SCORE
-from pytens.search.hierarchical.index_cluster import RandomIndexCluster
+from pytens.search.constraint import ConstraintSearch
 from pytens.search.state import Action, ISplit, OSplit, SearchState
 from pytens.search.utils import (
     DataTensor,
