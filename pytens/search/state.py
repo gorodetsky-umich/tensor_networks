@@ -187,8 +187,9 @@ class OSplit(Action):
             logger.debug("computing singular values for a folded tensor train")
             return net.svals(self.indices, max_rank=max_rank, rand=rand)
 
-        ac = self.to_isplit(net)
-        return ac.svals(net, svd)
+        # ac = self.to_isplit(net)
+        # return ac.svals(net, svd)
+        return net.svals_by_merge(self.indices, max_rank=max_rank, rand=rand)
 
 
 class ISplit(Action):

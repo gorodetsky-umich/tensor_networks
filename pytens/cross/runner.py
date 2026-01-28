@@ -14,7 +14,7 @@ from pytens.algs import (
     TensorTrain,
     TreeNetwork,
 )
-from pytens.cross.cross import cross
+from pytens.cross.cross import CrossApproximation, CrossConfig
 from pytens.cross.funcs import TensorFunc
 from pytens.search.hierarchical.utils import tntorch_to_tt, tntorch_wrapper
 from pytens.types import Index
@@ -43,7 +43,9 @@ class TTCrossRunner(CrossRunner):
     ) -> TensorTrain:
         indices = f.indices[:]
         net = TensorTrain.rand_tt(indices)
-        cross(f, net, net.end_nodes()[0], validation, eps=eps, kickrank=kickrank)
+        cross_config = CrossConfig(kickrank=kickrank)
+        cross_engine = CrossApproximation(f, cross_config)
+        cross_engine.cross(net, net.end_nodes()[0], validation, eps=eps)
         return net
 
 
@@ -83,7 +85,9 @@ class HTCrossRunner(CrossRunner):
         validation: Optional[np.ndarray] = None,
     ) -> HierarchicalTucker:
         net = HierarchicalTucker.rand_ht(f.indices, 1)
-        cross(f, net, net.root(), validation, eps=eps, kickrank=kickrank)
+        cross_config = CrossConfig(kickrank=kickrank)
+        cross_engine = CrossApproximation(f, cross_config)
+        cross_engine.cross(net, net.end_nodes()[0], validation, eps=eps)
         return net
 
 class TuckerCrossRunner(CrossRunner):
@@ -100,7 +104,9 @@ class TuckerCrossRunner(CrossRunner):
             tucker.add_node(f"G{i}", Tensor(tensor_val, tensor_inds))
             tucker.add_edge(f"G{i}", "root")
 
-        cross(f, tucker, "root", validation, eps=eps, kickrank=kickrank)
+        cross_config = CrossConfig(kickrank=kickrank)
+        cross_engine = CrossApproximation(f, cross_config)
+        cross_engine.cross(tucker, "root", validation, eps=eps)
         return tucker
 
 class FTTCrossRunner(CrossRunner):
@@ -121,12 +127,7 @@ class FTTCrossRunner(CrossRunner):
             grouped_inds.append(inds[i:i+group_size])
             i += group_size
         net = FoldedTensorTrain.rand_ftt(grouped_inds)
-        cross(
-            f,
-            net,
-            net.backbone_nodes[0],
-            validation,
-            eps=eps,
-            kickrank=kickrank,
-        )
+        cross_config = CrossConfig(kickrank=kickrank)
+        cross_engine = CrossApproximation(f, cross_config)
+        cross_engine.cross(net, net.backbone_nodes[0], validation, eps=eps)
         return net

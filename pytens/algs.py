@@ -29,9 +29,8 @@ import opt_einsum as oe
 from line_profiler import profile
 from sklearn.utils.extmath import randomized_svd
 
-from pytens.cross.cross import CrossResult, cross
-from pytens.cross.funcs import FuncTensorNetwork, TensorFunc
-from pytens.logger import *
+from pytens.cross.cross import CrossApproximation, CrossConfig
+from pytens.cross.funcs import FuncTensorNetwork
 from pytens.search.types import Action
 from pytens.types import (
     DimTreeNode,
@@ -1072,7 +1071,7 @@ class TensorNetwork:  # pylint: disable=R0904
                 node_strs.append(node_str)
 
             estr = ",".join(node_strs) + "->" + ind_mapping[batch_ind]
-            logger.trace(
+            logger.debug(
                 "contraction args: %s, shapes: %s",
                 estr,
                 [n.shape for n in node_vals],
@@ -1575,69 +1574,6 @@ class TreeNetwork(TensorNetwork):
 
         return _postorder(root)
 
-    def leaf_indices(
-        self,
-        visited: Set[NodeName],
-        node_name: NodeName,
-        cut: Set[IndexName] = set(),
-    ) -> List:
-        """Get all leaf indices for the subtree rooted at the given node."""
-        indices = self.node_tensor(node_name).indices
-        perm = []
-        leaves = []
-        visited.add(node_name)
-
-        # free indices are added first
-        if len(visited) != 1:
-            for i, ind in enumerate(indices):
-                if ind in self.free_indices():
-                    leaves.append([ind])
-                    perm.append(i)
-
-        for n in self.network.neighbors(node_name):
-            if n in visited:
-                continue
-
-            if self.get_contraction_index(n, node_name)[0].name in cut:
-                continue
-
-            leaves.append(self.leaf_indices(visited, n))
-            common_index = self.get_contraction_index(n, node_name)
-            assert len(common_index) == 1
-            perm.append(indices.index(common_index[0]))
-
-        # reorder the leaves according to the order of the indices
-        return [leaves[i] for i in np.argsort(perm)]
-
-    def cross(
-        self,
-        tensor_func: TensorFunc,
-        eps: Optional[float] = None,
-        kickrank: int = 2,
-    ) -> CrossResult:
-        """Run cross approximation over the current network structure
-        until the relative error goes below the prescribed epsilon."""
-        root = None
-        free_indices = self.free_indices()
-        for node in self.network.nodes:
-            if root is None:
-                root = node
-                continue
-
-            root_free = 1
-            for ind in self.node_tensor(root).indices:
-                if ind in free_indices:
-                    root_free *= ind.size
-
-            node_free = 1
-            for ind in self.node_tensor(node).indices:
-                if ind in free_indices:
-                    node_free *= ind.size
-
-            if node_free > root_free:
-                root = node
-
-        return cross(tensor_func, self, root, eps, kickrank=kickrank)
 
     def node_by_free_index(self, index: IndexName) -> NodeName:
         """Identify the node in the network containing the given free index"""
@@ -1837,11 +1773,12 @@ class TreeNetwork(TensorNetwork):
 
     @profile
     def swap(
-        self, ind_nodes: Sequence[NodeName], delta: float = 0
+        self, ind_nodes: Sequence[NodeName], delta: float = 0, anchor: Optional[NodeName] = None
     ) -> Tuple[NodeName, NodeName]:
         """Swap the indices so that the target indices are adjacent."""
         ind_nodes = list(set(ind_nodes))
-        anchor, _ = self.best_anchor(ind_nodes)
+        if anchor is None:
+            anchor, _ = self.best_anchor(ind_nodes)
         self.node_status = {}
         self.node_status[anchor] = NodeStatus.CONFIRMED
         for node in ind_nodes:
@@ -1852,11 +1789,26 @@ class TreeNetwork(TensorNetwork):
         return self._max_dist_nodes(ind_nodes, anchor)
 
     @profile
+    def move_index(self, ind1: Index, ind2: Index):
+        """Move ind1 to the neighborhood of ind2"""
+        node1 = self.node_by_free_index(ind1.name)
+        node2 = self.node_by_free_index(ind2.name)
+        if node1 == node2:
+            return
+
+        path = nx.shortest_path(self.network, node1, node2)
+        for n in path[1:]:
+            swapping_ind = None if n != node2 else ind2
+            self.swap_nbr(path, node1, n, ind1, swapping_ind)
+
+    @profile
     def swap_nbr(
         self,
         path: Sequence[NodeName],
         node1: NodeName,
         node2: NodeName,
+        ind1: Optional[Index] = None,
+        ind2: Optional[Index] = None,
     ):
         """Swap two neighbor nodes."""
         common_ind = self.get_contraction_index(node1, node2)[0]
@@ -1864,13 +1816,13 @@ class TreeNetwork(TensorNetwork):
 
         # Collect indices from node1 that should be kept
         for ind in self.node_tensor(node1).indices:
-            if self._should_keep_index_from_left(path, common_ind, ind, node1):
+            if self._should_keep_index_from_left(path, common_ind, ind, node1, ind1):
                 node_indices.append(ind)
 
         # Collect indices from node2 that should be kept
         for ind in self.node_tensor(node2).indices:
             if self._should_keep_index_from_right(
-                path, common_ind, ind, node2
+                path, common_ind, ind, node2, ind2
             ):
                 node_indices.append(ind)
 
@@ -1999,9 +1951,10 @@ class TreeNetwork(TensorNetwork):
         common_ind: Index,
         ind: Index,
         node: NodeName,
+        swapping_ind: Optional[Index] = None,
     ) -> bool:
         """Determine if an index from the left should be kept during swap."""
-        if ind == common_ind or ind in self.free_indices():
+        if ind == common_ind or (swapping_ind is None and ind in self.free_indices()) or (swapping_ind is not None and ind == swapping_ind):
             return False
 
         if self._index_appears_on_path(ind, path):
@@ -2022,9 +1975,10 @@ class TreeNetwork(TensorNetwork):
         common_ind: Index,
         ind: Index,
         node: NodeName,
+        swapping_ind: Optional[Index] = None,
     ) -> bool:
         """Determine if an index from the right should be kept during swap."""
-        if ind in self.free_indices():
+        if (swapping_ind is None and ind in self.free_indices()) or (swapping_ind is not None and ind == swapping_ind):
             return True
 
         for nbr in self.network.neighbors(node):
@@ -2561,49 +2515,6 @@ class TreeNetwork(TensorNetwork):
         )
         return s
 
-    @profile
-    def evaluate_cross(
-        self, indices: Sequence[Index], values: np.ndarray
-    ) -> np.ndarray:
-        # contract the whole parts without the free indices
-        # include_nodes, exclude_nodes = [], []
-        # free_indices = self.free_indices()
-        # for n in self.network.nodes:
-        #     n_indices = self.node_tensor(n).indices
-        #     if any(ind in free_indices for ind in n_indices):
-        #         exclude_nodes.append(n)
-        #     else:
-        #         include_nodes.append(n)
-
-        # subnet = nx.subgraph(self.network, include_nodes).copy()
-        # top_net = HierarchicalTucker()
-        # top_net.network = subnet
-        # import time
-        # top_start = time.time()
-        # top_core = top_net.contract()
-        # print("contract top time:", time.time() - top_start)
-
-        # whole_net = TreeNetwork()
-        # top_root = top_net.root()
-        # whole_net.add_node(top_root, top_core)
-        # for n in exclude_nodes:
-        #     whole_net.add_node(n, self.node_tensor(n))
-        #     whole_net.add_edge(n, top_root)
-
-        # whole_start = time.time()
-        # results = np.empty(values.shape[0])
-        # whole_inds = whole_net.free_indices()
-        # perm = [whole_inds.index(ind) for ind in indices]
-        # values = values[:, perm]
-        # whole_core = whole_net.contract().value
-        whole_core = self.contract().value
-        results = whole_core[*values.T]
-        # for i, v in enumerate(values):
-        #     results[i] = whole_net[v].value
-        # print("contract whole time:", time.time() - whole_start)
-
-        return results
-
     def replace_with(
         self,
         old_subnet: "TreeNetwork",
@@ -2711,14 +2622,9 @@ class TreeNetwork(TensorNetwork):
             inds = [ind.with_new_rng(range(ind.size)) for ind in target_inds]
             tt = TensorTrain.rand_tt(inds)
             func = FuncTensorNetwork(inds, self)
-            cross(
-                func,
-                tt,
-                tt.end_nodes()[0],
-                eps=eps,
-                max_iters=max_rank - 1,
-                kickrank=10,
-            )
+            cross_config = CrossConfig(kickrank=10, max_iters=max_rank - 1)
+            cross_engine = CrossApproximation(func, cross_config)
+            cross_engine.cross(tt, tt.end_nodes()[0], eps=eps)
             res = tt.partition_node(indices)
             return tt.svals_at(
                 res.lca_node, res.lca_indices, max_rank=max_rank
@@ -2752,8 +2658,14 @@ class TreeNetwork(TensorNetwork):
         )
 
     def end_nodes(self) -> List[NodeName]:
-        """Return the first node in the tree."""
-        return [list(self.network.nodes)[0]]
+        """Get the leaf nodes."""
+        # end node is the one with one neighbor or whose value is 2D
+        end_nodes: List[NodeName] = []
+        for node in self.network.nodes:
+            if len(list(self.network.neighbors(node))) <= 1:
+                end_nodes.append(node)
+
+        return end_nodes
 
     @profile
     def reorder_by_svd(
@@ -2798,19 +2710,59 @@ class TreeNetwork(TensorNetwork):
         logger.debug("maximum rank in the current tt: %s", max_rank)
         # adaptive_kickrank = max(5, max_rank)
         # print("adaptive kickrank:", adaptive_kickrank)
-        res = cross(
-            func,
-            tt,
-            tt.end_nodes()[0],
-            eps=eps,
-            max_iters=min(max_iters, max_rank // 2 + 5),
-            kickrank=kickrank,
-            max_rank=int(max_rank * 5),
-        )
+        cross_config = CrossConfig(kickrank=kickrank,max_iters=min(max_iters, max_rank // 2 + 5),
+            max_rank=int(max_rank * 5),)
+        cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(tt, tt.end_nodes()[0], eps=eps)
         if res.ranks_and_errors[-1][-1] < eps:
             return True, tt
 
         return False, tt
+
+    @profile
+    def svals_by_merge(
+        self,
+        indices: Sequence[Index],
+        max_rank: int = 100,
+        rand: bool = True,
+        random_seed: int = 42,
+    ) -> np.ndarray:
+        """Compute the singular values for a tensor train."""
+        ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
+        nodes = self.swap(ind_nodes)
+        if len(nodes) > 1:
+            ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
+            anchor, _ = self.best_anchor(ind_nodes)
+            for n in set(ind_nodes):
+                if n != anchor:
+                    self.merge(anchor, n)
+
+            n = anchor
+        else:
+            n = self.node_by_free_index(indices[0].name)
+
+        self.orthonormalize(n)
+
+        node_indices = self.node_tensor(n).indices
+        lefts = []
+        for i, ind in enumerate(node_indices):
+            if ind in indices:
+                lefts.append(i)
+
+        perm = lefts + [i for i in range(len(node_indices)) if i not in lefts]
+        left_size = np.prod([ind.size for ind in indices])
+        tensor_val = self.node_tensor(n).value
+        tensor_val = tensor_val.transpose(perm).reshape(left_size, -1)
+        if rand:
+            _, s, _ = randomized_svd(
+                tensor_val, max_rank, random_state=random_seed
+            )
+        else:
+            s = np.linalg.svdvals(tensor_val)
+        return s
+        # (_, s, _), _ = net.svd(n, lefts, SVDConfig(delta=0, compute_uv=False))
+        # return np.diag(net.node_tensor(s).value)
+
 
 
 class HierarchicalTucker(TreeNetwork):
@@ -3566,16 +3518,6 @@ class TensorTrain(TreeNetwork):
     #         anchor_pos + right_range - 1
     #     ]
 
-    def end_nodes(self) -> List[NodeName]:
-        """Get the nodes at the two ends of a tensor train."""
-        # end node is the one with one neighbor or whose value is 2D
-        end_nodes: List[NodeName] = []
-        for node in self.network.nodes:
-            if len(list(self.network.neighbors(node))) <= 1:
-                end_nodes.append(node)
-
-        return end_nodes
-
     @profile
     def swap_to_end(
         self,
@@ -4180,7 +4122,56 @@ class TensorTrain(TreeNetwork):
                 self.merge(nodes[ni + 1], r)
 
         return result
+    
+    @staticmethod
+    def is_valid_tt(net: TensorNetwork) -> bool:
+        """Check whether a given tensor train is valid"""
+        # nodes in a tensor train should be linearized
+        if len(net.free_indices()) != len(net.network.nodes):
+            return False
+        
+        #TODO: implement this logic
+        
+    def to_ht(self) -> HierarchicalTucker:
+        """Convert a tensor train to a hierarchical tucker"""
+        ht = HierarchicalTucker()
+        ht.network = copy.deepcopy(self.network)
+        
+        if len(self.network.nodes) == 1:
+            return ht
+    
+        ends = self.end_nodes()
+        assert len(ends) == 2
+        path = nx.shortest_path(self.network, ends[0], ends[1])
+        
+        def _to_ht(nodes, connecting_inds) -> NodeName:
+            # merge nodes by groups
+            if len(nodes) == 1:
+                return nodes[0]
 
+            if len(nodes) == 2:
+                rs = []
+                contract_edges = ht.get_contraction_index(nodes[0], nodes[1])
+                for n in nodes:
+                    n_indices = ht.node_tensor(n).indices
+                    split_pos = []
+                    for ind in n_indices:
+                        if ind not in connecting_inds and ind not in contract_edges:
+                            split_pos.append(n_indices.index(ind))
+                            
+                    _, r = ht.qr(n, split_pos)
+                    rs.append(r)
+                    
+                return ht.merge(rs[0], rs[1])
+            
+            contract_ind = ht.get_contraction_index(nodes[len(nodes)//2 - 1], nodes[len(nodes)//2])[0]
+            connecting_inds.append(contract_ind)
+            r1 = _to_ht(nodes[:len(nodes)//2], connecting_inds)
+            r2 = _to_ht(nodes[len(nodes)//2:], connecting_inds)
+            return _to_ht([r1, r2], connecting_inds)
+
+        _to_ht(path, [])
+        return ht
 
 class HTensorTrain(TensorTrain):
     """Hierarchical tensor trains."""

@@ -388,6 +388,7 @@ class TopDownSearch:
 
         st.network = best_net.compress()
         # print(st.replay_traces)
+        logger.debug("=======")
         return st
 
     @abstractmethod
@@ -476,8 +477,8 @@ class TopDownSearch:
         """Handle index merging during preprocessing for cross results."""
         transform_start = time.time()
 
-        if not isinstance(data_tensor, TensorTrain):
-            return True, data_tensor
+        # if not isinstance(data_tensor, TensorTrain):
+        #     return True, data_tensor
 
         # after we know how indices are merged, we create a permuted function
         new_indices = []
@@ -510,11 +511,64 @@ class TopDownSearch:
                 * 0.01,
             )
         else:
-            ok, tt = data_tensor.reorder_by_cross(
-                new_indices,
-                self.config.engine.eps * self.config.preprocess.reorder_eps,
-                kickrank=5,
-            )
+            # can we use cheaper computations?
+            # ok, tt = data_tensor.reorder_by_cross(
+            #     new_indices,
+            #     self.config.engine.eps * self.config.preprocess.reorder_eps,
+            #     kickrank=5,
+            # )
+            ok = True
+            # random sample points and evaluate the middle effective ranks
+            # sample a total of 10000 points
+            selected_inds = []
+            free_inds = data_tensor.free_indices()
+            for ind in free_inds:
+                selected_inds.append(np.random.randint(0, ind.size, size=(100,)))
+
+            # reorganize the values according to reordered indices
+            left_inds = new_indices[:len(new_indices)//2]
+            right_inds = new_indices[len(new_indices)//2:]
+            left_ind_vals = [ ]
+            left_ind_shape = []
+            for ind in left_inds:
+                idx = free_inds.index(ind)
+                left_ind_vals.append(selected_inds[idx])
+                left_ind_shape.append(data_tensor.shape()[idx])
+                
+            right_ind_vals = []
+            right_ind_shape = []
+            for ind in right_inds:
+                idx = free_inds.index(ind)
+                right_ind_vals.append(selected_inds[idx])
+                right_ind_shape.append(data_tensor.shape()[idx])
+            
+            left_ind_vals = np.stack(left_ind_vals, axis=-1)
+            right_ind_vals = np.stack(right_ind_vals, axis=-1)
+            # 1. Repeat each row of 'rows' N times (where N is the number of col samples)
+            # This gives: [[1,2,3], [1,2,3], [1,2,4], [1,2,4]]
+            left = np.repeat(left_ind_vals, len(right_ind_vals), axis=0)
+
+            # 2. Tile the entire 'cols' array M times (where M is the number of row samples)
+            # This gives: [[5,6,7], [5,6,8], [5,6,7], [5,6,8]]
+            right = np.tile(right_ind_vals, (len(left_ind_vals), 1))
+
+            # 3. Join them horizontally
+            full_indices = np.hstack((left, right))
+            
+            # permute back into the original order
+            # perm = [new_indices.index(ind) for ind in free_inds]
+            # full_indices = full_indices[:, perm]
+            # vals = np.empty((len(full_indices),))
+            # for i, findices in enumerate(full_indices):
+            #     vals[i] = data_tensor[findices]
+    
+            vals = data_tensor.evaluate(new_indices, full_indices)
+            s = np.linalg.svdvals(vals.reshape(100, 100))
+            score = eff_rank(s)
+            logger.debug("score for %s is %s", merge_ops, score)
+            tt = TreeNetwork()
+            tt.add_node("G", Tensor(np.empty(0), [Index("I", score)]))
+            
 
         logger.debug("reorder time: %s", time.time() - reorder_start)
         logger.debug("after reordering")
@@ -566,16 +620,13 @@ class TopDownSearch:
             st.network.norm() ** 2,
             delta**2,
         )
-        if (
-            not self.config.cross.init_cross
-            or len(st.network.network.nodes) > 7
-        ):
+        if len(st.network.network.nodes) > self.config.sweep.subnet_size + 1:
             logger.debug(
                 "running sweep with iterations %s", self.config.sweep.max_iters
             )
             config = copy.deepcopy(self.config)
             config.sweep.subnet_size = math.ceil(config.sweep.subnet_size / 2)
-            config.sweep.max_iters += 3
+            # config.sweep.max_iters += 3
             logger.debug("current free indices: %s", st.free_indices)
             sweep = RandomStructureSweep(
                 config, copy.deepcopy(st.network), st.free_indices
@@ -603,6 +654,7 @@ class TopDownSearch:
         # best_result = SearchResult()
         logger.debug("after sweeping, get the net %s", st.network)
         tmp_st, merge_ops, split_ops = self._to_lower_dim(st, splits, is_top)
+        tmp_st = st
         # new_merge_ops = copy.deepcopy(merge_ops)
         # self._apply_splits(new_merge_ops, splits, st.network)
         if self.config.synthesizer.replay_from is None:
@@ -960,7 +1012,7 @@ class TopDownSearch:
 
         maxs = []
         for ind in indices:
-            if ind in st.free_indices and ind.name not in self.config.topdown.disable_reshape:
+            if ind in st.free_indices and ind.name not in self.config.topdown.reshape_restriction:
                 factors = sympy.factorint(ind.size)
                 maxs.append(sum(factors.values()) - 1)
             else:
@@ -1098,23 +1150,23 @@ class WhiteBoxTopDownSearch(TopDownSearch):
         node = subnet_nodes[0]
         node_indices = st.network.node_tensor(node).indices
         logger.debug("before split index, the network is %s", st.network)
-        logger.debug("before split index, the norm is %s", st.network.norm())
+        # logger.debug("before split index, the norm is %s", st.network.norm())
         logger.debug("before split index, replay traces are %s", st.replay_traces)
         for split_result in self._split_indices(st, node_indices):
             net = split_result.state.network
             logger.debug("split index get %s", net)
             net.orthonormalize(node)
-            logger.debug(
-                "after normalize %s, the norm is %s", node, net.norm()
-            )
-            logger.debug(
-                "the norm of orthogonality center is %s",
-                np.linalg.norm(net.node_tensor(node).value),
-            )
+            # logger.debug(
+            #     "after normalize %s, the norm is %s", node, net.norm()
+            # )
+            # logger.debug(
+            #     "the norm of orthogonality center is %s",
+            #     np.linalg.norm(net.node_tensor(node).value),
+            # )
 
             new_sn = TreeNetwork()
             new_sn.add_node(node, copy.deepcopy(net.node_tensor(node)))
-            logger.debug("the norm of the subnet is %s", new_sn.norm())
+            # logger.debug("the norm of the subnet is %s", new_sn.norm())
             new_st = HSearchState(
                 split_result.state.free_indices,
                 split_result.state.reshape_history,
@@ -1351,56 +1403,58 @@ class BlackBoxTopDownSearch(TopDownSearch):
             sn_st = self._search(
                 new_st, remaining_delta, [], exclusions=exclusions
             )
-            logger.debug(
-                "used delta: %s, budget: %s, unused: %s, real unused: %s",
-                new_st.network.norm() ** 2 - sn_st.network.norm() ** 2,
-                remaining_delta**2,
-                sn_st.unused_delta,
-                remaining_delta**2
-                - (new_st.network.norm() ** 2 - sn_st.network.norm() ** 2),
-            )
+            # logger.debug(
+            #     "used delta: %s, budget: %s, unused: %s, real unused: %s",
+            #     new_st.network.norm() ** 2 - sn_st.network.norm() ** 2,
+            #     remaining_delta**2,
+            #     sn_st.unused_delta,
+            #     remaining_delta**2
+            #     - (new_st.network.norm() ** 2 - sn_st.network.norm() ** 2),
+            # )
             logger.debug("after optimization, %s", sn_st.network)
             results.append(SubnetResult(net, new_sn, sn_st))
 
         return results
 
-    @profile
-    def _preprocess(self, net: TreeNetwork) -> TreeNetwork:
-        # print("preprocess subnet")
-        # print(net)
+    # @profile
+    # def _preprocess(self, net: TreeNetwork) -> TreeNetwork:
+    #     # print("preprocess subnet")
+    #     # print(net)
 
-        free_inds = []
-        for ind in net.free_indices():
-            free_inds.append(ind.with_new_rng(range(ind.size)))
+    #     return net
 
-        if len(net.network.nodes) == 1:
-            # return TensorTrain.tt_svd(
-            #     net.contract().value, free_inds, eps=self.config.engine.eps * 0
-            # )
-            return net
+    #     # free_inds = []
+    #     # for ind in net.free_indices():
+    #     #     free_inds.append(ind.with_new_rng(range(ind.size)))
 
-        # print(net)
-        # sort the indices according to the topology of the network
-        nodes = [net.node_by_free_index(ind.name) for ind in free_inds]
-        # get the two ends where the nodes have only one nbr in nodes
-        ends = []
-        for n in nodes:
-            nbrs = list(net.network.neighbors(n))
-            if len(nbrs) == 1 or not all(nbr in nodes for nbr in nbrs):
-                ends.append(n)
+    #     # if len(net.network.nodes) == 1:
+    #     #     # return TensorTrain.tt_svd(
+    #     #     #     net.contract().value, free_inds, eps=self.config.engine.eps * 0
+    #     #     # )
+    #     #     return net
 
-        node_dists = [net.distance(ends[0], n) for n in nodes]
-        free_inds = [free_inds[i] for i in np.argsort(node_dists)]
-        func = FuncTensorNetwork(free_inds, net)
-        max_rank = max(ind.size for ind in net.inner_indices())
-        kickrank = max(2, max_rank // 5)
-        return self._cross_runner.run(
-            func, eps=self.config.engine.eps * 0.01, kickrank=kickrank
-        )
-        # core = net.contract()
-        # tree = TreeNetwork()
-        # tree.add_node("G0", core)
-        # return tree
+    #     # # print(net)
+    #     # # sort the indices according to the topology of the network
+    #     # nodes = [net.node_by_free_index(ind.name) for ind in free_inds]
+    #     # # get the two ends where the nodes have only one nbr in nodes
+    #     # ends = []
+    #     # for n in nodes:
+    #     #     nbrs = list(net.network.neighbors(n))
+    #     #     if len(nbrs) == 1 or not all(nbr in nodes for nbr in nbrs):
+    #     #         ends.append(n)
+
+    #     # node_dists = [net.distance(ends[0], n) for n in nodes]
+    #     # free_inds = [free_inds[i] for i in np.argsort(node_dists)]
+    #     # func = FuncTensorNetwork(free_inds, net)
+    #     # max_rank = max(ind.size for ind in net.inner_indices())
+    #     # kickrank = max(2, max_rank // 5)
+    #     # return self._cross_runner.run(
+    #     #     func, eps=self.config.engine.eps * 0.01, kickrank=kickrank
+    #     # )
+    #     # core = net.contract()
+    #     # tree = TreeNetwork()
+    #     # tree.add_node("G0", core)
+    #     # return tree
 
 
 class StructureSweep:
@@ -1459,10 +1513,11 @@ class StructureSweep:
             if not os.path.exists(config.output.output_dir):
                 os.makedirs(config.output.output_dir)
             config.cross.init_reshape = False
-            config.cross.init_cross = (
-                len(local_struct.network.nodes)
-                <= self.config.topdown.group_threshold
-            )
+            config.cross.init_cross = False
+            # (
+            #     len(local_struct.network.nodes)
+            #     <= self.config.topdown.group_threshold
+            # )
 
             indices = []
             for ind in local_struct.free_indices():
@@ -1488,6 +1543,7 @@ class StructureSweep:
                 shutil.rmtree(config.output.output_dir)
 
             total_result.stats.merge(search_engine.stats)
+            total_result.unused_delta += result.unused_delta ** 2
             # delta = math.sqrt(delta**2 - result.unused_delta)
             if (
                 self.config.synthesizer.replay_from is not None
@@ -1526,6 +1582,7 @@ class StructureSweep:
             if single_network:
                 break
 
+        total_result.unused_delta = total_result.unused_delta ** 0.5
         return total_result
 
     @property
@@ -1587,7 +1644,7 @@ class RandomStructureSweep(StructureSweep):
 
         for n in nodes:
             for m in nodes:
-                if (n, m) in self._data_tensor.network:
+                if (n, m) in self._data_tensor.network.edges:
                     local_tree.add_edge(n, m)
 
         return local_tree

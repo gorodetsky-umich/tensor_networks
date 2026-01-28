@@ -315,7 +315,7 @@ class ConstraintSearch:
                 algo=SVDAlgorithm.SVD,
             )
 
-        logger.debug("get singular values with sum: %s, net norm: %s", sum(s ** 2), net.norm() ** 2)
+        # logger.debug("get singular values with sum: %s, net norm: %s", sum(s ** 2), data_tensor.norm() ** 2)
         res = self.abstract(s, True)
         if res is not None:
             sums, sizes = res

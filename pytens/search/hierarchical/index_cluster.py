@@ -1,7 +1,7 @@
 """Various index clustering algorithms."""
 
 from abc import abstractmethod
-from typing import Sequence, Dict
+from typing import List, Sequence, Dict, Set
 import random
 import logging
 import copy
@@ -13,18 +13,17 @@ from sklearn.cluster import SpectralClustering
 
 from pytens.algs import TreeNetwork, TensorTrain
 from pytens.cross.funcs import FuncTensorNetwork
-from pytens.types import Index, IndexMerge, IndexOp, IndexSplit, SVDAlgorithm
+from pytens.types import Index, IndexOp, IndexSplit, NodeName
 from pytens.search.state import OSplit
-from pytens.search.utils import seed_all
-from pytens.cross.cross import cross
+from pytens.cross.cross import CrossApproximation, CrossConfig
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
 def eff_rank(svals: np.ndarray):
-    s = svals ** 2
-    s = s[s > 1e-10]
+    s = svals # ** 2
+    s = s[s > 1e-8]
     p = s / s.sum()
     return np.exp(-np.sum(p * np.log(p)))
 
@@ -132,9 +131,10 @@ class SVDIndexCluster(IndexCluster):
             # print("!!!!", clusters)
 
         else:
-            raise NotImplementedError(
-                "SVD-based clustering is only implemented for TT and single-node networks."
-            )
+            comb_corr = self._tree_score(net, indices)
+            # raise NotImplementedError(
+            #     "SVD-based clustering is only implemented for TT and single-node networks."
+            # )
 
         comb_corr = sorted(comb_corr.items(), key=lambda x: x[1], reverse=False)
         logger.debug("sorted combs: %s", list(comb_corr))
@@ -148,7 +148,7 @@ class SVDIndexCluster(IndexCluster):
         # Idea 2: randomly sample a few clusters and pick the top k
         # Idea 1: start from the topmost, second topmost, etc..
         k_ind_sets = []
-        for k in range(3):
+        for k in range(5):
             index_sets = []
             visited = set()
             for i in range(num_groups):
@@ -284,6 +284,98 @@ class SVDIndexCluster(IndexCluster):
                 # print(ni)
                 svals = merged_net.svals_at(
                     ni, ac.indices, max_rank=10, with_orthonormal=False
+                )
+
+                if len(svals) >= 2:
+                    comb_corr[tuple(ac.indices)] = eff_rank(svals) #svals[0] / svals[1]
+                else:
+                    comb_corr[tuple(ac.indices)] = 1
+                # for sval_idx in range(1, min(len(svals), 5)):
+                #     comb_corr[tuple(ac.indices)].append(svals[sval_idx - 1] / svals[sval_idx])
+
+                logger.debug(
+                    "indices: %s, eff rank: %s, norm: %s, svals: %s, score: %s",
+                    ac.indices,
+                    eff_rank(svals),
+                    sum(svals**2),
+                    svals,
+                    comb_corr[tuple(ac.indices)],
+                )
+
+        return comb_corr
+
+    def _collect_inds(self, net: TreeNetwork, visited: Set[NodeName], curr_node: NodeName) -> List[Index]:
+        visited.add(curr_node)
+        all_inds = []
+        free_inds = net.free_indices()
+        for ind in net.node_tensor(curr_node).indices:
+            if ind in free_inds:
+                all_inds.append(ind)
+
+        for nbr in net.network.neighbors(curr_node):
+            if nbr not in visited:
+                nbr_inds = self._collect_inds(net, visited, nbr)
+                all_inds.extend(nbr_inds)
+
+        return all_inds
+
+    def _tree_score(self, net: TreeNetwork, indices: Sequence[Index]) -> Dict[Sequence[Index], float]:
+        comb_corr = {}
+
+        # free_inds = net.free_indices()
+        # # preprocess the nodes to guarantee that there is at most one free index on each node
+        # for node in net.network.nodes:
+        #     node_inds = net.node_tensor(node).indices
+        #     node_free = [ind for ind in node_inds if ind in free_inds]
+        #     if len(node_free) > 1:
+        #         # pick one of the neighbors and split them
+        #         nbrs = list(net.network.neighbors(node))
+        #         if len(nbrs) == 1:
+        #             # leaf node
+
+
+        # we have to pick one of the leaves as the end node
+        ends = net.end_nodes()
+        # traverse from the first node to collect the order of moving indices
+        ordered_inds = self._collect_inds(net, set(), ends[0])
+        for i, indi in enumerate(ordered_inds):
+            tmp_net = copy.deepcopy(net)
+            ni = tmp_net.node_by_free_index(indi.name)
+            tmp_net.orthonormalize(ni)
+            i_inds = tmp_net.node_tensor(ni).indices
+            i_free = [indi]
+            for j, indj in enumerate(ordered_inds[i + 1 :]):
+                # swap n[i] and n[i+j-1]
+                logger.debug("moving indices %s and %s to be neighbors", indi, indj)
+                nj = tmp_net.node_by_free_index(indj.name)
+                if j > 0 and nj != ni:
+                    # inter_node = tmp_net.node_by_free_index(ordered_inds[i+j].name)
+                    # if inter_node == ni or inter_node == nj:
+                    #     path = [ni, nj]
+                    # else:
+                    #     path = [ni, inter_node, nj]
+
+                    # if inter_node != ni:
+                    #     logger.debug("swapping %s and %s over the path %s in %s", ni, inter_node, path, tmp_net)
+                    #     tmp_net.move_index(path, ni, inter_node, indi, ordered_inds[i+j])
+                    tmp_net.move_index(indi, indj)
+
+                logger.debug("after swapping nbrs: %s", tmp_net)
+
+                j_inds = tmp_net.node_tensor(nj).indices
+                j_free = [indj]
+                ac = OSplit(i_free + j_free)
+
+                # svd_algo = SVDAlgorithm.MERGE
+                # we don't need to repeat the orthonormalization either
+                # svals = ac.svals(copy.deepcopy(tmp_net), max_rank=2, algo=SVDAlgorithm.MERGE)
+                merged_net = copy.deepcopy(tmp_net)
+                if ni != nj:
+                    merged_net.merge(ni, nj)
+                logger.debug("after merge %s and %s: %s", ni, nj, merged_net)
+                # print(ni)
+                svals = merged_net.svals_at(
+                    ni, ac.indices, max_rank=25, with_orthonormal=False
                 )
 
                 if len(svals) >= 2:
@@ -468,15 +560,10 @@ class CrossIndexCluster(IndexCluster):
                 net_inds = [
                     ind.with_new_rng(range(ind.size)) for ind in indices
                 ]
-                res = cross(
-                    FuncTensorNetwork(net_inds, net),
-                    tt,
-                    tt.end_nodes()[0],
-                    eps=self._eps,
-                    kickrank=5,
-                    max_rank=max_so_far,
-                    max_iters=max_so_far,
-                )
+                cross_config = CrossConfig(kickrank=5,max_rank=max_so_far,
+                    max_iters=max_so_far)
+                cross_engine = CrossApproximation(FuncTensorNetwork(net_inds, net), cross_config)
+                res = cross_engine.cross(tt, tt.end_nodes()[0], eps=self._eps)
                 if res.ranks_and_errors[-1][-1] <= self._eps:
                     logger.debug(
                         "cross result over indices %s is %s", indices, tt

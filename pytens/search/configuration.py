@@ -262,9 +262,9 @@ class TopDownConfig(pydantic.BaseModel):
         default=10,
         description="Configure the error distribution between steps",
     )
-    disable_reshape: Sequence[str] = pydantic.Field(
-        default=[],
-        description="List of modes to disable reshaping for",
+    reshape_restriction: Sequence[str] = pydantic.Field(
+        default=tuple([]),
+        description="Disable reshaping for certain indices",
     )
 
 
@@ -285,11 +285,11 @@ class SweepConfig(pydantic.BaseModel):
         description="How to sweep the local structures during refinement",
     )
     max_iters: int = pydantic.Field(
-        default=8,
+        default=5,
         description="Choose the number of sweep operations",
     )
     subnet_size: int = pydantic.Field(
-        default=8,
+        default=6,
         description="Configure the maximum horizon during sweeping",
     )
 
