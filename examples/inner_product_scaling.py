@@ -12,8 +12,8 @@ def tt_inner_timer(r, n, d, num=100):
     indices = [Index(f'x{ii}', n) for ii in range(d)]
     tt_ranks = [r for ii in range(d-1)]
 
-    A = rand_tt(indices, tt_ranks)
-    B = rand_tt(indices, tt_ranks)
+    A = TensorNetwork.rand_tt(indices, tt_ranks)
+    B = TensorNetwork.rand_tt(indices, tt_ranks)
 
     def inner():
         return A.inner(B)
