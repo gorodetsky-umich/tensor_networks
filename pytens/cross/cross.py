@@ -54,7 +54,11 @@ class CrossResult(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
+    # The resulting tensor network
+    net: "pt.TensorNetwork"
+    # The used rows and columns are stored in the dimension tree
     dim_tree: DimTreeNode
+    # The ranks and corresponding errors info during the cross algo
     ranks_and_errors: Sequence[Tuple[int, float]]
 
 
@@ -283,15 +287,16 @@ class CrossApproximation:
     def cross(  # pylint: disable=R0913,R0917
         self,
         net: "pt.TensorNetwork",
-        root: "pt.NodeName",
+        root: Optional["pt.NodeName"] = None,
         validation: Optional[np.ndarray] = None,
         eps: float = 0.1,
         initialization: Optional[np.ndarray] = None,
         known: Optional[np.ndarray] = None,
     ) -> CrossResult:
         """Cross approximation for the given network structure."""
-        # print("root is", root)
-        # print(net)
+        if root is None:
+            root = list(net.network.nodes)[0]
+
         tree = net.dimension_tree(root)
         if initialization is None:
             tree.increment_ranks(1, self._config.max_rank)
@@ -379,4 +384,6 @@ class CrossApproximation:
         # print(net)
         ranks_and_errs = list(sorted(list(ranks_and_errs.items())))
         # print(ranks_and_errs)
-        return CrossResult(dim_tree=tree, ranks_and_errors=ranks_and_errs)
+        return CrossResult(
+            net=net, dim_tree=tree, ranks_and_errors=ranks_and_errs
+        )

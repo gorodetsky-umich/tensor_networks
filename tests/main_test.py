@@ -11,7 +11,7 @@ import numpy as np
 from pytens.algs import *
 from pytens.cross.cross import CrossAlgo, CrossApproximation, CrossConfig
 from pytens.types import Index
-from pytens.cross.funcs import FuncAckley
+from pytens.cross.funcs import CachedFunc
 from tests.search_test import *
 
 np.random.seed(4)
@@ -638,11 +638,35 @@ class TestTree(unittest.TestCase):
 class TestCross(unittest.TestCase):
     """Test suite for cross approximation"""
 
+    class FuncAckley(CachedFunc):
+        """Source: https://www.sfu.ca/~ssurjano/ackley.html"""
+
+        def __init__(self, indices: List[Index]):
+            inds = []
+            for ind in indices:
+                new_ind = ind.with_new_rng(
+                    np.linspace(-32.768, 32.768, ind.size)
+                )
+                inds.append(new_ind)
+            super().__init__(inds)
+            self.name = "Ackley"
+
+        def _run(self, args: np.ndarray):
+            y1 = np.sqrt(np.sum(args**2, axis=1) / args.shape[1])
+            y1 = -20 * np.exp(-0.2 * y1)
+
+            y2 = np.sum(np.cos(2 * np.pi * args), axis=1)
+            y2 = -np.exp(y2 / args.shape[1])
+
+            y3 = 20 + np.exp(1.0)
+
+            return y1 + y2 + y3
+
     def test_cross_two_nodes(self):
         """Cross approximation for a matrix"""
 
         indices = [Index("i", 8), Index("j", 10)]
-        func = FuncAckley(indices)
+        func = TestCross.FuncAckley(indices)
         net = TensorNetwork.rand_tt(func.indices, [1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -650,43 +674,50 @@ class TestCross(unittest.TestCase):
         validation = np.dstack(
             np.meshgrid(*[range(ind.size) for ind in indices])
         ).reshape(-1, len(indices))
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=1e-4
+        res = cross_engine.cross(
+            net, eps=1e-4
         )
 
         real_val = func(validation)
-        approx_val = net.evaluate(func.indices, validation)
+        approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
         )
-        
+
     def test_cross_three_nodes(self):
         """Cross approximation for a three dimensional TT"""
 
         indices = [Index("i", 8), Index("j", 10), Index("k", 12)]
-        func = FuncAckley(indices)
+        func = TestCross.FuncAckley(indices)
         net = TensorNetwork.rand_tt(func.indices, [1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
 
-        validation = np.stack(np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1).reshape(-1, len(indices))
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=1e-4
+        validation = np.stack(
+            np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
+        ).reshape(-1, len(indices))
+        res = cross_engine.cross(
+            net, eps=1e-4
         )
 
         real_val = func(validation)
-        approx_val = net.evaluate(func.indices, validation)
+        approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
         )
-        
+
     def test_cross_tt(self):
         """Cross approximation for a four dimensional TT"""
 
-        indices = [Index("i", 8), Index("j", 10), Index("k", 12), Index("l", 20)]
-        func = FuncAckley(indices)
+        indices = [
+            Index("i", 8),
+            Index("j", 10),
+            Index("k", 12),
+            Index("l", 20),
+        ]
+        func = TestCross.FuncAckley(indices)
         net = TensorNetwork.rand_tt(func.indices, [1, 1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -694,17 +725,17 @@ class TestCross(unittest.TestCase):
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=1e-4
+        res = cross_engine.cross(
+            net, eps=1e-4
         )
 
         real_val = func(validation)
-        approx_val = net.evaluate(func.indices, validation)
+        approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
         )
-        
+
     def test_cross_ht(self):
         """Cross approximation for a four dimensional HT"""
 
@@ -714,7 +745,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = FuncAckley(indices)
+        func = TestCross.FuncAckley(indices)
         net = TensorNetwork.rand_ht(func.indices, 1)
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -722,17 +753,17 @@ class TestCross(unittest.TestCase):
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=1e-4
+        res = cross_engine.cross(
+            net, eps=1e-4
         )
 
         real_val = func(validation)
-        approx_val = net.evaluate(func.indices, validation)
+        approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
         )
-        
+
     def test_cross_tucker(self):
         """Cross approximation for a four dimensional Tucker"""
 
@@ -742,7 +773,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = FuncAckley(indices)
+        func = TestCross.FuncAckley(indices)
         net = TensorNetwork.rand_tucker(func.indices, 1)
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -750,17 +781,15 @@ class TestCross(unittest.TestCase):
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=1e-4
-        )
+        res = cross_engine.cross(net, eps=1e-4)
 
         real_val = func(validation)
-        approx_val = net.evaluate(func.indices, validation)
+        approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
         )
-        
+
     def test_cross_deim(self):
         """Cross approximation for a four dimensional TT with DEIM"""
 
@@ -770,7 +799,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = FuncAckley(indices)
+        func = TestCross.FuncAckley(indices)
         net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
@@ -778,17 +807,15 @@ class TestCross(unittest.TestCase):
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=1e-4
-        )
+        res = cross_engine.cross(net, eps=1e-4)
 
         real_val = func(validation)
-        approx_val = net.evaluate(func.indices, validation)
+        approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
         )
-        
+
     def test_cross_tucker_deim(self):
         """Cross approximation for a four dimensional Tucker with DEIM"""
 
@@ -798,7 +825,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = FuncAckley(indices)
+        func = TestCross.FuncAckley(indices)
         net = TensorNetwork.rand_tucker(func.indices, 1)
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
@@ -806,12 +833,10 @@ class TestCross(unittest.TestCase):
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=1e-4
-        )
+        res = cross_engine.cross(net, eps=1e-4)
 
         real_val = func(validation)
-        approx_val = net.evaluate(func.indices, validation)
+        approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
