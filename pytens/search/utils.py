@@ -551,7 +551,7 @@ def get_conflicts(ac: OSplit, past_acs: List[OSplit]) -> Optional[OSplit]:
             len(ac_indices.intersection(past_indices)) > 0
             and not ac_indices.issubset(past_indices)
             and not ac_indices.issuperset(past_indices)
-        ) or ac == past_ac:
+        ):
             if past_ac.reversible:
                 return past_ac
             else:

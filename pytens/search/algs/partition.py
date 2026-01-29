@@ -83,7 +83,7 @@ class PartitionSearch(SearchAlgo):
     def _sketch_execution(self, curr_st: SearchState, action: Action):
         """Perform a split without actual data computation."""
         if isinstance(action, OSplit):
-            split_ac = action.to_isplit(curr_st.network)
+            _, split_ac = action.to_isplit(curr_st.network)
             assert split_ac is not None
         elif isinstance(action, ISplit):
             split_ac = action

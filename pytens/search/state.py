@@ -25,6 +25,7 @@ from pytens.search.types import Action
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class OSplit(Action):
     """Class for output-directed splits."""
 
@@ -83,13 +84,11 @@ class OSplit(Action):
         return True
 
     # TODO: Reorganize the code in this function
-    def to_isplit(self, net: TreeNetwork):
+    def to_isplit(self, net: TreeNetwork) -> Tuple[PartitionStatus, "ISplit"]:
         """Convert an output-directed split to an input-directed one."""
         res = net.partition_node(self.indices)
-        if res.code == PartitionStatus.EXIST:
-            return None
 
-        while res.code != PartitionStatus.OK:
+        while res.code not in (PartitionStatus.EXIST, PartitionStatus.OK):
             print(
                 "Cannot find the lca for indices",
                 self.indices,
@@ -121,7 +120,7 @@ class OSplit(Action):
         left_indices = [node_indices.index(i) for i in res.lca_indices]
         left_indices = list(set(left_indices))
 
-        return ISplit(
+        return res.code, ISplit(
             res.lca_node,
             left_indices,
             target_size=self.target_size,
@@ -130,7 +129,7 @@ class OSplit(Action):
 
     def cross(self, net: TreeNetwork) -> Tuple[NodeName, NodeName]:
         """Execute the split index action with cross approximation"""
-        ac = self.to_isplit(net)
+        _, ac = self.to_isplit(net)
         return ac.cross(net)
 
     def svd(
@@ -143,15 +142,25 @@ class OSplit(Action):
         """Execute the split index action on the given tensor network"""
         # find the nodes that include @indices@,
         # if there are multiple such nodes, go to the common ancestor
-        ac = self.to_isplit(net)
-        if ac is None:
-            return None
+        code, ac = self.to_isplit(net)
 
         # print("OSplit svd", ac)
         # print(net)
-        return ac.svd(
+        (u, s, v), d = ac.svd(
             net, svd, compute_data=compute_data, compute_uv=compute_uv
         )
+
+        if code == PartitionStatus.EXIST:
+            free_inds = net.free_indices()
+            for n in (u, v):
+                n_inds = net.node_tensor(n).indices
+                if len(n_inds) == 2 and all(ind not in free_inds for ind in n_inds):
+                    nbrs = list(net.network.neighbors(n))
+                    assert len(nbrs) == 2, f"get neighbors {nbrs} of {n} in {net}"
+                    nbr = [x for x in nbrs if x != s][0]
+                    net.merge(n, nbr)
+
+        return (u, s, v), d
 
     def svals(
         self,
@@ -168,13 +177,17 @@ class OSplit(Action):
 
         if algo == SVDAlgorithm.CROSS:
             return net.svals_by_cross(self.indices, max_rank=max_rank, eps=eps)
-        
+
         if isinstance(net, TensorTrain):
-            logger.debug("computing singular values for a tensor train: %s", net)
+            logger.debug(
+                "computing singular values for a tensor train: %s", net
+            )
             # if algo == SVDAlgorithm.FOLD:
             #     return net.svals_by_fold(self.indices, max_rank=max_rank)
 
-            return net.svals_by_merge(self.indices, max_rank=max_rank, rand=rand)
+            return net.svals_by_merge(
+                self.indices, max_rank=max_rank, rand=rand
+            )
 
             # return net.svals(self.indices, max_rank=max_rank, delta=delta)
 
@@ -187,8 +200,6 @@ class OSplit(Action):
             logger.debug("computing singular values for a folded tensor train")
             return net.svals(self.indices, max_rank=max_rank, rand=rand)
 
-        # ac = self.to_isplit(net)
-        # return ac.svals(net, svd)
         return net.svals_by_merge(self.indices, max_rank=max_rank, rand=rand)
 
 
@@ -461,7 +472,13 @@ class SearchState:
             ac = OSplit([ind for ind_group in comb for ind in ind_group])
 
             # consider the complement index set
-            ac_comp = OSplit([ind for ind in self.network.free_indices() if ind not in ac.indices])
+            ac_comp = OSplit(
+                [
+                    ind
+                    for ind in self.network.free_indices()
+                    if ind not in ac.indices
+                ]
+            )
             ac = min(ac, ac_comp)
 
             if not self.past_actions or (
@@ -508,7 +525,11 @@ class SearchState:
 
                 (u, s, v), used_delta = res
                 new_net.merge(v, s)
-                logger.debug("current delta: %s, used delta: %s", self.curr_delta, used_delta)
+                logger.debug(
+                    "current delta: %s, used delta: %s",
+                    self.curr_delta,
+                    used_delta,
+                )
                 remaining_delta = np.sqrt(self.curr_delta**2 - used_delta)
                 new_state.curr_delta = remaining_delta
 
