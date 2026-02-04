@@ -986,41 +986,7 @@ class TensorNetwork:  # pylint: disable=R0904
         assert values.shape[1] == len(indices), (
             f"Expected {len(free_indices)} indices, got {values.shape[1]}"
         )
-        # perm = [indices.index(i) for i in free_indices]
-        # values = values[:, perm]
-
-        # not_selected = []
-        # for n in self.network.nodes:
-        #     tensor = self.node_tensor(n)
-        #     if len(set(indices).intersection(set(tensor.indices))) == 0:
-        #         not_selected.append(n)
-
-        # logger.debug("evaluating on %s, not selected are %s", indices, not_selected)
-
-        # # get the subgraphs with only the not selected nodes
-        # new_net = copy.deepcopy(self)
-        # subnets = nx.subgraph(self.network, not_selected)
-        # for i, subnet_nodes in enumerate(nx.connected_components(subnets)):
-        #     tmp_net = TensorNetwork()
-        #     tmp_net.network = new_net.network.subgraph(subnet_nodes).copy()
-        #     tmp_tensor = tmp_net.contract()
-        #     tmp_name = f"subnet_{i}"
-        #     new_net.add_node(tmp_name, tmp_tensor)
-        #     for n in subnet_nodes:
-        #         for nbr in self.network.neighbors(n):
-        #             if nbr not in not_selected:
-        #                 new_net.add_edge(tmp_name, nbr)
-
-        #         logger.debug("removing %s", n)
-        #         new_net.network.remove_node(n)
-        #         logger.debug(new_net)
-
         results = np.empty(values.shape[0])
-        # for i, v in enumerate(values):
-        #     results[i] = new_net[tuple(v)].value
-
-        # # divide the values into small chunks
-        # print(values.shape[0])
         chunk_size = 50000
         chunk_start = 0
         while chunk_start < values.shape[0]:
@@ -1076,10 +1042,17 @@ class TensorNetwork:  # pylint: disable=R0904
                 estr,
                 [n.shape for n in node_vals],
             )
-            # _, path_info = oe.contract_path(estr, *node_vals)
+            optimizer = oe.DynamicProgramming(
+                minimize='size',    # optimize for largest intermediate tensor size
+            )
+            # path, path_info = oe.contract_path(
+            #     estr, *node_vals, optimize="auto"
+            # )
+            # logger.debug([val.shape for val in node_vals])
+            # logger.debug(path_info)
             # logger.debug("The cost of %s is %s", estr, path_info.opt_cost)
             results[chunk_start : chunk_start + batch_size] = oe.contract(
-                estr, *node_vals, optimize="random-greedy"
+                estr, *node_vals, optimize=optimizer
             )
             chunk_start += batch_size
 
@@ -1262,11 +1235,27 @@ class TensorNetwork:  # pylint: disable=R0904
 
     def merge_along_path(self, path: Sequence[NodeName]) -> NodeName:
         """Merge the nodes on the given path."""
-        node = path[0]
-        for n in path[1:]:
-            self.merge(node, n)
+        # node = path[0]
+        # for n in path[1:]:
+        #     self.merge(node, n)
+        all_nbrs = []
+        for n in path:
+            for nbr in self.network.neighbors(n):
+                if nbr not in path:
+                    all_nbrs.append(nbr)
 
-        return node
+        subnet = TensorNetwork()
+        subnet.network = nx.subgraph(self.network, path).copy()
+        subnode = subnet.contract()
+
+        for n in set(path):
+            self.network.remove_node(n)
+
+        self.add_node(path[0], subnode)
+        for nbr in all_nbrs:
+            self.add_edge(path[0], nbr)
+
+        return path[0]
 
 
 class TreeNetwork(TensorNetwork):
@@ -1777,10 +1766,16 @@ class TreeNetwork(TensorNetwork):
     ) -> Tuple[NodeName, NodeName]:
         """Swap the indices so that the target indices are adjacent."""
         ind_nodes = list(set(ind_nodes))
+        # if they are already neighbors
+        subnet = nx.subgraph(self.network, ind_nodes)
+        if len(subnet.edges) == len(subnet.nodes) - 1:
+            return self._max_dist_nodes(ind_nodes, ind_nodes[0])
+
         if anchor is None:
             anchor, _ = self.best_anchor(ind_nodes)
         self.node_status = {}
         self.node_status[anchor] = NodeStatus.CONFIRMED
+        logger.debug("swapping nodes %s to be neighbors in the network %s", ind_nodes, self)
         for node in ind_nodes:
             path = nx.shortest_path(self.network, node, anchor)
             self.swap_along_path(path, node)
@@ -1791,8 +1786,10 @@ class TreeNetwork(TensorNetwork):
     @profile
     def move_index(self, ind1: Index, ind2: Index):
         """Move ind1 to the neighborhood of ind2"""
+        logger.debug("moving index %s to index %s", ind1, ind2)
         node1 = self.node_by_free_index(ind1.name)
         node2 = self.node_by_free_index(ind2.name)
+        logger.debug("moving node %s to node %s", node1, node2)
         if node1 == node2:
             return
 
@@ -1800,6 +1797,7 @@ class TreeNetwork(TensorNetwork):
         for n in path[1:]:
             swapping_ind = None if n != node2 else ind2
             self.swap_nbr(path, node1, n, ind1, swapping_ind)
+            logger.debug("after swapping %s and %s, get %s", node1, n, self)
 
     @profile
     def swap_nbr(
@@ -1811,6 +1809,7 @@ class TreeNetwork(TensorNetwork):
         ind2: Optional[Index] = None,
     ):
         """Swap two neighbor nodes."""
+        logger.debug("swapping the neighbors %s and %s", node1, node2)
         common_ind = self.get_contraction_index(node1, node2)[0]
         node_indices = []
 
@@ -1879,6 +1878,7 @@ class TreeNetwork(TensorNetwork):
         moving_node: NodeName,
     ):
         """Swap a node along the given path."""
+        logger.debug("moving %s along the path %s", moving_node, path)
         for other in path[1:]:
             # if we encounter a confirmed node,
             # we should have seen all following nodes.
@@ -2622,7 +2622,7 @@ class TreeNetwork(TensorNetwork):
             inds = [ind.with_new_rng(range(ind.size)) for ind in target_inds]
             tt = TensorTrain.rand_tt(inds)
             func = FuncTensorNetwork(inds, self)
-            cross_config = CrossConfig(kickrank=10, max_iters=max_rank - 1)
+            cross_config = CrossConfig(kickrank=100, max_iters=max_rank - 1)
             cross_engine = CrossApproximation(func, cross_config)
             cross_engine.cross(tt, tt.end_nodes()[0], eps=eps)
             res = tt.partition_node(indices)
@@ -2728,22 +2728,24 @@ class TreeNetwork(TensorNetwork):
         random_seed: int = 42,
     ) -> np.ndarray:
         """Compute the singular values for a tensor train."""
-        ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
-        nodes = self.swap(ind_nodes)
+        tree = self.compress()
+        ind_nodes = [tree.node_by_free_index(ind.name) for ind in indices]
+        nodes = tree.swap(ind_nodes)
         if len(nodes) > 1:
-            ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
-            anchor, _ = self.best_anchor(ind_nodes)
-            for n in set(ind_nodes):
-                if n != anchor:
-                    self.merge(anchor, n)
+            ind_nodes = [tree.node_by_free_index(ind.name) for ind in indices]
+            # anchor, _ = tree.best_anchor(ind_nodes)
+            n = tree.merge_along_path(ind_nodes)
+            # for n in set(ind_nodes):
+            #     if n != anchor:
+            #         tree.merge(anchor, n)
 
-            n = anchor
+            # n = anchor
         else:
-            n = self.node_by_free_index(indices[0].name)
+            n = tree.node_by_free_index(indices[0].name)
 
-        self.orthonormalize(n)
+        tree.orthonormalize(n)
 
-        node_indices = self.node_tensor(n).indices
+        node_indices = tree.node_tensor(n).indices
         lefts = []
         for i, ind in enumerate(node_indices):
             if ind in indices:
@@ -2751,7 +2753,7 @@ class TreeNetwork(TensorNetwork):
 
         perm = lefts + [i for i in range(len(node_indices)) if i not in lefts]
         left_size = np.prod([ind.size for ind in indices])
-        tensor_val = self.node_tensor(n).value
+        tensor_val = tree.node_tensor(n).value
         tensor_val = tensor_val.transpose(perm).reshape(left_size, -1)
         if rand:
             _, s, _ = randomized_svd(
@@ -3941,11 +3943,12 @@ class TensorTrain(TreeNetwork):
         nodes = self.swap(ind_nodes)
         if len(nodes) > 1:
             path = nx.shortest_path(self.network, nodes[0], nodes[1])
-            for n in path:
-                if n != nodes[0]:
-                    self.merge(nodes[0], n)
-
-            n = nodes[0]
+            # contract the network along the path
+            n = self.merge_along_path(path)
+            # for n in path:
+            #     if n != nodes[0]:
+            #         self.merge(nodes[0], n)
+            # n = nodes[0]
         else:
             n = self.node_by_free_index(indices[0].name)
 

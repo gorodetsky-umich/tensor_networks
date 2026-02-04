@@ -395,4 +395,4 @@ class CrossApproximation:
         # print(net)
         ranks_and_errs = sorted(list(ranks_and_errs.items()))
         # print(ranks_and_errs)
-        return CrossResult(tree, ranks_and_errs)
+        return CrossResult(dim_tree=tree, ranks_and_errors=ranks_and_errs)

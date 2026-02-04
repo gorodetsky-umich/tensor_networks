@@ -1,7 +1,8 @@
 """Various index clustering algorithms."""
 
 from abc import abstractmethod
-from typing import List, Sequence, Dict, Set
+import itertools
+from typing import List, Optional, Sequence, Dict, Set
 import random
 import logging
 import copy
@@ -132,6 +133,7 @@ class SVDIndexCluster(IndexCluster):
 
         else:
             comb_corr = self._tree_score(net, indices)
+            # comb_corr = self._tree_subsample_score(net, indices)
             # raise NotImplementedError(
             #     "SVD-based clustering is only implemented for TT and single-node networks."
             # )
@@ -153,7 +155,7 @@ class SVDIndexCluster(IndexCluster):
             visited = set()
             for i in range(num_groups):
                 group = set()
-                for xs, _ in comb_corr[(i+k) if i == 0 else 0:]:
+                for xs, _ in comb_corr:
                     # if (len(group) == 0 and (xs[0] in visited or xs[1] in visited)) or (len(group) > 0 and ((xs[0] not in group and xs[1] not in group) or (xs[1] in group and xs[0] in visited) or (xs[0] in group and xs[1] in visited))):
                     #     continue
 
@@ -162,6 +164,8 @@ class SVDIndexCluster(IndexCluster):
 
                     # if len(group) >= group_size and i != threshold - 1:
                     #     break
+                    if random.random() < 0.1:
+                        continue
 
                     if xs[0] in visited and xs[0] not in group:
                         continue
@@ -319,6 +323,60 @@ class SVDIndexCluster(IndexCluster):
 
         return all_inds
 
+    def _tree_subsample_score(self, net: TreeNetwork, indices: Sequence[Index]) -> Dict[Sequence[Index], float]:
+        """Sample some entries from the tree and compute the scores"""
+        comb_corr = {}
+        for i, indi in enumerate(indices):
+            for indj in indices[i+1:]:
+                selected_inds = []
+                free_inds = indices
+                sample_size = 100
+                for ind in free_inds:
+                    selected_inds.append(np.random.randint(0, ind.size, size=(sample_size,)))
+
+                # reorganize the values according to reordered indices
+                left_inds = [indi, indj]
+                right_inds = [ind for ind in indices if ind not in left_inds]
+                left_ind_vals = [ ]
+                left_ind_shape = []
+                for ind in left_inds:
+                    idx = free_inds.index(ind)
+                    left_ind_vals.append(selected_inds[idx])
+                    left_ind_shape.append(net.shape()[idx])
+                    
+                right_ind_vals = []
+                right_ind_shape = []
+                for ind in right_inds:
+                    idx = free_inds.index(ind)
+                    right_ind_vals.append(selected_inds[idx])
+                    right_ind_shape.append(net.shape()[idx])
+                
+                left_ind_vals = np.stack(left_ind_vals, axis=-1)
+                right_ind_vals = np.stack(right_ind_vals, axis=-1)
+                # 1. Repeat each row of 'rows' N times (where N is the number of col samples)
+                # This gives: [[1,2,3], [1,2,3], [1,2,4], [1,2,4]]
+                left = np.repeat(left_ind_vals, len(right_ind_vals), axis=0)
+
+                # 2. Tile the entire 'cols' array M times (where M is the number of row samples)
+                # This gives: [[5,6,7], [5,6,8], [5,6,7], [5,6,8]]
+                right = np.tile(right_ind_vals, (len(left_ind_vals), 1))
+
+                # 3. Join them horizontally
+                full_indices = np.hstack((left, right))
+                
+                # permute back into the original order
+                # perm = [new_indices.index(ind) for ind in free_inds]
+                # full_indices = full_indices[:, perm]
+                # vals = np.empty((len(full_indices),))
+                # for i, findices in enumerate(full_indices):
+                #     vals[i] = data_tensor[findices]
+
+                vals = net.evaluate(left_inds + right_inds, full_indices)
+                s = np.linalg.svdvals(vals.reshape(sample_size, sample_size))
+                comb_corr[tuple([indi, indj])] = eff_rank(s)
+                
+        return comb_corr
+
     def _tree_score(self, net: TreeNetwork, indices: Sequence[Index]) -> Dict[Sequence[Index], float]:
         comb_corr = {}
 
@@ -336,63 +394,130 @@ class SVDIndexCluster(IndexCluster):
 
         # we have to pick one of the leaves as the end node
         ends = net.end_nodes()
-        # traverse from the first node to collect the order of moving indices
-        ordered_inds = self._collect_inds(net, set(), ends[0])
-        for i, indi in enumerate(ordered_inds):
-            tmp_net = copy.deepcopy(net)
-            ni = tmp_net.node_by_free_index(indi.name)
-            tmp_net.orthonormalize(ni)
-            i_inds = tmp_net.node_tensor(ni).indices
-            i_free = [indi]
-            for j, indj in enumerate(ordered_inds[i + 1 :]):
-                # swap n[i] and n[i+j-1]
-                logger.debug("moving indices %s and %s to be neighbors", indi, indj)
-                nj = tmp_net.node_by_free_index(indj.name)
-                if j > 0 and nj != ni:
-                    # inter_node = tmp_net.node_by_free_index(ordered_inds[i+j].name)
-                    # if inter_node == ni or inter_node == nj:
-                    #     path = [ni, nj]
-                    # else:
-                    #     path = [ni, inter_node, nj]
+        visited_node_pairs = set()
+        # traverse the tree to compute pairs with DFS
+        def dfs(visited: Set[NodeName], curr_net: TreeNetwork, prev: Optional[NodeName], curr: NodeName):
+            visited.add(curr)
 
-                    # if inter_node != ni:
-                    #     logger.debug("swapping %s and %s over the path %s in %s", ni, inter_node, path, tmp_net)
-                    #     tmp_net.move_index(path, ni, inter_node, indi, ordered_inds[i+j])
-                    tmp_net.move_index(indi, indj)
+            if prev is not None:
+                prev_inds = curr_net.node_tensor(prev).indices
+                prev_free = [ind for ind in prev_inds if ind in indices]
+                curr_inds = curr_net.node_tensor(curr).indices
+                curr_free = [ind for ind in curr_inds if ind in indices]
+                node_free = prev_free + curr_free
 
-                logger.debug("after swapping nbrs: %s", tmp_net)
+                visited_node_pairs.add((prev, curr))
+                curr_net.merge(prev, curr)
+                node_inds = curr_net.node_tensor(prev).indices
 
-                j_inds = tmp_net.node_tensor(nj).indices
-                j_free = [indj]
-                ac = OSplit(i_free + j_free)
+                # enumerate all combinations of index pairs on the current node
+                for ind_pair in itertools.combinations(node_free, 2):
+                    svals = curr_net.svals_at(
+                        prev, ind_pair, max_rank=25, with_orthonormal=False
+                    )
 
-                # svd_algo = SVDAlgorithm.MERGE
-                # we don't need to repeat the orthonormalization either
-                # svals = ac.svals(copy.deepcopy(tmp_net), max_rank=2, algo=SVDAlgorithm.MERGE)
-                merged_net = copy.deepcopy(tmp_net)
-                if ni != nj:
-                    merged_net.merge(ni, nj)
-                logger.debug("after merge %s and %s: %s", ni, nj, merged_net)
-                # print(ni)
-                svals = merged_net.svals_at(
-                    ni, ac.indices, max_rank=25, with_orthonormal=False
-                )
+                    if len(svals) >= 2:
+                        comb_corr[tuple(ind_pair)] = eff_rank(svals)
+                    else:
+                        comb_corr[tuple(ind_pair)] = 1
 
-                if len(svals) >= 2:
-                    comb_corr[tuple(ac.indices)] = eff_rank(svals) #svals[0] / svals[1]
+                    logger.debug(
+                        "indices: %s, eff rank: %s, norm: %s, svals: %s, score: %s",
+                        ind_pair,
+                        eff_rank(svals),
+                        sum(svals**2),
+                        svals,
+                        comb_corr[tuple(ind_pair)],
+                    )
+
+                # swap the free indices on two nodes
+                left_inds = curr_free + [ind for ind in prev_inds if ind not in curr_inds and ind not in prev_free]
+                logger.debug("curr network is %s", curr_net)
+                logger.debug("prev node: %s, curr node: %s", prev, curr)
+                logger.debug("left_inds are %s", left_inds)
+                lefts = [node_inds.index(ind) for ind in left_inds]
+                q, r = curr_net.qr(prev, lefts)
+                nx.relabel_nodes(curr_net.network, {r: prev, q: curr}, copy=False)
+
+            nbrs = list(curr_net.network.neighbors(curr))
+            for nbr in nbrs:
+                if len(nbrs) > 1:
+                    tmp_net = copy.deepcopy(curr_net)
                 else:
-                    comb_corr[tuple(ac.indices)] = 1
-                # for sval_idx in range(1, min(len(svals), 5)):
-                #     comb_corr[tuple(ac.indices)].append(svals[sval_idx - 1] / svals[sval_idx])
+                    tmp_net = curr_net
 
-                logger.debug(
-                    "indices: %s, eff rank: %s, norm: %s, svals: %s, score: %s",
-                    ac.indices,
-                    eff_rank(svals),
-                    sum(svals**2),
-                    svals,
-                    comb_corr[tuple(ac.indices)],
-                )
+                if nbr in visited:
+                    continue
+
+                # if indices in the subtree and prev node has been computed,
+                # do not traverse that branch
+                if (curr, nbr) in visited_node_pairs or (nbr, curr) in visited_node_pairs:
+                    continue
+
+                dfs(visited, tmp_net, curr, nbr)
+
+        for end in ends:
+            tmp_net = copy.deepcopy(net)
+            tmp_net.orthonormalize(end)
+            dfs(set(), tmp_net, None, end)
+
+        # # traverse from the first node to collect the order of moving indices
+        # ordered_inds = self._collect_inds(net, set(), ends[0])
+        # for i, indi in enumerate(ordered_inds):
+        #     tmp_net = copy.deepcopy(net)
+        #     ni = tmp_net.node_by_free_index(indi.name)
+        #     tmp_net.orthonormalize(ni)
+        #     i_inds = tmp_net.node_tensor(ni).indices
+        #     i_free = [indi]
+        #     for j, indj in enumerate(ordered_inds[i + 1 :]):
+        #         # swap n[i] and n[i+j-1]
+        #         nj = tmp_net.node_by_free_index(indj.name)
+        #         logger.debug("moving indices %s and %s to be neighbors, currently they are on %s and %s respectively", indi, indj, ni, nj)
+        #         if j > 0 and nj != ni:
+        #             # inter_node = tmp_net.node_by_free_index(ordered_inds[i+j].name)
+        #             # if inter_node == ni or inter_node == nj:
+        #             #     path = [ni, nj]
+        #             # else:
+        #             #     path = [ni, inter_node, nj]
+
+        #             # if inter_node != ni:
+        #             #     logger.debug("swapping %s and %s over the path %s in %s", ni, inter_node, path, tmp_net)
+        #             #     tmp_net.move_index(path, ni, inter_node, indi, ordered_inds[i+j])
+        #             tmp_net.move_index(indi, indj)
+
+        #         logger.debug("after swapping nbrs: %s", tmp_net)
+
+        #         j_inds = tmp_net.node_tensor(nj).indices
+        #         j_free = [indj]
+        #         ac = OSplit(i_free + j_free)
+
+        #         # svd_algo = SVDAlgorithm.MERGE
+        #         # we don't need to repeat the orthonormalization either
+        #         # svals = ac.svals(copy.deepcopy(tmp_net), max_rank=2, algo=SVDAlgorithm.MERGE)
+        #         merged_net = copy.deepcopy(tmp_net)
+        #         if ni != nj:
+        #             merged_net.merge(ni, nj)
+        #         logger.debug("after merge %s and %s: %s", ni, nj, merged_net)
+        #         # print(ni)
+        #         svals = merged_net.svals_at(
+        #             ni, ac.indices, max_rank=25, with_orthonormal=False
+        #         )
+
+        #         if len(svals) >= 2:
+        #             comb_corr[tuple(ac.indices)] = eff_rank(svals) #svals[0] / svals[1]
+        #         else:
+        #             comb_corr[tuple(ac.indices)] = 1
+        #         # for sval_idx in range(1, min(len(svals), 5)):
+        #         #     comb_corr[tuple(ac.indices)].append(svals[sval_idx - 1] / svals[sval_idx])
+
+        #         logger.debug(
+        #             "indices: %s, eff rank: %s, norm: %s, svals: %s, score: %s",
+        #             ac.indices,
+        #             eff_rank(svals),
+        #             sum(svals**2),
+        #             svals,
+        #             comb_corr[tuple(ac.indices)],
+        #         )
 
         return comb_corr
 

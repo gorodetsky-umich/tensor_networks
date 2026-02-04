@@ -13,7 +13,7 @@ from line_profiler import profile
 
 from pytens.algs import Tensor, TreeNetwork
 from pytens.search.algs.base import SearchAlgo
-from pytens.search.configuration import SearchConfig
+from pytens.search.configuration import ReorderAlgo, SearchConfig
 import pytens.search.configuration as config
 from pytens.search.constraint import ConstraintSearch
 from pytens.search.state import Action, ISplit, OSplit, SearchState
@@ -377,6 +377,7 @@ class PartitionSearch(SearchAlgo):
                 self._data_tensor,
                 ac.indices,
                 compute_uv=self.config.rank_search.search_mode == "all",
+                #cross=self.config.preprocess.reorder_algo == ReorderAlgo.CROSS,
             )
 
         if self.config.output.remove_temp_after_run:
@@ -407,9 +408,9 @@ class PartitionSearch(SearchAlgo):
         else:
             self._delta = delta
 
-        logger.debug(
-            "delta: %s, data norm: %s", self._delta, self._data_tensor.norm()
-        )
+        # logger.debug(
+        #     "delta: %s, data norm: %s", self._delta, self._data_tensor.norm()
+        # )
         self.constraint_engine.delta = self._delta
 
         if self.config.synthesizer.algo == config.SearchAlgo.RANDOM:

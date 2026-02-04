@@ -289,7 +289,7 @@ class SweepConfig(pydantic.BaseModel):
         description="Choose the number of sweep operations",
     )
     subnet_size: int = pydantic.Field(
-        default=6,
+        default=4,
         description="Configure the maximum horizon during sweeping",
     )
 

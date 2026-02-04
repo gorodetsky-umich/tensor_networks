@@ -286,12 +286,12 @@ class ConstraintSearch:
         logger.debug("preprocess %s", comb)
         logger.debug("%s", data_tensor)
 
-        if cross:
-            self._preprocess_cross(
-                FuncTensorNetwork(data_tensor.free_indices(), data_tensor),
-                comb,
-            )
-            return
+        # if cross:
+        #     self._preprocess_cross(
+        #         FuncTensorNetwork(data_tensor.free_indices(), data_tensor),
+        #         comb,
+        #     )
+        #     return
 
         ac = OSplit(comb)
         if ac in self.split_actions:
@@ -312,7 +312,7 @@ class ConstraintSearch:
                 max_rank=self.config.preprocess.max_rank,
                 rand=self.config.preprocess.rand_svd,
                 eps=self.config.engine.eps,
-                algo=SVDAlgorithm.SVD,
+                algo=SVDAlgorithm.SVD if not cross else SVDAlgorithm.CROSS,
             )
 
         # logger.debug("get singular values with sum: %s, net norm: %s", sum(s ** 2), data_tensor.norm() ** 2)
