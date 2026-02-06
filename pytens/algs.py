@@ -6,7 +6,20 @@ from collections.abc import Sequence
 from collections import Counter
 from dataclasses import dataclass
 import typing
-from typing import Dict, Optional, Union, List, Self, Tuple, Callable, Any, Set
+from typing import (
+    Dict,
+    Iterable,
+    Literal,
+    Optional,
+    Union,
+    List,
+    Self,
+    Tuple,
+    Callable,
+    Any,
+    Set,
+    cast,
+)
 import itertools
 
 import numpy as np
@@ -15,7 +28,15 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 from .utils import delta_svd
-from .types import IntOrStr, NodeName, Index, SVDConfig, DimTreeNode, NodeInfo
+from .types import (
+    IndexName,
+    IntOrStr,
+    NodeName,
+    Index,
+    SVDConfig,
+    DimTreeNode,
+    NodeInfo,
+)
 
 
 # logging.basicConfig(level=logging.DEBUG)
@@ -283,6 +304,44 @@ class Tensor:
         value = np.permute_dims(self.value, tuple(target_indices))
         indices = [self.indices[i] for i in target_indices]
         return Tensor(value, indices)
+
+    def block_diagonal(
+        self, other: "Tensor", free_inds: Sequence[Index]
+    ) -> "Tensor":
+        """
+        Concat tensors along contract indices diagonally but keep free indices.
+        When there is only one contract index, concat them directly.
+        """
+        sz = []
+        start_offsets = {}
+        for i, ind in enumerate(self.indices):
+            if ind in free_inds:
+                assert ind.size == other.indices[i].size
+                sz.append(ind.size)
+            else:
+                sz.append(ind.size + other.indices[i].size)
+                start_offsets[i] = 0
+
+        large_array = np.zeros(sz, dtype=self.value.dtype)
+        for arr in [self.value, other.value]:
+            slices = []
+            for i in range(len(sz)):
+                if self.indices[i] in free_inds:
+                    slices.append(slice(None))
+                else:
+                    start = start_offsets[i]
+                    end = start + arr.shape[i]
+                    slices.append(slice(start, end))
+                    start_offsets[i] = end
+
+            # Place the current array on the diagonal
+            large_array[tuple(slices)] = arr
+
+        large_indices: List[Index] = []
+        for i, ind in enumerate(self.indices):
+            large_indices.append(Index(ind.name, large_array.shape[i]))
+
+        return Tensor(large_array, large_indices)
 
 
 # @dataclass(frozen=True, eq=True)
@@ -960,7 +1019,7 @@ class TensorNetwork:  # pylint: disable=R0904
             indices.append(ind)
 
         # children indices
-        for n in sorted(tree.down_info.nodes):
+        for n in tree.down_info.nodes:
             self.canonicalize_indices(n)
             ind = self.get_contraction_index(n.node, tree.node)[0]
             indices.append(ind)
@@ -973,8 +1032,8 @@ class TensorNetwork:  # pylint: disable=R0904
 
         indices.extend(p_indices)
         perm = [node_indices.index(ind) for ind in indices]
-        new_tensor = self.node_tensor(tree.node).permute(perm)
-        self.set_node_tensor(tree.node, new_tensor)
+        # we remember the permutation in the dim tree
+        tree.perm = perm
 
     def dimension_tree(self, root: NodeName) -> DimTreeNode:
         """Create a mapping from set of indices to node names.
@@ -1239,52 +1298,86 @@ class TensorNetwork:  # pylint: disable=R0904
 
         return tucker
 
+    def node_by_free_index(self, index: IndexName) -> NodeName:
+        """Identify the node in the network containing the given free index"""
+        for n in cast(Iterable[NodeName], self.network.nodes):
+            tensor = self.node_tensor(n)
+            if index in [ind.name for ind in tensor.indices]:
+                return n
+
+        raise KeyError(f"Cannot find index {index} in the network")
+
+    def _binary_op(
+        self,
+        other: "TensorNetwork",
+        op: Literal["add", "mul"],
+        trees: Tuple[DimTreeNode, DimTreeNode],
+        result_net: Self,
+    ) -> None:
+        tree1, tree2 = trees
+        tensor1 = self.node_tensor(tree1.node)
+        tensor2 = other.node_tensor(tree2.node)
+        assert len(tensor1.indices) == len(tensor2.indices)
+
+        if op == "add":
+            res = tensor1.block_diagonal(tensor2, tree1.free_indices)
+        elif op == "mul":
+            res = tensor1.mult(tensor2, self.free_indices())
+        else:
+            raise ValueError(f"Unknown operation {op}")
+
+        # result_net.add_node(tree1.node, res)
+        result_net.set_node_tensor(tree1.node, res)
+
+        for c1, c2 in zip(tree1.down_info.nodes, tree2.down_info.nodes):
+            self._binary_op(other, op, (c1, c2), result_net)
+            # result_net.add_edge(tree1.node, c1.node)
+
     def __lt__(self, other: Self) -> bool:
         return self.cost() < other.cost()
 
-    def __add__(self, other: Self) -> Self:
-        """Add two tensor trains.
-
-        New tensor has same names as self
-        """
+    def __add__(self, other: "TensorNetwork") -> Self:
+        """Add two tree networks."""
         assert nx.is_isomorphic(self.network, other.network)
 
-        new_tens = copy.deepcopy(self)
-        free_indices = self.free_indices()
-        for _, (node1, node2) in enumerate(
-            zip(self.network.nodes, other.network.nodes)
-        ):
-            logger.debug("Adding: Node %r and Node %r", node1, node2)
+        # assign the root at the same index name
+        root_ind = self.free_indices()[0]
+        self_root = self.node_by_free_index(root_ind.name)
+        self_tree = self.dimension_tree(self_root)
+        other_root = other.node_by_free_index(root_ind.name)
+        other_tree = other.dimension_tree(other_root)
 
-            tens1 = self.network.nodes[node1]["tensor"]
-            tens2 = other.network.nodes[node2]["tensor"]
-            new_tens.network.nodes[node1]["tensor"] = tens1.concat_fill(
-                tens2, free_indices
-            )
+        result_net = copy.deepcopy(self)
+        self._binary_op(other, "add", (self_tree, other_tree), result_net)
 
-        return new_tens
+        return result_net
 
-    def __mul__(self, other: Self) -> Self:
-        """Multiply two tensor trains.
-
-        New tensor has same names as self
-        """
+    def __sub__(self, other: "TensorNetwork") -> Self:
+        """Subtract two tree networks."""
         assert nx.is_isomorphic(self.network, other.network)
 
-        new_tens = copy.deepcopy(self)
-        free_indices = self.free_indices()
-        for _, (node1, node2) in enumerate(
-            zip(self.network.nodes, other.network.nodes)
-        ):
-            logger.debug("Multiplying: Node %r and Node %r", node1, node2)
+        neg_net = copy.deepcopy(other)
+        a_node = list(neg_net.network.nodes)[0]
+        a_tensor = neg_net.node_tensor(a_node)
+        neg_net.set_node_tensor(
+            a_node, a_tensor.update_val_size(a_tensor.value * -1)
+        )
+        return self + neg_net
 
-            tens1 = self.network.nodes[node1]["tensor"]
-            tens2 = other.network.nodes[node2]["tensor"]
-            new_tens.network.nodes[node1]["tensor"] = tens1.mult(
-                tens2, free_indices
-            )
+    def __mul__(self, other: "TensorNetwork") -> Self:
+        """Elementwise multiplication of two tree networks."""
+        assert nx.is_isomorphic(self.network, other.network)
 
-        return new_tens
+        # assign the root at the same index name
+        root_ind = self.free_indices()[0]
+        self_root = self.node_by_free_index(root_ind.name)
+        self_tree = self.dimension_tree(self_root)
+        other_root = other.node_by_free_index(root_ind.name)
+        other_tree = other.dimension_tree(other_root)
+
+        result_net = copy.deepcopy(self)
+        self._binary_op(other, "mul", (self_tree, other_tree), result_net)
+        return result_net
 
     def __str__(self) -> str:
         """Convert to string."""

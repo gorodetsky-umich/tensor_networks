@@ -9,7 +9,12 @@ import pickle
 import numpy as np
 
 from pytens.algs import *
-from pytens.cross.cross import CrossAlgo, CrossApproximation, CrossConfig
+from pytens.cross.cross import (
+    CrossAlgo,
+    CrossApproximation,
+    CrossConfig,
+    TerminationCriteria,
+)
 from pytens.types import Index
 from pytens.cross.funcs import CachedFunc
 from tests.search_test import *
@@ -634,6 +639,353 @@ class TestTree(unittest.TestCase):
             tt1.canonical_structure(), tt2.canonical_structure()
         )
 
+    def test_add1(self):
+        x = np.random.randn(2, 13, 14)
+        x_tensor = Tensor(x, [Index("a", 2), Index("i", 13), Index("j", 14)])
+        u = np.random.randn(2, 15)
+        u_tensor = Tensor(u, [Index("a", 2), Index("k", 15)])
+        net1 = TensorNetwork()
+        net1.add_node("x", x_tensor)
+        net1.add_node("u", u_tensor)
+        net1.add_edge("x", "u")
+        t1 = net1.contract()
+
+        y = np.random.randn(3, 13, 14)
+        y_tensor = Tensor(y, [Index("b", 3), Index("i", 13), Index("j", 14)])
+        v = np.random.randn(3, 15)
+        v_tensor = Tensor(v, [Index("b", 3), Index("k", 15)])
+        net2 = TensorNetwork()
+        net2.add_node("y", y_tensor)
+        net2.add_node("v", v_tensor)
+        net2.add_edge("y", "v")
+        t2 = net2.contract()
+
+        t12 = t1.value + t2.value
+        t12_net = net1 + net2
+        t12_net.round("x", t12_net.norm() * 1e-10)
+        # network free inds are changed after rounding
+        tensor12 = t12_net.contract()
+        perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
+        tensor12 = tensor12.permute(perm)
+        self.assertTrue(np.allclose(tensor12.value, t12))
+
+    def test_add2(self):
+        x = np.random.randn(1, 2, 3, 4)
+        x_tensor = Tensor(
+            x, [Index("a", 1), Index("b", 2), Index("c", 3), Index("d", 4)]
+        )
+        u1 = np.random.randn(1, 13)
+        u1_tensor = Tensor(u1, [Index("a", 1), Index("i", 13)])
+        u2 = np.random.randn(2, 14)
+        u2_tensor = Tensor(u2, [Index("b", 2), Index("j", 14)])
+        u3 = np.random.randn(3, 15)
+        u3_tensor = Tensor(u3, [Index("c", 3), Index("k", 15)])
+        u4 = np.random.randn(4, 16)
+        u4_tensor = Tensor(u4, [Index("d", 4), Index("l", 16)])
+        net1 = TensorNetwork()
+        net1.add_node("x", x_tensor)
+        net1.add_node("u1", u1_tensor)
+        net1.add_node("u2", u2_tensor)
+        net1.add_node("u3", u3_tensor)
+        net1.add_node("u4", u4_tensor)
+        net1.add_edge("x", "u1")
+        net1.add_edge("x", "u2")
+        net1.add_edge("x", "u3")
+        net1.add_edge("x", "u4")
+        t1 = net1.contract()
+
+        y = np.random.randn(2, 3, 4, 5)
+        y_tensor = Tensor(
+            y, [Index("e", 2), Index("f", 3), Index("g", 4), Index("h", 5)]
+        )
+        v1 = np.random.randn(2, 13)
+        v1_tensor = Tensor(v1, [Index("e", 2), Index("i", 13)])
+        v2 = np.random.randn(3, 14)
+        v2_tensor = Tensor(v2, [Index("f", 3), Index("j", 14)])
+        v3 = np.random.randn(4, 15)
+        v3_tensor = Tensor(v3, [Index("g", 4), Index("k", 15)])
+        v4 = np.random.randn(5, 16)
+        v4_tensor = Tensor(v4, [Index("h", 5), Index("l", 16)])
+        net2 = TensorNetwork()
+        net2.add_node("y", y_tensor)
+        net2.add_node("v1", v1_tensor)
+        net2.add_node("v2", v2_tensor)
+        net2.add_node("v3", v3_tensor)
+        net2.add_node("v4", v4_tensor)
+        net2.add_edge("y", "v1")
+        net2.add_edge("y", "v2")
+        net2.add_edge("y", "v3")
+        net2.add_edge("y", "v4")
+        t2 = net2.contract()
+
+        t12 = t1.value + t2.value
+        net12 = net1 + net2
+        net12.round("x", net12.norm() * 1e-10)
+        # network free inds are changed after rounding
+        tensor12 = net12.contract()
+        perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
+        tensor12 = tensor12.permute(perm)
+        self.assertTrue(
+            np.allclose(t12, tensor12.value, rtol=1e-10, atol=1e-10)
+        )
+
+    def test_add3(self):
+        x = np.random.randn(13, 14, 2, 5)
+        x_tensor = Tensor(
+            x, [Index("i", 13), Index("j", 14), Index("a", 2), Index("b", 5)]
+        )
+        u1 = np.random.randn(2, 15)
+        u1_tensor = Tensor(u1, [Index("d", 2), Index("k", 15)])
+        u2 = np.random.randn(5, 16)
+        u2_tensor = Tensor(u2, [Index("b", 5), Index("m", 16)])
+        u3 = np.random.randn(2, 3, 2)
+        u3_tensor = Tensor(u3, [Index("a", 2), Index("c", 3), Index("d", 2)])
+        u4 = np.random.randn(3, 17)
+        u4_tensor = Tensor(u4, [Index("c", 3), Index("l", 17)])
+        net1 = TensorNetwork()
+        net1.add_node("x", x_tensor)
+        net1.add_node("u1", u1_tensor)
+        net1.add_node("u2", u2_tensor)
+        net1.add_node("u3", u3_tensor)
+        net1.add_node("u4", u4_tensor)
+        net1.add_edge("x", "u3")
+        net1.add_edge("x", "u2")
+        net1.add_edge("u3", "u1")
+        net1.add_edge("u3", "u4")
+        t1 = net1.contract()
+
+        y = np.random.randn(13, 14, 1, 2)
+        y_tensor = Tensor(
+            y, [Index("i", 13), Index("j", 14), Index("aa", 1), Index("bb", 2)]
+        )
+        v1 = np.random.randn(3, 15)
+        v1_tensor = Tensor(v1, [Index("dd", 3), Index("k", 15)])
+        v2 = np.random.randn(2, 16)
+        v2_tensor = Tensor(v2, [Index("bb", 2), Index("m", 16)])
+        v3 = np.random.randn(1, 2, 3)
+        v3_tensor = Tensor(
+            v3, [Index("aa", 1), Index("cc", 2), Index("dd", 3)]
+        )
+        v4 = np.random.randn(2, 17)
+        v4_tensor = Tensor(v4, [Index("cc", 2), Index("l", 17)])
+        net2 = TensorNetwork()
+        net2.add_node("y", y_tensor)
+        net2.add_node("v1", v1_tensor)
+        net2.add_node("v2", v2_tensor)
+        net2.add_node("v3", v3_tensor)
+        net2.add_node("v4", v4_tensor)
+        net2.add_edge("y", "v2")
+        net2.add_edge("y", "v3")
+        net2.add_edge("v3", "v1")
+        net2.add_edge("v3", "v4")
+        t2 = net2.contract()
+
+        t12 = t1.value + t2.value
+        net12 = net1 + net2
+        net12.round("x", net12.norm() * 1e-10)
+        # network free inds are changed after rounding
+        tensor12 = net12.contract()
+        perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
+        tensor12 = tensor12.permute(perm)
+        self.assertTrue(
+            np.allclose(t12, tensor12.value, rtol=1e-10, atol=1e-10)
+        )
+
+    def test_add4(self):
+        x = np.random.randn(13, 14, 2, 5)
+        x_tensor = Tensor(
+            x, [Index("i", 13), Index("j", 14), Index("a", 2), Index("b", 5)]
+        )
+        u1 = np.random.randn(2, 15)
+        u1_tensor = Tensor(u1, [Index("d", 2), Index("k", 15)])
+        u2 = np.random.randn(5, 16)
+        u2_tensor = Tensor(u2, [Index("b", 5), Index("m", 16)])
+        u3 = np.random.randn(2, 3, 2)
+        u3_tensor = Tensor(u3, [Index("a", 2), Index("c", 3), Index("d", 2)])
+        u4 = np.random.randn(3, 17)
+        u4_tensor = Tensor(u4, [Index("c", 3), Index("l", 17)])
+        net1 = TensorNetwork()
+        net1.add_node("x", x_tensor)
+        net1.add_node("u1", u1_tensor)
+        net1.add_node("u2", u2_tensor)
+        net1.add_node("u3", u3_tensor)
+        net1.add_node("u4", u4_tensor)
+        net1.add_edge("x", "u3")
+        net1.add_edge("x", "u2")
+        net1.add_edge("u3", "u1")
+        net1.add_edge("u3", "u4")
+        t1 = net1.contract()
+
+        t11 = t1.value + t1.value
+        net11 = net1 + net1
+        net11.round("x", net11.norm() * 1e-10)
+        # network free inds are changed after rounding
+        tensor11 = net11.contract()
+        perm = [tensor11.indices.index(ind) for ind in net1.free_indices()]
+        tensor11 = tensor11.permute(perm)
+        self.assertTrue(
+            np.allclose(tensor11.value, t11, rtol=1e-10, atol=1e-10)
+        )
+        self.assertEqual(net11.get_contraction_index("u3", "u1")[0].size, 2)
+        self.assertEqual(net11.get_contraction_index("x", "u2")[0].size, 5)
+        self.assertEqual(net11.get_contraction_index("x", "u3")[0].size, 2)
+        self.assertEqual(net11.get_contraction_index("u4", "u3")[0].size, 3)
+
+    def test_mul1(self):
+        x = np.random.randn(2, 13, 14)
+        x_tensor = Tensor(x, [Index("a", 2), Index("i", 13), Index("j", 14)])
+        u = np.random.randn(2, 15)
+        u_tensor = Tensor(u, [Index("a", 2), Index("k", 15)])
+        net1 = TensorNetwork()
+        net1.add_node("x", x_tensor)
+        net1.add_node("u", u_tensor)
+        net1.add_edge("x", "u")
+        t1 = net1.contract()
+
+        y = np.random.randn(3, 13, 14)
+        y_tensor = Tensor(y, [Index("b", 3), Index("i", 13), Index("j", 14)])
+        v = np.random.randn(3, 15)
+        v_tensor = Tensor(v, [Index("b", 3), Index("k", 15)])
+        net2 = TensorNetwork()
+        net2.add_node("y", y_tensor)
+        net2.add_node("v", v_tensor)
+        net2.add_edge("y", "v")
+        t2 = net2.contract()
+
+        t12 = t1.value * t2.value
+        t12_net = net1 * net2
+        t12_net.round("x", t12_net.norm() * 1e-10)
+        # network free inds are changed after rounding
+        tensor12 = t12_net.contract()
+        perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
+        tensor12 = tensor12.permute(perm)
+        self.assertTrue(
+            np.allclose(tensor12.value, t12, rtol=1e-10, atol=1e-10)
+        )
+
+    def test_mul2(self):
+        x = np.random.randn(1, 2, 3, 4)
+        x_tensor = Tensor(
+            x, [Index("a", 1), Index("b", 2), Index("c", 3), Index("d", 4)]
+        )
+        u1 = np.random.randn(1, 13)
+        u1_tensor = Tensor(u1, [Index("a", 1), Index("i", 13)])
+        u2 = np.random.randn(2, 14)
+        u2_tensor = Tensor(u2, [Index("b", 2), Index("j", 14)])
+        u3 = np.random.randn(3, 15)
+        u3_tensor = Tensor(u3, [Index("c", 3), Index("k", 15)])
+        u4 = np.random.randn(4, 16)
+        u4_tensor = Tensor(u4, [Index("d", 4), Index("l", 16)])
+        net1 = TensorNetwork()
+        net1.add_node("x", x_tensor)
+        net1.add_node("u1", u1_tensor)
+        net1.add_node("u2", u2_tensor)
+        net1.add_node("u3", u3_tensor)
+        net1.add_node("u4", u4_tensor)
+        net1.add_edge("x", "u1")
+        net1.add_edge("x", "u2")
+        net1.add_edge("x", "u3")
+        net1.add_edge("x", "u4")
+        t1 = net1.contract()
+
+        y = np.random.randn(2, 3, 4, 5)
+        y_tensor = Tensor(
+            y, [Index("e", 2), Index("f", 3), Index("g", 4), Index("h", 5)]
+        )
+        v1 = np.random.randn(2, 13)
+        v1_tensor = Tensor(v1, [Index("e", 2), Index("i", 13)])
+        v2 = np.random.randn(3, 14)
+        v2_tensor = Tensor(v2, [Index("f", 3), Index("j", 14)])
+        v3 = np.random.randn(4, 15)
+        v3_tensor = Tensor(v3, [Index("g", 4), Index("k", 15)])
+        v4 = np.random.randn(5, 16)
+        v4_tensor = Tensor(v4, [Index("h", 5), Index("l", 16)])
+        net2 = TensorNetwork()
+        net2.add_node("y", y_tensor)
+        net2.add_node("v1", v1_tensor)
+        net2.add_node("v2", v2_tensor)
+        net2.add_node("v3", v3_tensor)
+        net2.add_node("v4", v4_tensor)
+        net2.add_edge("y", "v1")
+        net2.add_edge("y", "v2")
+        net2.add_edge("y", "v3")
+        net2.add_edge("y", "v4")
+        t2 = net2.contract()
+
+        t12 = t1.value * t2.value
+        net12 = net1 * net2
+        net12.round("x", net12.norm() * 1e-10)
+        # print(net12)
+        # network free inds are changed after rounding
+        tensor12 = net12.contract()
+        perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
+        tensor12 = tensor12.permute(perm)
+        self.assertTrue(
+            np.allclose(t12, tensor12.value, rtol=1e-10, atol=1e-10)
+        )
+
+    def test_mul3(self):
+        x = np.random.randn(13, 14, 2, 5)
+        x_tensor = Tensor(
+            x, [Index("i", 13), Index("j", 14), Index("a", 2), Index("b", 5)]
+        )
+        u1 = np.random.randn(2, 15)
+        u1_tensor = Tensor(u1, [Index("d", 2), Index("k", 15)])
+        u2 = np.random.randn(5, 16)
+        u2_tensor = Tensor(u2, [Index("b", 5), Index("l", 16)])
+        u3 = np.random.randn(2, 3, 2)
+        u3_tensor = Tensor(u3, [Index("a", 2), Index("c", 3), Index("d", 2)])
+        u4 = np.random.randn(3, 17)
+        u4_tensor = Tensor(u4, [Index("c", 3), Index("m", 17)])
+        net1 = TensorNetwork()
+        net1.add_node("u0", x_tensor)
+        net1.add_node("u1", u1_tensor)
+        net1.add_node("u2", u2_tensor)
+        net1.add_node("u3", u3_tensor)
+        net1.add_node("u4", u4_tensor)
+        net1.add_edge("u0", "u3")
+        net1.add_edge("u0", "u2")
+        net1.add_edge("u3", "u1")
+        net1.add_edge("u3", "u4")
+        t1 = net1.contract()
+
+        y = np.random.randn(13, 14, 1, 2)
+        y_tensor = Tensor(
+            y, [Index("i", 13), Index("j", 14), Index("aa", 1), Index("bb", 2)]
+        )
+        v1 = np.random.randn(3, 15)
+        v1_tensor = Tensor(v1, [Index("dd", 3), Index("k", 15)])
+        v2 = np.random.randn(2, 16)
+        v2_tensor = Tensor(v2, [Index("bb", 2), Index("l", 16)])
+        v3 = np.random.randn(1, 2, 3)
+        v3_tensor = Tensor(
+            v3, [Index("aa", 1), Index("cc", 2), Index("dd", 3)]
+        )
+        v4 = np.random.randn(2, 17)
+        v4_tensor = Tensor(v4, [Index("cc", 2), Index("m", 17)])
+        net2 = TensorNetwork()
+        net2.add_node("v0", y_tensor)
+        net2.add_node("v1", v1_tensor)
+        net2.add_node("v2", v2_tensor)
+        net2.add_node("v3", v3_tensor)
+        net2.add_node("v4", v4_tensor)
+        net2.add_edge("v0", "v2")
+        net2.add_edge("v0", "v3")
+        net2.add_edge("v3", "v1")
+        net2.add_edge("v3", "v4")
+        t2 = net2.contract()
+
+        t12 = t1.value * t2.value
+        net12 = net1 * net2
+        net12.round("u0", net12.norm() * 1e-10)
+        # network free inds are changed after rounding
+        tensor12 = net12.contract()
+        perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
+        tensor12 = tensor12.permute(perm)
+        self.assertTrue(
+            np.allclose(t12, tensor12.value, rtol=1e-10, atol=1e-10)
+        )
+
 
 class TestCross(unittest.TestCase):
     """Test suite for cross approximation"""
@@ -662,6 +1014,35 @@ class TestCross(unittest.TestCase):
 
             return y1 + y2 + y3
 
+    class FuncPathological(CachedFunc):
+        """
+        Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
+                benchmark functions for global optimization problems". Journal of
+                Mathematical Modelling and Numerical Optimisation 2013; 4:150-194
+                ("87. Pathological Function"; Continuous, Differentiable,
+                Non-separable, Non-scalable, Multimodal).
+        """
+
+        def __init__(self, indices: List[Index]):
+            inds = []
+            for ind in indices:
+                new_ind = ind.with_new_rng(np.linspace(-100, 100, ind.size))
+                inds.append(new_ind)
+
+            super().__init__(inds)
+            # self.low = -100
+            # self.range = 100 * 2
+            self.name = "Pathological"
+
+        def _run(self, args: np.ndarray):
+            x1 = args[:, :-1]
+            x2 = args[:, 1:]
+
+            y1 = (np.sin(np.sqrt(100.0 * x1**2 + x2**2))) ** 2 - 0.5
+            y2 = 1.0 + 0.001 * (x1**2 - 2.0 * x1 * x2 + x2**2) ** 2
+
+            return np.sum(0.5 + y1 / y2, axis=1)
+
     def test_cross_two_nodes(self):
         """Cross approximation for a matrix"""
 
@@ -674,9 +1055,7 @@ class TestCross(unittest.TestCase):
         validation = np.dstack(
             np.meshgrid(*[range(ind.size) for ind in indices])
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(
-            net, eps=1e-4
-        )
+        res = cross_engine.cross(net, eps=1e-4)
 
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
@@ -697,9 +1076,7 @@ class TestCross(unittest.TestCase):
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(
-            net, eps=1e-4
-        )
+        res = cross_engine.cross(net, eps=1e-4)
 
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
@@ -725,9 +1102,7 @@ class TestCross(unittest.TestCase):
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(
-            net, eps=1e-4
-        )
+        res = cross_engine.cross(net, eps=1e-4)
 
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
@@ -753,9 +1128,7 @@ class TestCross(unittest.TestCase):
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(
-            net, eps=1e-4
-        )
+        res = cross_engine.cross(net, eps=1e-4)
 
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
@@ -832,6 +1205,86 @@ class TestCross(unittest.TestCase):
 
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
+        ).reshape(-1, len(indices))
+        res = cross_engine.cross(net, eps=1e-4)
+
+        real_val = func(validation)
+        approx_val = res.net.evaluate(func.indices, validation)
+        self.assertTrue(
+            np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
+            <= 1e-4
+        )
+
+    def test_cross_tt_deim_validation_set(self):
+        """
+        Cross approximation for Tensor Train with DEIM and
+        converge at validation set
+        """
+
+        indices = [
+            Index("i", 8),
+            Index("j", 10),
+            Index("k", 12),
+            Index("l", 20),
+            Index("m", 20),
+            Index("n", 8),
+            Index("o", 8),
+            Index("p", 8),
+        ]
+        func = TestCross.FuncAckley(indices)
+        net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
+        cross_config = CrossConfig(
+            kickrank=2,
+            cross_algo=CrossAlgo.DEIM,
+            termination=TerminationCriteria.VALID_ERROR,
+        )
+        cross_engine = CrossApproximation(func, cross_config)
+
+        validation = np.stack(
+            np.meshgrid(
+                *[np.random.randint(0, ind.size, size=5) for ind in indices]
+            ),
+            axis=-1,
+        ).reshape(-1, len(indices))
+        res = cross_engine.cross(net, eps=1e-4)
+
+        real_val = func(validation)
+        approx_val = res.net.evaluate(func.indices, validation)
+        self.assertTrue(
+            np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
+            <= 1e-4
+        )
+
+    def test_cross_tt_maxvol_validation_set(self):
+        """
+        Cross approximation for Tensor Train with DEIM and
+        converge at validation set
+        """
+
+        indices = [
+            Index("i", 8),
+            Index("j", 10),
+            Index("k", 12),
+            Index("l", 20),
+            Index("m", 20),
+            Index("n", 8),
+            Index("o", 8),
+            Index("p", 8),
+        ]
+        func = TestCross.FuncPathological(indices)
+        net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
+        cross_config = CrossConfig(
+            kickrank=2,
+            cross_algo=CrossAlgo.DEIM,
+            termination=TerminationCriteria.VALID_ERROR,
+        )
+        cross_engine = CrossApproximation(func, cross_config)
+
+        validation = np.stack(
+            np.meshgrid(
+                *[np.random.randint(0, ind.size, size=5) for ind in indices]
+            ),
+            axis=-1,
         ).reshape(-1, len(indices))
         res = cross_engine.cross(net, eps=1e-4)
 

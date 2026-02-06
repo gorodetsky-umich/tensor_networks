@@ -3,6 +3,7 @@
 from enum import Enum, auto
 from typing import Optional, Sequence, Tuple
 import logging
+import copy
 
 import numpy as np
 from line_profiler import profile
@@ -22,6 +23,15 @@ class CrossAlgo(Enum):
 
     MAXVOL = auto()
     DEIM = auto()
+
+
+class TerminationCriteria(Enum):
+    """Enumeration of termination conditions."""
+
+    # check norm changes between iterations as the termination criteria
+    STABLE_NORM = auto()
+    # use the error on a validation set as the termination criteria
+    VALID_ERROR = auto()
 
 
 class CrossConfig(pydantic.BaseModel):
@@ -46,6 +56,10 @@ class CrossConfig(pydantic.BaseModel):
     validation_size: int = pydantic.Field(
         default=1000,
         description="Configure the number of validation points",
+    )
+    termination: TerminationCriteria = pydantic.Field(
+        default=TerminationCriteria.STABLE_NORM,
+        description="Configure how to check the termination condition",
     )
 
 
@@ -82,7 +96,7 @@ def _select_indices_maxvol(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 def _deim(u: np.ndarray):
     """
-    Select indices by Descrete Empirical Interpolation Method (DEIM)
+    Select indices by Discrete Empirical Interpolation Method (DEIM)
     """
     r = u.shape[1]
     indices = np.empty(r, dtype=int)
@@ -248,7 +262,9 @@ class CrossApproximation:
         node.up_info.vals = up_vals[ind, :]
         node.up_info.rank = len(ind)
         # print("====>", node.values.up_vals)
-        net.node_tensor(node.node).update_val_size(b.reshape(*up_sizes, -1))
+        net.node_tensor(node.node).update_val_size(
+            b.reshape(*up_sizes, -1).transpose(np.argsort(node.perm))
+        )
 
     def _incr_ranks(
         self, tree: DimTreeNode, known: Optional[np.ndarray] = None
@@ -283,6 +299,58 @@ class CrossApproximation:
             ]
         tree.add_values(up_vals)
 
+    def _create_validation_set(self):
+        valid_list = []
+        for ind in self._tensor_func.indices:
+            valid_list.append(
+                np.random.randint(
+                    0, ind.size, size=self._config.validation_size
+                )
+            )
+        return np.stack(valid_list, axis=-1)
+
+    def _iterate_tree_nodes(
+        self, net: pt.TensorNetwork, tree_nodes: Sequence[DimTreeNode]
+    ):
+        for n in tree_nodes:
+            if len(n.up_info.nodes) == 0:
+                continue
+
+            logger.debug(
+                "root to leaves: %s, up indices: %s, down indices: %s",
+                n.node,
+                [ind.name for ind in n.up_info.indices],
+                [ind.name for ind in n.down_info.indices],
+            )
+            self._root_to_leaves(n)
+
+        for n in reversed(tree_nodes[1:]):
+            logger.debug(
+                "leaves to root: %s, up indices: %s, down indices: %s",
+                n.node,
+                [ind.name for ind in n.up_info.indices],
+                [ind.name for ind in n.down_info.indices],
+            )
+            self._leaves_to_root(n, net)
+
+    def _get_root_value(
+        self, tree: DimTreeNode, f_sizes: Sequence[int], f_vals: np.ndarray
+    ):
+        ordered_down_nodes = sorted(tree.down_info.nodes)
+        c_indices = [
+            ind for c in ordered_down_nodes for ind in c.up_info.indices
+        ]
+        c_vals = [c.up_info.vals for c in ordered_down_nodes]
+        up_vals = _cartesian_product_arrays(*c_vals)
+        c_sizes = [len(v) for v in c_vals]
+        root_matrix = self._construct_matrix(
+            (tree.free_indices, f_vals),
+            (c_indices, up_vals),
+        )
+        return root_matrix.T.reshape(*f_sizes, *c_sizes).transpose(
+            np.argsort(tree.perm)
+        )
+
     @profile
     def cross(  # pylint: disable=R0913,R0917
         self,
@@ -297,6 +365,7 @@ class CrossApproximation:
         if root is None:
             root = list(net.network.nodes)[0]
 
+        assert root is not None
         tree = net.dimension_tree(root)
         if initialization is None:
             tree.increment_ranks(1, self._config.max_rank)
@@ -308,17 +377,12 @@ class CrossApproximation:
 
         converged = False
 
-        if validation is None:
-            valid_list = []
-            for ind in self._tensor_func.indices:
-                valid_list.append(
-                    np.random.randint(
-                        0, ind.size, size=self._config.validation_size
-                    )
-                )
-            validation = np.stack(valid_list, axis=-1)
+        if self._config.termination == TerminationCriteria.VALID_ERROR:
+            if validation is None:
+                validation = self._create_validation_set()
 
-        real = self._tensor_func(validation)
+            real = self._tensor_func(validation)
+
         f_sizes = [ind.size for ind in tree.free_indices]
         f_vals = _cartesian_product_arrays(
             *[np.arange(sz)[:, None] for sz in f_sizes]
@@ -328,49 +392,29 @@ class CrossApproximation:
         ranks_and_errs = {}
         trial = 0
         while not converged:
-            # print(net)
-            for n in tree_nodes:
-                if len(n.up_info.nodes) == 0:
-                    continue
-
-                logger.debug(
-                    "root to leaves: %s, up indices: %s, down indices: %s",
-                    n.node,
-                    [ind.name for ind in n.up_info.indices],
-                    [ind.name for ind in n.down_info.indices],
-                )
-                self._root_to_leaves(n)
-
-            for n in reversed(tree_nodes[1:]):
-                logger.debug(
-                    "leaves to root: %s, up indices: %s, down indices: %s",
-                    n.node,
-                    [ind.name for ind in n.up_info.indices],
-                    [ind.name for ind in n.down_info.indices],
-                )
-                self._leaves_to_root(n, net)
+            old_net = copy.deepcopy(net)
+            self._iterate_tree_nodes(net, tree_nodes)
 
             # get the value for the root node
-            ordered_down_nodes = sorted(tree.down_info.nodes)
-            c_indices = [
-                ind for c in ordered_down_nodes for ind in c.up_info.indices
-            ]
-            c_vals = [c.up_info.vals for c in ordered_down_nodes]
-            up_vals = _cartesian_product_arrays(*c_vals)
-            c_sizes = [len(v) for v in c_vals]
-            root_matrix = self._construct_matrix(
-                (tree.free_indices, f_vals),
-                (c_indices, up_vals),
-            )
-            root_val = root_matrix.T.reshape(*f_sizes, *c_sizes)
+            root_val = self._get_root_value(tree, f_sizes, f_vals)
             net.node_tensor(tree.node).update_val_size(root_val)
 
-            estimate = net.evaluate(
-                self._tensor_func.indices, validation
-            ).reshape(-1)
+            if self._config.termination == TerminationCriteria.STABLE_NORM:
+                diff_net = net - old_net
+                err = diff_net.norm() / net.norm()
 
-            err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
-            ranks_and_errs[len(up_vals)] = float(err)
+            elif self._config.termination == TerminationCriteria.VALID_ERROR:
+                assert validation is not None
+                estimate = net.evaluate(
+                    self._tensor_func.indices, validation
+                ).reshape(-1)
+
+                err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
+
+            else:
+                raise RuntimeError("unknown termination criteria")
+
+            ranks_and_errs[len(tree.up_info.vals)] = float(err)
             logger.debug("step: %s, error: %s", trial, err)
             if err <= eps or (
                 self._config.max_iters is not None

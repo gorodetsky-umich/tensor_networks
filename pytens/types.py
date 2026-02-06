@@ -11,6 +11,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 IntOrStr = Union[str, int]
+IndexName = IntOrStr
 IndexChain = Union[List[int], Tuple[int]]
 NodeName = IntOrStr
 
@@ -96,6 +97,11 @@ class DimTreeNode:
         self.free_indices = free_indices
         self.up_info = up_info
         self.down_info = down_info
+        self.perm = list(
+            range(
+                len(free_indices) + len(down_info.nodes) + len(up_info.nodes)
+            )
+        )
 
     def __lt__(self, other: Self) -> bool:
         return sorted(self.indices) < sorted(other.indices)
