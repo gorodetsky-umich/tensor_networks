@@ -1051,12 +1051,12 @@ class TestCross(unittest.TestCase):
         net = TensorNetwork.rand_tt(func.indices, [1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.dstack(
             np.meshgrid(*[range(ind.size) for ind in indices])
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
-
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
@@ -1072,12 +1072,12 @@ class TestCross(unittest.TestCase):
         net = TensorNetwork.rand_tt(func.indices, [1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
-
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
@@ -1098,12 +1098,12 @@ class TestCross(unittest.TestCase):
         net = TensorNetwork.rand_tt(func.indices, [1, 1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
-
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
@@ -1124,12 +1124,12 @@ class TestCross(unittest.TestCase):
         net = TensorNetwork.rand_ht(func.indices, 1)
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
-
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
@@ -1150,12 +1150,12 @@ class TestCross(unittest.TestCase):
         net = TensorNetwork.rand_tucker(func.indices, 1)
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
-
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
@@ -1176,12 +1176,12 @@ class TestCross(unittest.TestCase):
         net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
-
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
@@ -1202,12 +1202,12 @@ class TestCross(unittest.TestCase):
         net = TensorNetwork.rand_tucker(func.indices, 1)
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.stack(
             np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
-
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
@@ -1215,7 +1215,7 @@ class TestCross(unittest.TestCase):
             <= 1e-4
         )
 
-    def test_cross_tt_deim_validation_set(self):
+    def test_cross_tt_deim_valid_error(self):
         """
         Cross approximation for Tensor Train with DEIM and
         converge at validation set
@@ -1239,15 +1239,15 @@ class TestCross(unittest.TestCase):
             convergence=ConvergenceCheck.VALID_ERROR,
         )
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.stack(
             np.meshgrid(
                 *[np.random.randint(0, ind.size, size=5) for ind in indices]
             ),
             axis=-1,
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
-
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
@@ -1255,7 +1255,7 @@ class TestCross(unittest.TestCase):
             <= 1e-4
         )
 
-    def test_cross_tt_maxvol_validation_set(self):
+    def test_cross_tt_maxvol_valid_error(self):
         """
         Cross approximation for Tensor Train with DEIM and
         converge at validation set
@@ -1279,15 +1279,42 @@ class TestCross(unittest.TestCase):
             convergence=ConvergenceCheck.VALID_ERROR,
         )
         cross_engine = CrossApproximation(func, cross_config)
+        res = cross_engine.cross(net, eps=1e-4)
 
+        # check results on a validation set
         validation = np.stack(
             np.meshgrid(
                 *[np.random.randint(0, ind.size, size=5) for ind in indices]
             ),
             axis=-1,
         ).reshape(-1, len(indices))
-        res = cross_engine.cross(net, eps=1e-4)
+        real_val = func(validation)
+        approx_val = res.net.evaluate(func.indices, validation)
+        self.assertTrue(
+            np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
+            <= 1e-4
+        )
 
+    def test_cross_tt_provided_validation(self):
+        """Cross approximation for a four dimensional TT"""
+
+        indices = [
+            Index("i", 8),
+            Index("j", 10),
+            Index("k", 12),
+            Index("l", 20),
+        ]
+        func = TestCross.FuncAckley(indices)
+        net = TensorNetwork.rand_tt(func.indices, [1, 1, 1])
+        cross_config = CrossConfig(kickrank=2)
+        cross_engine = CrossApproximation(func, cross_config)
+
+        validation = np.stack(
+            np.meshgrid(*[range(ind.size) for ind in indices]), axis=-1
+        ).reshape(-1, len(indices))
+        res = cross_engine.cross(net, eps=1e-4, validation=validation)
+
+        # check results on a validation set
         real_val = func(validation)
         approx_val = res.net.evaluate(func.indices, validation)
         self.assertTrue(
