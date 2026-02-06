@@ -13,7 +13,7 @@ from pytens.cross.cross import (
     CrossAlgo,
     CrossApproximation,
     CrossConfig,
-    TerminationCriteria,
+    ConvergenceCheck,
 )
 from pytens.types import Index
 from pytens.cross.funcs import CachedFunc
@@ -1236,7 +1236,7 @@ class TestCross(unittest.TestCase):
         cross_config = CrossConfig(
             kickrank=2,
             cross_algo=CrossAlgo.DEIM,
-            termination=TerminationCriteria.VALID_ERROR,
+            convergence=ConvergenceCheck.VALID_ERROR,
         )
         cross_engine = CrossApproximation(func, cross_config)
 
@@ -1276,7 +1276,7 @@ class TestCross(unittest.TestCase):
         cross_config = CrossConfig(
             kickrank=2,
             cross_algo=CrossAlgo.DEIM,
-            termination=TerminationCriteria.VALID_ERROR,
+            convergence=ConvergenceCheck.VALID_ERROR,
         )
         cross_engine = CrossApproximation(func, cross_config)
 

@@ -25,12 +25,12 @@ class CrossAlgo(Enum):
     DEIM = auto()
 
 
-class TerminationCriteria(Enum):
-    """Enumeration of termination conditions."""
+class ConvergenceCheck(Enum):
+    """Enumeration of convergence check methods."""
 
-    # check norm changes between iterations as the termination criteria
-    STABLE_NORM = auto()
-    # use the error on a validation set as the termination criteria
+    # check norm changes between iterations as the criteria for convergence
+    NORM = auto()
+    # use the error on a validation set as the criteria for convergence
     VALID_ERROR = auto()
 
 
@@ -57,9 +57,9 @@ class CrossConfig(pydantic.BaseModel):
         default=1000,
         description="Configure the number of validation points",
     )
-    termination: TerminationCriteria = pydantic.Field(
-        default=TerminationCriteria.STABLE_NORM,
-        description="Configure how to check the termination condition",
+    convergence: ConvergenceCheck = pydantic.Field(
+        default=ConvergenceCheck.NORM,
+        description="Configure how to check the algorithm convergence",
     )
 
 
@@ -377,7 +377,7 @@ class CrossApproximation:
 
         converged = False
 
-        if self._config.termination == TerminationCriteria.VALID_ERROR:
+        if self._config.convergence == ConvergenceCheck.VALID_ERROR:
             if validation is None:
                 validation = self._create_validation_set()
 
@@ -399,11 +399,11 @@ class CrossApproximation:
             root_val = self._get_root_value(tree, f_sizes, f_vals)
             net.node_tensor(tree.node).update_val_size(root_val)
 
-            if self._config.termination == TerminationCriteria.STABLE_NORM:
+            if self._config.convergence == ConvergenceCheck.NORM:
                 diff_net = net - old_net
                 err = diff_net.norm() / net.norm()
 
-            elif self._config.termination == TerminationCriteria.VALID_ERROR:
+            elif self._config.convergence == ConvergenceCheck.VALID_ERROR:
                 assert validation is not None
                 estimate = net.evaluate(
                     self._tensor_func.indices, validation
