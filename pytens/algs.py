@@ -23,6 +23,7 @@ from typing import (
 import itertools
 
 import numpy as np
+from scipy.linalg import khatri_rao
 import opt_einsum as oe
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -2141,10 +2142,11 @@ class TTRandRound:
     """
 
     def __init__(
-        self, y: Union[TensorNetwork, List[TensorNetwork]], target_ranks: List
+        self, y: Union[TensorNetwork, List[TensorNetwork]], target_ranks: Optional[List]=None, eps: float=1e-14
     ):
         self.y = y
         self.target_ranks = target_ranks
+        self.eps = eps
 
         if isinstance(y, List) and isinstance(y[0], TensorNetwork):
             self.ns = len(y)
@@ -2207,6 +2209,163 @@ class TTRandRound:
             return w
 
         raise ValueError("Invalid option")
+    
+    def khatri_rao_gaussians(self, rank: int) -> np.ndarray:
+        """"""
+        Omega = []
+        for i in range(self.d):
+            if i == 0:
+                curr_shape = [self.y.value(i).shape[0], rank]
+            else:
+                curr_shape = [self.y.value(i).shape[1], rank]
+            Omega.append(np.random.randn(*curr_shape))
+        
+        return Omega
+    
+    def krp_contraction(self, Omega: List[np.ndarray], current_idx: int) -> List[np.ndarray]:
+        """Contracts the Khatri-Rao product of the random matrices with the TT-cores"""
+        w = []
+        for i in range(self.d - 1, current_idx, -1):
+            x = self.y.value(i)
+            sx = x.shape
+            if i == self.d - 1:
+                w.append(x @ Omega[i])
+                continue
+            krp = khatri_rao(w[-1], Omega[i]) 
+            w.append(x.reshape(sx[0], -1) @ krp)
+
+        w = w[::-1]
+        return w
+
+    def generate_residual_sketch(self,
+                                 current_tt_core: np.ndarray,
+                                 current_basis: np.ndarray,
+                                 current_contraction_W: List[np.ndarray],
+                                 tt_core_idx: int,
+                                 block_size: int
+                                 ) -> np.ndarray:
+        """Generates the sketch of the residual tensor at a given step of the randomized rounding algorithm"""
+        needed_cols = current_basis.shape[1] + block_size - current_contraction_W[tt_core_idx].shape[1]
+        if needed_cols > 0:
+            Omega = self.khatri_rao_gaussians(needed_cols)
+            W_additional = self.krp_contraction(Omega, tt_core_idx)
+            for i in range(len(W_additional)):
+                current_contraction_W[i + tt_core_idx] = np.concatenate(
+                    (
+                        current_contraction_W[i + tt_core_idx],
+                        W_additional[i],
+                    ),
+                    axis=1,
+                )
+        S = current_tt_core @ current_contraction_W[tt_core_idx][:, current_basis.shape[1]: current_basis.shape[1] + block_size]
+        S_perp = S - current_basis @ (current_basis.T @ S)
+
+        return S_perp, current_contraction_W
+    
+    def adaptive_rto_rounding(self, f_init: float = 0.5, f_inc: float = 0.1) -> TensorNetwork:
+        """Adaptive randomized rounding using KRP (Algorithm 3.4)."""
+        if isinstance(self.y, List):
+            raise ValueError(
+                "Adaptive RTO rounding is only implemented for a single TT tensor."
+            )
+
+        if not (0 < f_init < 1) or not (0 < f_inc < 1):
+            raise ValueError("f_init and f_inc must satisfy 0 < f < 1.")
+
+        ranks = self.y.ranks()
+        if len(ranks) == 0:
+            return copy.deepcopy(self.y)
+
+        r = int(np.ceil(np.max(ranks) * f_init))
+        r = max(r, 1)
+
+        Omega = self.khatri_rao_gaussians(r)
+        current_contraction_W = self.krp_contraction(Omega, 0)
+
+        x1 = self.y.value(0)
+        V_x1 = x1 if x1.ndim == 2 else x1.reshape((-1, x1.shape[-1]))
+        nrmx_est = np.linalg.norm(V_x1 @ current_contraction_W[0], ord="fro") / np.sqrt(r)
+        # nrmx_est = self.y.norm()
+        tau = self.eps * nrmx_est / np.sqrt(self.d - 1)
+        
+        res = copy.deepcopy(self.y)
+        current_tt_core = res.value(0)
+
+        for k in range(self.d - 1):
+            core_k = current_tt_core
+            if core_k.ndim == 2:
+                V_yk = core_k
+                left_rank = 1
+                n_k = core_k.shape[0]
+            else:
+                left_rank = core_k.shape[0]
+                n_k = core_k.shape[1]
+                V_yk = core_k.reshape((-1, core_k.shape[-1]))
+            rbar_k = min(V_yk.shape)
+            b_init = max(1, int(np.ceil(rbar_k * f_init)))
+            b_inc = max(1, int(np.ceil(rbar_k * f_inc)))
+
+            S_k = V_yk @ current_contraction_W[k][:, :b_init]
+            Q_k, _ = np.linalg.qr(S_k)
+
+            M_k = Q_k.T @ V_yk
+            xkp1 = self.y.value(k + 1)
+            shp1 = xkp1.shape
+            H_xkp1 = xkp1.reshape((shp1[0], -1))
+            ykp1_mat = M_k @ H_xkp1
+            if xkp1.ndim == 2:
+                ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1]))
+            else:
+                ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1], shp1[2]))
+            res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
+
+            remaining = rbar_k - Q_k.shape[1]
+            if remaining > 0:
+                block = min(b_inc, remaining)
+                S_k, current_contraction_W = self.generate_residual_sketch(
+                    V_yk, Q_k, current_contraction_W, k, block
+                )
+            else:
+                block = 0
+                S_k = np.zeros((V_yk.shape[0], 0))
+
+            while (
+                block > 0
+                and np.linalg.norm(S_k, ord="fro") / np.sqrt(block) > tau
+            ):
+                Q_new, _ = np.linalg.qr(S_k)
+                Q_new = Q_new - Q_k @ (Q_k.T @ Q_new)
+                Q_new, _ = np.linalg.qr(Q_new)
+                Q_k = np.concatenate((Q_k, Q_new), axis=1)
+                
+                M_k = Q_k.T @ V_yk
+                ykp1_mat = M_k @ H_xkp1
+                if xkp1.ndim == 2:
+                    ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1]))
+                else:
+                    ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1], shp1[2]))
+                res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
+
+                remaining = rbar_k - Q_k.shape[1]
+                if remaining <= 0:
+                    break
+                block = min(b_inc, remaining)
+                S_k, current_contraction_W = self.generate_residual_sketch(
+                    V_yk, Q_k, current_contraction_W, k, block
+                )
+
+            if core_k.ndim == 2:
+                res.network.nodes[k]["tensor"].update_val_size(
+                    Q_k.reshape((n_k, Q_k.shape[1]))
+                )
+            else:
+                res.network.nodes[k]["tensor"].update_val_size(
+                    Q_k.reshape((left_rank, n_k, Q_k.shape[1]))
+                )
+
+            current_tt_core = res.value(k + 1)
+
+        return res
 
     def rand_then_orth(self) -> TensorNetwork:
         """Implements Algorithm 3.2 in reference [1]"""
@@ -2304,7 +2463,7 @@ class TTRandRound:
             "It seems that this function is being used \
                              to round a single TT"
         )
-
+    
     def round(self) -> TensorNetwork:
         """Executes rounding"""
         if isinstance(self.y, List):
@@ -2377,6 +2536,24 @@ def tt_rand_precond_svd_round(
         res.network.nodes[i]["tensor"].update_val_size(tens_curr)
         res.network.nodes[i - 1]["tensor"].update_val_size(tens_next)
 
+    return res
+
+
+def tt_adaptive_rand_round(tn: TensorNetwork, eps: float, f_init: float = 0.5, f_inc: float = 0.1) -> TensorNetwork:
+    """
+    Uses adaptive randomized rounding (Algorithm 3.4 in reference [1]) to
+    round a TT TensorNetwork to a specified tolerance (eps).
+
+    Issues right now:
+        - Total error accumulated post rounding is unknown due to initi-
+        al rank-based truncation.
+        - Need to adjust the eps in the adaptive randomized rounding so
+        that total error stays consistent with the global prespecified
+        tolerance.
+    """
+
+    rand_setup = TTRandRound(y=tn, eps=eps)
+    res = rand_setup.adaptive_rto_rounding(f_init=f_init, f_inc=f_inc)
     return res
 
 
