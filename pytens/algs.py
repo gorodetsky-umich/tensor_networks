@@ -2221,6 +2221,18 @@ class TTRandRound:
             Omega.append(np.random.randn(*curr_shape))
         
         return Omega
+
+    def khatri_rao_gaussians_ttsum(self, rank: int) -> List[np.ndarray]:
+        """Gaussian matrices for TT-sum using the first summand as shape reference."""
+        Omega = []
+        ref = self.y[0]
+        for i in range(self.d):
+            if i == 0:
+                curr_shape = [ref.value(i).shape[0], rank]
+            else:
+                curr_shape = [ref.value(i).shape[1], rank]
+            Omega.append(np.random.randn(*curr_shape) / np.sqrt(np.prod(curr_shape)))
+        return Omega
     
     def krp_contraction(self, Omega: List[np.ndarray], current_idx: int) -> List[np.ndarray]:
         """Contracts the Khatri-Rao product of the random matrices with the TT-cores"""
@@ -2232,6 +2244,26 @@ class TTRandRound:
                 w.append(x @ Omega[i])
                 continue
             krp = khatri_rao(w[-1], Omega[i]) 
+            w.append(x.reshape(sx[0], -1) @ krp)
+
+        w = w[::-1]
+        return w
+
+    def krp_contraction_tt(
+        self,
+        tt: TensorNetwork,
+        Omega: List[np.ndarray],
+        current_idx: int,
+    ) -> List[np.ndarray]:
+        """KRP partial contractions for a specific TT (used for TT-sums)."""
+        w = []
+        for i in range(self.d - 1, current_idx, -1):
+            x = tt.value(i)
+            sx = x.shape
+            if i == self.d - 1:
+                w.append(x @ Omega[i])
+                continue
+            krp = khatri_rao(w[-1], Omega[i])
             w.append(x.reshape(sx[0], -1) @ krp)
 
         w = w[::-1]
@@ -2261,6 +2293,40 @@ class TTRandRound:
         S_perp = S - current_basis @ (current_basis.T @ S)
 
         return S_perp, current_contraction_W
+
+    def generate_residual_sketch_ttsum(
+        self,
+        current_tt_core: np.ndarray,
+        current_basis: np.ndarray,
+        current_contraction_W: List[List[np.ndarray]],
+        tt_core_idx: int,
+        block_size: int,
+    ) -> tuple[np.ndarray, List[List[np.ndarray]]]:
+        """Residual sketch for TT-sums (Algorithm D.1)."""
+        col_q = current_basis.shape[1]
+        if current_contraction_W[0][tt_core_idx].shape[1] < col_q + block_size:
+            needed = col_q + block_size - current_contraction_W[0][tt_core_idx].shape[1]
+            Omega = self.khatri_rao_gaussians_ttsum(needed)
+            for i in range(self.ns):
+                W_new = self.krp_contraction_tt(self.y[i], Omega, tt_core_idx)
+                for j in range(len(W_new)):
+                    current_contraction_W[i][tt_core_idx + j] = np.concatenate(
+                        (current_contraction_W[i][tt_core_idx + j], W_new[j]),
+                        axis=1,
+                    )
+
+        W_block = np.concatenate(
+            [
+                current_contraction_W[i][tt_core_idx][
+                    :, col_q : col_q + block_size
+                ]
+                for i in range(self.ns)
+            ],
+            axis=0,
+        )
+        S = current_tt_core @ W_block
+        S = S - current_basis @ (current_basis.T @ S)
+        return S, current_contraction_W
     
     def adaptive_rto_rounding(self, f_init: float = 0.5, f_inc: float = 0.1) -> TensorNetwork:
         """Adaptive randomized rounding using KRP (Algorithm 3.4)."""
@@ -2313,12 +2379,7 @@ class TTRandRound:
             shp1 = xkp1.shape
             H_xkp1 = xkp1.reshape((shp1[0], -1))
             ykp1_mat = M_k @ H_xkp1
-            if xkp1.ndim == 2:
-                ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1]))
-            else:
-                ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1], shp1[2]))
-            res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
-
+            
             remaining = rbar_k - Q_k.shape[1]
             if remaining > 0:
                 block = min(b_inc, remaining)
@@ -2338,13 +2399,8 @@ class TTRandRound:
                 Q_new, _ = np.linalg.qr(Q_new)
                 Q_k = np.concatenate((Q_k, Q_new), axis=1)
                 
-                M_k = Q_k.T @ V_yk
-                ykp1_mat = M_k @ H_xkp1
-                if xkp1.ndim == 2:
-                    ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1]))
-                else:
-                    ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1], shp1[2]))
-                res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
+                M_k = Q_new.T @ V_yk
+                ykp1_mat = np.concatenate((ykp1_mat, M_k @ H_xkp1), axis=0)
 
                 remaining = rbar_k - Q_k.shape[1]
                 if remaining <= 0:
@@ -2362,6 +2418,11 @@ class TTRandRound:
                 res.network.nodes[k]["tensor"].update_val_size(
                     Q_k.reshape((left_rank, n_k, Q_k.shape[1]))
                 )
+            if xkp1.ndim == 2:
+                    ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1]))
+            else:
+                ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1], shp1[2]))
+            res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
 
             current_tt_core = res.value(k + 1)
 
@@ -2463,6 +2524,254 @@ class TTRandRound:
             "It seems that this function is being used \
                              to round a single TT"
         )
+
+    def adaptive_rto_rounding_ttsum(
+        self,
+        a: Optional[List[float]],
+        tol: float,
+        f_inc: float,
+        min_samples: int = 20,
+    ) -> TensorNetwork:
+        """Adaptive randomized rounding for TT-sums (Algorithm D.2)."""
+        if not isinstance(self.y, List):
+            raise ValueError("Adaptive TT-sum rounding requires a list of TT tensors.")
+
+        if not (0 < f_inc < 1):
+            raise ValueError("f_inc must satisfy 0 < f_inc < 1.")
+
+        m = self.ns
+        if a is None:
+            a = [1.0] * m
+        if len(a) != m:
+            raise ValueError("Coefficient vector a must match number of summands.")
+
+        # Scale summands
+        summands = []
+        for j in range(m):
+            ttj = copy.deepcopy(self.y[j])
+            ttj.scale(a[j])
+            summands.append(ttj)
+
+        # Sizes and ranks
+        n_sizes = [summands[0].value(0).shape[0]]
+        for k in range(1, self.d - 1):
+            n_sizes.append(summands[0].value(k).shape[1])
+        n_sizes.append(summands[0].value(self.d - 1).shape[1])
+
+        rs = np.zeros((self.d + 1, m), dtype=int)
+        for j in range(m):
+            rj = summands[j].ranks()
+            rs[:, j] = np.array([1] + rj + [1], dtype=int)
+        max_mod_rank = np.max(rs, axis=1)
+
+        # Helpers for unfolding
+        def v2h_block(block_v: np.ndarray, n_dim: int) -> np.ndarray:
+            r_prev = block_v.shape[0] // n_dim
+            return block_v.reshape((r_prev, n_dim, block_v.shape[1])).reshape(
+                (r_prev, -1)
+            )
+
+        def h2v_block(block_h: np.ndarray, n_dim: int) -> np.ndarray:
+            r_prev = block_h.shape[0]
+            r_next = block_h.shape[1] // n_dim
+            return block_h.reshape((r_prev, n_dim, r_next)).reshape(
+                (r_prev * n_dim, r_next)
+            )
+
+        # Initial random projections
+        sample_size = max(int(np.max(max_mod_rank)), min_samples)
+        Omega = self.khatri_rao_gaussians_ttsum(sample_size)
+        W_ind = [self.krp_contraction_tt(tt, Omega, 0) for tt in summands]
+
+        W = []
+        for k in range(self.d - 1):
+            W.append(np.concatenate([W_ind[j][k] for j in range(m)], axis=0))
+
+        # Initialize first core (block concatenation)
+        res = copy.deepcopy(summands[0])
+        y1 = np.concatenate([summands[j].value(0) for j in range(m)], axis=1)
+        res.network.nodes[0]["tensor"].update_val_size(y1)
+        current_core = res.value(0)
+
+        # Norm estimate
+        normX_est = np.linalg.norm(current_core @ W[0], ord="fro") / np.sqrt(
+            sample_size
+        )
+        tau = tol * normX_est / np.sqrt(self.d - 1)
+
+        for n in range(self.d - 1):
+            # Current core as vertical unfolding
+            core_n = current_core
+            if core_n.ndim == 2:
+                Vn = core_n
+                left_rank = 1
+                n_k = core_n.shape[0]
+            else:
+                left_rank = core_n.shape[0]
+                n_k = core_n.shape[1]
+                Vn = core_n.reshape((-1, core_n.shape[-1]))
+
+            max_cols = min(Vn.shape)
+            init_b = int(max_mod_rank[n + 1])
+            orth_cols = 0
+
+            Yn = Vn @ W[n][:, :init_b]
+            Qn, _ = np.linalg.qr(Yn)
+
+            Mn = Qn.T @ Vn
+            lr = np.cumsum([0] + [int(rs[n + 1, j]) for j in range(m)])
+            rr = np.cumsum([0] + [int(rs[n + 2, j]) for j in range(m)])
+
+            if n < self.d - 2:
+                blocks = []
+                for j in range(m):
+                    Mn_j = Mn[:, lr[j] : lr[j + 1]]
+                    sj_next = summands[j].value(n + 1)
+                    h = sj_next.reshape((sj_next.shape[0], -1))
+                    x = Mn_j @ h
+                    block_v = x.reshape((x.shape[0] * n_sizes[n + 1], -1))
+                    blocks.append(block_v)
+                H_next = np.concatenate(blocks, axis=1)
+                ykp1 = H_next.reshape((Qn.shape[1], n_sizes[n + 1], -1))
+            else:
+                ykp1 = np.zeros((Qn.shape[1], n_sizes[n + 1]))
+                for j in range(m):
+                    Mn_j = Mn[:, lr[j] : lr[j + 1]]
+                    sj_last = summands[j].value(n + 1)
+                    ykp1 += Mn_j @ sj_last
+            res.network.nodes[n + 1]["tensor"].update_val_size(ykp1)
+
+            orth_cols += init_b
+            b_inc = max(int(np.floor(max_cols * f_inc)), 1)
+            sample_size = max(b_inc, min_samples)
+
+            # Extend W if needed
+            if W[n].shape[1] < orth_cols + sample_size:
+                needed = orth_cols + sample_size - W[n].shape[1]
+                Omega = self.khatri_rao_gaussians_ttsum(needed)
+                W_new = [self.krp_contraction_tt(tt, Omega, n) for tt in summands]
+                for k in range(n, self.d - 1):
+                    block = np.concatenate(
+                        [W_new[j][k - n] for j in range(m)], axis=0
+                    )
+                    W[k] = np.concatenate((W[k], block), axis=1)
+
+            Yn = Vn @ W[n][:, orth_cols : orth_cols + sample_size]
+            Yn = Yn - Qn @ (Qn.T @ Yn)
+
+            while np.linalg.norm(Yn, ord="fro") / np.sqrt(sample_size) > tau:
+                b_inc = min(b_inc, max_cols - orth_cols)
+                if b_inc <= 0:
+                    break
+
+                Yn = Yn[:, :b_inc]
+                Qnew, _ = np.linalg.qr(Yn)
+                Qnew, _ = np.linalg.qr(Qnew - Qn @ (Qn.T @ Qnew))
+                Qn = np.concatenate((Qn, Qnew), axis=1)
+
+                Mn = Qnew.T @ Vn
+                if n < self.d - 2:
+                    H_curr = res.value(n + 1).reshape(
+                        (res.value(n + 1).shape[0] * n_sizes[n + 1], -1)
+                    )
+                    H_next = np.zeros(
+                        (
+                            (H_curr.shape[0] // n_sizes[n + 1] + b_inc)
+                            * n_sizes[n + 1],
+                            H_curr.shape[1],
+                        )
+                    )
+                    for j in range(m):
+                        Mn_j = Mn[:, lr[j] : lr[j + 1]]
+                        sj_next = summands[j].value(n + 1)
+                        h = sj_next.reshape((sj_next.shape[0], -1))
+                        x = Mn_j @ h
+                        block_v = x.reshape((x.shape[0] * n_sizes[n + 1], -1))
+
+                        block = H_curr[:, rr[j] : rr[j + 1]]
+                        block_h = v2h_block(block, n_sizes[n + 1])
+                        block_h = np.concatenate((block_h, x), axis=0)
+                        new_block_v = h2v_block(block_h, n_sizes[n + 1])
+                        H_next[:, rr[j] : rr[j + 1]] = new_block_v
+
+                    ykp1 = H_next.reshape(
+                        (H_next.shape[0] // n_sizes[n + 1], n_sizes[n + 1], -1)
+                    )
+                else:
+                    y_add = np.zeros((b_inc, n_sizes[n + 1]))
+                    for j in range(m):
+                        Mn_j = Mn[:, lr[j] : lr[j + 1]]
+                        sj_last = summands[j].value(n + 1)
+                        y_add += Mn_j @ sj_last
+                    ykp1 = np.concatenate((res.value(n + 1), y_add), axis=0)
+
+                res.network.nodes[n + 1]["tensor"].update_val_size(ykp1)
+
+                orth_cols += b_inc
+                sample_size = max(b_inc, min_samples)
+
+                if W[n].shape[1] < orth_cols + sample_size:
+                    needed = orth_cols + sample_size - W[n].shape[1]
+                    Omega = self.khatri_rao_gaussians_ttsum(needed)
+                    W_new = [
+                        self.krp_contraction_tt(tt, Omega, n) for tt in summands
+                    ]
+                    for k in range(n, self.d - 1):
+                        block = np.concatenate(
+                            [W_new[j][k - n] for j in range(m)], axis=0
+                        )
+                        W[k] = np.concatenate((W[k], block), axis=1)
+
+                Yn = Vn @ W[n][:, orth_cols : orth_cols + sample_size]
+                Yn = Yn - Qn @ (Qn.T @ Yn)
+
+            if core_n.ndim == 2:
+                res.network.nodes[n]["tensor"].update_val_size(
+                    Qn.reshape((n_k, Qn.shape[1]))
+                )
+            else:
+                res.network.nodes[n]["tensor"].update_val_size(
+                    Qn.reshape((left_rank, n_k, Qn.shape[1]))
+                )
+
+            current_core = res.value(n + 1)
+
+        # Final TT-rounding (SVD sweep)
+        normX = np.linalg.norm(res.value(self.d - 1), ord="fro")
+        tau = tol * normX / np.sqrt(self.d - 1)
+
+        for n in range(self.d - 1, 0, -1):
+            core = res.value(n)
+            if core.ndim == 2:
+                v2h = core
+            else:
+                v2h = core.reshape((core.shape[0], -1))
+
+            Q, R = np.linalg.qr(v2h.T)
+            U, s, Vt = np.linalg.svd(R, full_matrices=False)
+            rk = eps_to_rank(s, tau)
+            U = U[:, :rk]
+            s = s[:rk]
+            V = Vt.T[:, :rk]
+
+            new_h = (Q @ U).T
+            new_v = h2v_block(new_h, n_sizes[n])
+            if n == self.d - 1:
+                new_core = new_v.reshape((rk, n_sizes[n]))
+            else:
+                new_core = new_v.reshape((rk, n_sizes[n], core.shape[2]))
+            res.network.nodes[n]["tensor"].update_val_size(new_core)
+
+            mat = V @ np.diag(s)
+            prev = res.value(n - 1)
+            if prev.ndim == 2:
+                res.network.nodes[n - 1]["tensor"].update_val_size(prev @ mat)
+            else:
+                res.network.nodes[n - 1]["tensor"].update_val_size(
+                    np.einsum("ijk,kl->ijl", prev, mat)
+                )
+
+        return res
     
     def round(self) -> TensorNetwork:
         """Executes rounding"""
@@ -2487,6 +2796,20 @@ def tt_sum_randomized_round(
 
     rand_setup = TTRandRound(y, target_ranks)
     return rand_setup.rto_rounding_ttsum()
+
+
+def tt_sum_randomized_round_adaptive(
+    y: List[TensorNetwork],
+    tol: float,
+    f_inc: float,
+    a: Optional[List[float]] = None,
+    min_samples: int = 20,
+) -> TensorNetwork:
+    """Adaptive randomized rounding for a TT-sum (Algorithms D.1/D.2)."""
+    rand_setup = TTRandRound(y, target_ranks=[])
+    return rand_setup.adaptive_rto_rounding_ttsum(
+        a=a, tol=tol, f_inc=f_inc, min_samples=min_samples
+    )
 
 
 def tt_rand_precond_svd_round(
@@ -2539,21 +2862,44 @@ def tt_rand_precond_svd_round(
     return res
 
 
-def tt_adaptive_rand_round(tn: TensorNetwork, eps: float, f_init: float = 0.5, f_inc: float = 0.1) -> TensorNetwork:
-    """
-    Uses adaptive randomized rounding (Algorithm 3.4 in reference [1]) to
-    round a TT TensorNetwork to a specified tolerance (eps).
-
-    Issues right now:
-        - Total error accumulated post rounding is unknown due to initi-
-        al rank-based truncation.
-        - Need to adjust the eps in the adaptive randomized rounding so
-        that total error stays consistent with the global prespecified
-        tolerance.
-    """
+def tt_adaptive_rand_round(tn: TensorNetwork, eps: float,
+                           f_init: float = 0.5,
+                           f_inc: float = 0.1,
+                           postprocess: bool = False) -> TensorNetwork:
+    """Uses adaptive randomized rounding"""
 
     rand_setup = TTRandRound(y=tn, eps=eps)
     res = rand_setup.adaptive_rto_rounding(f_init=f_init, f_inc=f_inc)
+
+    if postprocess:
+        # SVD rounding post adaptive randomized rounding to further reduce ranks and control error
+        dim = rand_setup.d
+        for i in range(dim - 1, 0, -1):
+            tens_curr = res.value(i)
+            sh = list(tens_curr.shape)
+            tens_next = res.value(i - 1)
+
+            delta = eps / (dim - 1) ** 0.5
+
+            trunc_svd = delta_svd(tens_curr.reshape((sh[0], -1)), delta, True)
+
+            tens_curr = trunc_svd.v.reshape([-1] + sh[1:])
+            if i == 1:
+                tens_next = np.einsum(
+                    "jk,kl->jl",
+                    tens_next,
+                    trunc_svd.u * trunc_svd.s[np.newaxis, :],
+                )
+            else:
+                tens_next = np.einsum(
+                    "ijk,kl->ijl",
+                    tens_next,
+                    trunc_svd.u * trunc_svd.s[np.newaxis, :],
+                )
+
+            res.network.nodes[i]["tensor"].update_val_size(tens_curr)
+            res.network.nodes[i - 1]["tensor"].update_val_size(tens_next)
+
     return res
 
 
