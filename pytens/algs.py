@@ -2274,10 +2274,16 @@ class TTRandRound:
                                  current_basis: np.ndarray,
                                  current_contraction_W: List[np.ndarray],
                                  tt_core_idx: int,
-                                 block_size: int
+                                 sample_size: int,
+                                 orthogonal_cols: Optional[int] = None
                                  ) -> np.ndarray:
         """Generates the sketch of the residual tensor at a given step of the randomized rounding algorithm"""
-        needed_cols = current_basis.shape[1] + block_size - current_contraction_W[tt_core_idx].shape[1]
+        if orthogonal_cols is None:
+            orthogonal_cols = current_basis.shape[1]
+        needed_cols = (
+            orthogonal_cols + sample_size
+            - current_contraction_W[tt_core_idx].shape[1]
+        )
         if needed_cols > 0:
             Omega = self.khatri_rao_gaussians(needed_cols)
             W_additional = self.krp_contraction(Omega, tt_core_idx)
@@ -2289,7 +2295,9 @@ class TTRandRound:
                     ),
                     axis=1,
                 )
-        S = current_tt_core @ current_contraction_W[tt_core_idx][:, current_basis.shape[1]: current_basis.shape[1] + block_size]
+        S = current_tt_core @ current_contraction_W[tt_core_idx][
+            :, orthogonal_cols : orthogonal_cols + sample_size
+        ]
         S_perp = S - current_basis @ (current_basis.T @ S)
 
         return S_perp, current_contraction_W
@@ -2328,34 +2336,43 @@ class TTRandRound:
         S = S - current_basis @ (current_basis.T @ S)
         return S, current_contraction_W
     
-    def adaptive_rto_rounding(self, f_init: float = 0.5, f_inc: float = 0.1) -> TensorNetwork:
+    def adaptive_rto_rounding(
+        self,
+        tol: float,
+        init_f: float = 0.1,
+        incr_f: float = 0.05,
+        min_samples: int = 20,
+        tol_scale: float = 1.0,
+    ) -> TensorNetwork:
         """Adaptive randomized rounding using KRP (Algorithm 3.4)."""
         if isinstance(self.y, List):
             raise ValueError(
                 "Adaptive RTO rounding is only implemented for a single TT tensor."
             )
 
-        if not (0 < f_init < 1) or not (0 < f_inc < 1):
-            raise ValueError("f_init and f_inc must satisfy 0 < f < 1.")
+        if not (0 < init_f < 1) or not (0 < incr_f < 1):
+            raise ValueError("init_f and incr_f must satisfy 0 < f < 1.")
 
         ranks = self.y.ranks()
         if len(ranks) == 0:
             return copy.deepcopy(self.y)
 
-        r = int(np.ceil(np.max(ranks) * f_init))
-        r = max(r, 1)
+        sample_size = max(int(np.floor(np.max(ranks) * init_f)), min_samples)
+        sample_size = max(sample_size, 1)
 
-        Omega = self.khatri_rao_gaussians(r)
+        Omega = self.khatri_rao_gaussians(sample_size)
         current_contraction_W = self.krp_contraction(Omega, 0)
 
-        x1 = self.y.value(0)
-        V_x1 = x1 if x1.ndim == 2 else x1.reshape((-1, x1.shape[-1]))
-        nrmx_est = np.linalg.norm(V_x1 @ current_contraction_W[0], ord="fro") / np.sqrt(r)
-        # nrmx_est = self.y.norm()
-        tau = self.eps * nrmx_est / np.sqrt(self.d - 1)
-        
         res = copy.deepcopy(self.y)
         current_tt_core = res.value(0)
+
+        x1 = res.value(0)
+        V_x1 = x1 if x1.ndim == 2 else x1.reshape((-1, x1.shape[-1]))
+        nrmx_est = (
+            np.linalg.norm(V_x1 @ current_contraction_W[0], ord="fro")
+            / np.sqrt(sample_size)
+        )
+        tau = tol * nrmx_est / np.sqrt(self.d - 1)
 
         for k in range(self.d - 1):
             core_k = current_tt_core
@@ -2367,47 +2384,79 @@ class TTRandRound:
                 left_rank = core_k.shape[0]
                 n_k = core_k.shape[1]
                 V_yk = core_k.reshape((-1, core_k.shape[-1]))
-            rbar_k = min(V_yk.shape)
-            b_init = max(1, int(np.ceil(rbar_k * f_init)))
-            b_inc = max(1, int(np.ceil(rbar_k * f_inc)))
 
-            S_k = V_yk @ current_contraction_W[k][:, :b_init]
+            max_cols = min(V_yk.shape)
+            init_b = max(int(np.floor(max_cols * init_f)), 1)
+            orthogonal_cols = 0
+
+            S_k = V_yk @ current_contraction_W[k][:, :init_b]
             Q_k, _ = np.linalg.qr(S_k)
 
             M_k = Q_k.T @ V_yk
-            xkp1 = self.y.value(k + 1)
-            shp1 = xkp1.shape
-            H_xkp1 = xkp1.reshape((shp1[0], -1))
-            ykp1_mat = M_k @ H_xkp1
-            
-            remaining = rbar_k - Q_k.shape[1]
-            if remaining > 0:
-                block = min(b_inc, remaining)
-                S_k, current_contraction_W = self.generate_residual_sketch(
-                    V_yk, Q_k, current_contraction_W, k, block
-                )
+            base_xkp1 = res.value(k + 1)
+            H_xkp1_base = base_xkp1.reshape((base_xkp1.shape[0], -1))
+            ykp1_mat = M_k @ H_xkp1_base
+            if base_xkp1.ndim == 2:
+                ykp1 = ykp1_mat.reshape((Q_k.shape[1], base_xkp1.shape[1]))
             else:
-                block = 0
-                S_k = np.zeros((V_yk.shape[0], 0))
+                ykp1 = ykp1_mat.reshape(
+                    (Q_k.shape[1], base_xkp1.shape[1], base_xkp1.shape[2])
+                )
+            res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
+
+            orthogonal_cols += init_b
+            b_inc = max(int(np.floor(max_cols * incr_f)), 1)
+            sample_size = max(b_inc, min_samples)
+
+            S_k, current_contraction_W = self.generate_residual_sketch(
+                V_yk,
+                Q_k,
+                current_contraction_W,
+                k,
+                sample_size,
+                orthogonal_cols=orthogonal_cols,
+            )
 
             while (
-                block > 0
-                and np.linalg.norm(S_k, ord="fro") / np.sqrt(block) > tau
+                np.linalg.norm(S_k, ord="fro") / np.sqrt(sample_size)
+                > tau / tol_scale
             ):
-                Q_new, _ = np.linalg.qr(S_k)
-                Q_new = Q_new - Q_k @ (Q_k.T @ Q_new)
-                Q_new, _ = np.linalg.qr(Q_new)
-                Q_k = np.concatenate((Q_k, Q_new), axis=1)
-                
-                M_k = Q_new.T @ V_yk
-                ykp1_mat = np.concatenate((ykp1_mat, M_k @ H_xkp1), axis=0)
-
-                remaining = rbar_k - Q_k.shape[1]
-                if remaining <= 0:
+                b_inc = min(b_inc, max_cols - orthogonal_cols)
+                if b_inc <= 0:
                     break
-                block = min(b_inc, remaining)
+
+                S_k = S_k[:, :b_inc]
+                Q_new, _ = np.linalg.qr(S_k)
+                Q_new, _ = np.linalg.qr(Q_new - Q_k @ (Q_k.T @ Q_new))
+                Q_k = np.concatenate((Q_k, Q_new), axis=1)
+
+                M_k = Q_new.T @ V_yk
+                V_add = M_k @ H_xkp1_base
+
+                H_xkp1_curr = res.value(k + 1).reshape(
+                    (res.value(k + 1).shape[0], -1)
+                )
+                H_xkp1_curr = np.concatenate((H_xkp1_curr, V_add), axis=0)
+                if base_xkp1.ndim == 2:
+                    ykp1 = H_xkp1_curr.reshape(
+                        (H_xkp1_curr.shape[0], base_xkp1.shape[1])
+                    )
+                else:
+                    ykp1 = H_xkp1_curr.reshape(
+                        (H_xkp1_curr.shape[0], base_xkp1.shape[1], base_xkp1.shape[2])
+                    )
+                res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
+
+                orthogonal_cols += b_inc
+                sample_size = max(b_inc, min_samples)
+
                 S_k, current_contraction_W = self.generate_residual_sketch(
-                    V_yk, Q_k, current_contraction_W, k, block
+                    V_yk,
+                    Q_k,
+                    current_contraction_W,
+                    k,
+                    sample_size,
+                    orthogonal_cols=orthogonal_cols,
                 )
 
             if core_k.ndim == 2:
@@ -2418,11 +2467,6 @@ class TTRandRound:
                 res.network.nodes[k]["tensor"].update_val_size(
                     Q_k.reshape((left_rank, n_k, Q_k.shape[1]))
                 )
-            if xkp1.ndim == 2:
-                    ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1]))
-            else:
-                ykp1 = ykp1_mat.reshape((Q_k.shape[1], shp1[1], shp1[2]))
-            res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
 
             current_tt_core = res.value(k + 1)
 
@@ -2862,14 +2906,25 @@ def tt_rand_precond_svd_round(
     return res
 
 
-def tt_adaptive_rand_round(tn: TensorNetwork, eps: float,
-                           f_init: float = 0.5,
-                           f_inc: float = 0.1,
-                           postprocess: bool = False) -> TensorNetwork:
+def tt_adaptive_rand_round(
+    tn: TensorNetwork,
+    tol: float,
+    init_f: float = 0.1,
+    incr_f: float = 0.05,
+    min_samples: int = 20,
+    tol_scale: float = 1.0,
+    postprocess: bool = False,
+) -> TensorNetwork:
     """Uses adaptive randomized rounding"""
 
-    rand_setup = TTRandRound(y=tn, eps=eps)
-    res = rand_setup.adaptive_rto_rounding(f_init=f_init, f_inc=f_inc)
+    rand_setup = TTRandRound(y=tn, target_ranks=[])
+    res = rand_setup.adaptive_rto_rounding(
+        tol=tol,
+        init_f=init_f,
+        incr_f=incr_f,
+        min_samples=min_samples,
+        tol_scale=tol_scale,
+    )
 
     if postprocess:
         # SVD rounding post adaptive randomized rounding to further reduce ranks and control error
@@ -2879,7 +2934,7 @@ def tt_adaptive_rand_round(tn: TensorNetwork, eps: float,
             sh = list(tens_curr.shape)
             tens_next = res.value(i - 1)
 
-            delta = eps / (dim - 1) ** 0.5
+            delta = tol / (dim - 1) ** 0.5
 
             trunc_svd = delta_svd(tens_curr.reshape((sh[0], -1)), delta, True)
 
