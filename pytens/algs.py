@@ -2396,14 +2396,7 @@ class TTRandRound:
             base_xkp1 = res.value(k + 1)
             H_xkp1_base = base_xkp1.reshape((base_xkp1.shape[0], -1))
             ykp1_mat = M_k @ H_xkp1_base
-            if base_xkp1.ndim == 2:
-                ykp1 = ykp1_mat.reshape((Q_k.shape[1], base_xkp1.shape[1]))
-            else:
-                ykp1 = ykp1_mat.reshape(
-                    (Q_k.shape[1], base_xkp1.shape[1], base_xkp1.shape[2])
-                )
-            res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
-
+            
             orthogonal_cols += init_b
             b_inc = max(int(np.floor(max_cols * incr_f)), 1)
             sample_size = max(b_inc, min_samples)
@@ -2433,20 +2426,8 @@ class TTRandRound:
                 M_k = Q_new.T @ V_yk
                 V_add = M_k @ H_xkp1_base
 
-                H_xkp1_curr = res.value(k + 1).reshape(
-                    (res.value(k + 1).shape[0], -1)
-                )
-                H_xkp1_curr = np.concatenate((H_xkp1_curr, V_add), axis=0)
-                if base_xkp1.ndim == 2:
-                    ykp1 = H_xkp1_curr.reshape(
-                        (H_xkp1_curr.shape[0], base_xkp1.shape[1])
-                    )
-                else:
-                    ykp1 = H_xkp1_curr.reshape(
-                        (H_xkp1_curr.shape[0], base_xkp1.shape[1], base_xkp1.shape[2])
-                    )
-                res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
-
+                ykp1_mat = np.concatenate((ykp1_mat, V_add), axis=0)
+                
                 orthogonal_cols += b_inc
                 sample_size = max(b_inc, min_samples)
 
@@ -2467,6 +2448,15 @@ class TTRandRound:
                 res.network.nodes[k]["tensor"].update_val_size(
                     Q_k.reshape((left_rank, n_k, Q_k.shape[1]))
                 )
+            if base_xkp1.ndim == 2:
+                    ykp1 = ykp1_mat.reshape(
+                        (ykp1_mat.shape[0], base_xkp1.shape[1])
+                    )
+            else:
+                ykp1 = ykp1_mat.reshape(
+                    (ykp1_mat.shape[0], base_xkp1.shape[1], base_xkp1.shape[2])
+                )
+            res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
 
             current_tt_core = res.value(k + 1)
 
