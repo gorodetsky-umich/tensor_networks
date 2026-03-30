@@ -41,11 +41,13 @@ class ReshapeOption(Enum):
     ENUMERATE = auto()
     CLUSTER = auto()
 
+
 class ReorderAlgo(Enum):
     """Different algorithms to reorder the indices in a TT."""
 
     CROSS = auto()
     SVD = auto()
+
 
 class SweepAlgo(Enum):
     """Different traversal algorithms for local structure sweeps."""
@@ -53,11 +55,13 @@ class SweepAlgo(Enum):
     RANDOM = auto()
     TRAVERSAL = auto()
 
+
 class SearchAlgo(Enum):
     """Different search algorithms"""
 
     RANDOM = auto()
     ENUM = auto()
+
 
 class HeuristicConfig(pydantic.BaseModel):
     """Configuration for pruning heuristics"""
@@ -182,19 +186,23 @@ class PreprocessConfig(pydantic.BaseModel):
     )
     max_rank: int = pydantic.Field(
         default=100,
-        description="Config the maximum number of singular values in randomized SVD",
+        description="Config the maximum number of singular values in "
+        "randomized SVD",
     )
     rand_svd: bool = pydantic.Field(
         default=True,
-        description="Whether to use random SVD in the computation of preprocessing singular values",
+        description="Whether to use random SVD in the computation of "
+        "preprocessing singular values",
     )
     reorder_algo: ReorderAlgo = pydantic.Field(
         default=ReorderAlgo.CROSS,
-        description="Config the algorithm used to reorder the indices before preprocessing",
+        description="Config the algorithm used to reorder the indices "
+        "before preprocessing",
     )
     reorder_eps: float = pydantic.Field(
         default=0.5,
-        description="Configure the error tolerance for cross during reordering",
+        description="Configure the error tolerance for cross during "
+        "reordering",
     )
 
 
@@ -219,11 +227,12 @@ class CrossConfig(pydantic.BaseModel):
     )
     init_reshape: bool = pydantic.Field(
         default=False,
-        description="Reshape the data into smaller factors before running cross",
+        description="Reshape the data into smaller factors before "
+        "running cross",
     )
     init_cross: bool = pydantic.Field(
         default=True,
-        description="Whether to convert the input network into a tensor train"
+        description="Whether to convert the input network into a tensor train",
     )
 
 
@@ -232,7 +241,8 @@ class TopDownConfig(pydantic.BaseModel):
 
     reshape_enabled: bool = pydantic.Field(
         default=False,
-        description="Configure for enabling index reshaping during top down search",
+        description="Configure for enabling index reshaping during "
+        "top down search",
     )
     merge_mode: Literal["all", "not_first"] = pydantic.Field(
         default="not_first",
@@ -266,6 +276,10 @@ class TopDownConfig(pydantic.BaseModel):
         default=tuple([]),
         description="Disable reshaping for certain indices",
     )
+    reshape_opts: int = pydantic.Field(
+        default=5,
+        description="Number of index reshape selections during search",
+    )
 
 
 class InputConfig(pydantic.BaseModel):
@@ -292,6 +306,7 @@ class SweepConfig(pydantic.BaseModel):
         default=4,
         description="Configure the maximum horizon during sweeping",
     )
+
 
 class SearchConfig(pydantic.BaseModel):
     """Configuration for the entire search process"""

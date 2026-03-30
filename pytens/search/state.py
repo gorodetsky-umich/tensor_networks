@@ -2,9 +2,10 @@
 
 import copy
 import itertools
-from typing import Dict, Generator, List, Optional, Self, Sequence, Tuple
+from typing import Generator, List, Optional, Self, Sequence, Tuple
 import logging
 
+from line_profiler import profile
 import networkx as nx
 import numpy as np
 
@@ -19,7 +20,7 @@ from pytens.algs import (
     TreeNetwork,
 )
 from pytens.cross.cross import TensorFunc
-from pytens.types import IndexMerge, PartitionStatus, SVDAlgorithm
+from pytens.types import PartitionStatus, SVDAlgorithm
 from pytens.search.types import Action
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,9 @@ class OSplit(Action):
         for ac in past_actions:
             if not isinstance(ac, OSplit):
                 continue
+
+            if self < ac and not ac.is_valid([self]):
+                return False
 
             if len(ac.indices) > 1 and any(
                 i in ac.indices for i in self.indices
@@ -154,14 +158,19 @@ class OSplit(Action):
             free_inds = net.free_indices()
             for n in (u, v):
                 n_inds = net.node_tensor(n).indices
-                if len(n_inds) == 2 and all(ind not in free_inds for ind in n_inds):
+                if len(n_inds) == 2 and all(
+                    ind not in free_inds for ind in n_inds
+                ):
                     nbrs = list(net.network.neighbors(n))
-                    assert len(nbrs) == 2, f"get neighbors {nbrs} of {n} in {net}"
+                    assert len(nbrs) == 2, (
+                        f"get neighbors {nbrs} of {n} in {net}"
+                    )
                     nbr = [x for x in nbrs if x != s][0]
                     net.merge(n, nbr)
 
         return (u, s, v), d
 
+    @profile
     def svals(
         self,
         net: TreeNetwork,
@@ -298,7 +307,7 @@ class ISplit(Action):
 
         # truncate the network to the target ranks
         s_val = np.diag(net.node_tensor(s).value)
-        trunc_error = np.cumsum(np.flip(s_val**2))
+        trunc_error = np.cumsum(np.flip(np.square(s_val)))
         if self.target_size is not None:
             max_sz = min(max_sz, len(trunc_error))
             r = min(max_sz, self.target_size)
@@ -308,7 +317,7 @@ class ISplit(Action):
             else:
                 err = 0.0
         elif self.delta is not None:
-            # find the first index where the truncation error is less than delta
+            # find the first index where truncation error is less than delta
             r_discard = np.searchsorted(trunc_error, self.delta**2)
             r = max_sz - r_discard
             err = trunc_error[r_discard - 1] if r_discard > 0 else 0.0
@@ -402,10 +411,12 @@ class SearchState:
         return cnt
 
     # TODO: check how to implement isplit osplit in a better way
-    def get_legal_actions(self, index_actions=False, merge_ops=None):
+    def get_legal_actions(
+        self, index_actions=False, merge_ops=None, out_of_order=False
+    ):
         """Return a list of all legal actions in this state."""
         if index_actions:
-            return self.get_legal_index_actions(merge_ops)
+            return self.get_legal_index_actions(merge_ops, out_of_order)
 
         actions = []
         for n in self.network.network.nodes:
@@ -444,7 +455,7 @@ class SearchState:
 
             yield from combs
 
-    def get_legal_index_actions(self, merge_ops=None):
+    def get_legal_index_actions(self, merge_ops=None, out_of_order=False):
         """
         Produce a list of legal index splitting actions
         over the current network.
@@ -482,7 +493,8 @@ class SearchState:
             ac = min(ac, ac_comp)
 
             if not self.past_actions or (
-                self.past_actions[-1] < ac and ac.is_valid(self.past_actions)
+                (out_of_order or self.past_actions[-1] < ac)
+                and ac.is_valid(self.past_actions)
             ):
                 actions.append(ac)
 
@@ -520,16 +532,24 @@ class SearchState:
                 # np.sqrt(self.curr_delta ** 2 - new_err ** 2)
             else:
                 # we allow specify the node values
+                logger.debug(
+                    "before svd, the network norm is %s",
+                    np.square(new_net.norm()),
+                )
                 res = action.svd(new_net, svd)
                 if res is None:  # no-op
                     return self
 
                 (u, s, v), used_delta = res
+                svals = np.sum(
+                    np.square(np.diag(new_net.node_tensor(s).value))
+                )
                 new_net.merge(v, s)
                 logger.debug(
-                    "current delta: %s, used delta: %s",
-                    self.curr_delta,
+                    "current delta: %s, used delta: %s, total norm: %s",
+                    self.curr_delta**2,
                     used_delta,
+                    svals + used_delta,
                 )
                 remaining_delta = np.sqrt(self.curr_delta**2 - used_delta)
                 new_state.curr_delta = remaining_delta

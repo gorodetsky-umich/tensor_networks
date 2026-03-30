@@ -352,7 +352,7 @@ class IndexSplit(pydantic.BaseModel):
     def __lt__(self, other: "IndexSplit") -> bool:
         if self.index != other.index:
             return self.index < other.index
-            
+
         return tuple(self.shape) < tuple(other.shape)
 
 
@@ -440,7 +440,9 @@ class DimTreeNode:
 
         return list(results)
 
-    def increment_ranks(self, kickrank: int = 1, max_rank: Optional[int] = None) -> None:
+    def increment_ranks(
+        self, kickrank: int = 1, max_rank: Optional[int] = None
+    ) -> None:
         """Increment the ranks without value modification"""
         self.up_info.rank += kickrank
         if max_rank is not None:
@@ -484,7 +486,14 @@ class DimTreeNode:
 
         # rank_up = max(1, rank_up)
         # rank_down = max(1, rank_down)
-        logger.debug("node: %s, indices: %s, rank_up: %i, rank_down: %i, curr_rankL %i", self.node, self.free_indices, rank_up, rank_down, self.up_info.rank)
+        logger.debug(
+            "node: %s, indices: %s, rank_up: %i, rank_down: %i, curr_rankL %i",
+            self.node,
+            self.free_indices,
+            rank_up,
+            rank_down,
+            self.up_info.rank,
+        )
         self.up_info.rank = min([rank_up, rank_down, self.up_info.rank])
 
         for c in self.down_info.nodes:
@@ -597,7 +606,8 @@ class DimTreeNode:
         self_inds = self.down_info.indices + self.up_info.indices
         for c in self.down_info.nodes:
             cvals = c.known_entries()
-            # cvals follows the order of c.down_info.indices + c.up_info.indices
+            # cvals follows the order of c.down_info.indices +
+            # c.up_info.indices
             # reorder the values to match self
             cindices = c.down_info.indices + c.up_info.indices
             perm = [self_inds.index(ind) for ind in cindices]

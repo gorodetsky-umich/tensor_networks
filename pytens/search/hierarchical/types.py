@@ -26,7 +26,8 @@ class HSearchState:
         self.replay_traces = []
         self.level = 0
 
-    # after the cross, we do the normal but the data tensor is a tensor network.
+    # After the cross, we do the normal but the data tensor is a tensor
+    # network.
     def merge_index(self, merge_op: IndexMerge) -> Self:
         """Perform a merge operation on the given node."""
         new_st = copy.deepcopy(self)
@@ -125,6 +126,7 @@ class SuperIndex(Index):
         super().__init__(name, size, values)
         self.constituents = constituents
 
+
 @dataclass
 class ReplayTrace:
     level: int
@@ -132,6 +134,7 @@ class ReplayTrace:
     merge_ops: Sequence[IndexMerge]
     split_ops: Sequence[IndexSplit]
     actions: Sequence[Action]
+
 
 @dataclass
 class ReplaySweep:

@@ -2,6 +2,7 @@
 
 from typing import Sequence, Optional
 
+
 class Action:
     """Base action."""
 

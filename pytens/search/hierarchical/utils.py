@@ -1,16 +1,15 @@
 """Utility functions for hierarchical search"""
 
-import math
-from typing import Dict, List, Literal, Sequence, Tuple
+from typing import Literal, Sequence
 from collections import defaultdict
 
 import numpy as np
 import torch
 
 from pytens.algs import TensorTrain, Tensor
-from pytens.search.configuration import SearchConfig
 from pytens.types import IndexSplit, Index
 from pytens.cross.funcs import TensorFunc, SplitFunc
+
 
 class DisjointSet:
     def __init__(self):
@@ -30,17 +29,19 @@ class DisjointSet:
         root_i = self.find(i)
         root_j = self.find(j)
         if root_i != root_j:
-            self.parent[root_i] = root_j  # Union by setting one root's parent to the other
+            self.parent[root_i] = (
+                root_j  # Union by setting one root's parent to the other
+            )
             return True
         return False  # Already in the same set
-    
+
     def groups(self):
         groups = defaultdict(list)
 
         for x in self.elems:
             root = self.find(x)
             groups[root].append(x)
- 
+
         for k in groups:
             groups[k] = sorted(groups[k])
 
@@ -100,6 +101,7 @@ def split_func(
 
     return SplitFunc(free_indices, old_func, var_mapping)
 
+
 def tntorch_wrapper(f):
     def g(*args):
         if len(args[0].shape) == 1:
@@ -107,8 +109,9 @@ def tntorch_wrapper(f):
         else:
             inds = np.concat([a.numpy() for a in args], axis=-1)
         return torch.from_numpy(f(inds.astype(int)))
-    
+
     return g
+
 
 def tntorch_to_tt(res, split_indices):
     net = TensorTrain()
@@ -118,10 +121,14 @@ def tntorch_to_tt(res, split_indices):
             n_indices = [split_indices[ni], Index(f"s{ni}", n.shape[1])]
         elif ni == len(res.cores) - 1:
             n = n.squeeze([-1])
-            n_indices = [Index(f"s{ni-1}", n.shape[0]), split_indices[ni]]
+            n_indices = [Index(f"s{ni - 1}", n.shape[0]), split_indices[ni]]
         else:
             assert len(n.shape) == 3
-            n_indices = [Index(f"s{ni-1}", n.shape[0]), split_indices[ni], Index(f"s{ni}", n.shape[2])]
+            n_indices = [
+                Index(f"s{ni - 1}", n.shape[0]),
+                split_indices[ni],
+                Index(f"s{ni}", n.shape[2]),
+            ]
         net.add_node(str(ni), Tensor(n.numpy(), n_indices))
 
     for i in range(len(res.cores) - 1):

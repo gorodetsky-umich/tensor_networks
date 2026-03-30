@@ -5,7 +5,7 @@ from typing import Sequence
 from pytens.search.configuration import SearchConfig
 from pytens.search.hierarchical.types import HSearchState
 from pytens.search.utils import SearchResult, SearchStats
-from pytens.types import Index, IndexMerge
+from pytens.types import IndexMerge
 
 
 class SearchAlgo:

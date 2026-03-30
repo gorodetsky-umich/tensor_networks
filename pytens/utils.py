@@ -115,6 +115,7 @@ def flatten_lists(xss: List) -> List:
 
     return xss
 
+
 def num_ht_ranks(num_inds: int, num_branches: int = 2) -> int:
     """Number of internals ranks in a binary HT."""
     if num_inds == 1:
@@ -129,5 +130,5 @@ def num_ht_ranks(num_inds: int, num_branches: int = 2) -> int:
             remaining -= branch_size
         else:
             res += num_ht_ranks(remaining, num_branches)
-        
-    return res 
+
+    return res

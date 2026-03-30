@@ -13,7 +13,7 @@ from line_profiler import profile
 
 from pytens.algs import Tensor, TreeNetwork
 from pytens.search.algs.base import SearchAlgo
-from pytens.search.configuration import ReorderAlgo, SearchConfig
+from pytens.search.configuration import SearchConfig
 import pytens.search.configuration as config
 from pytens.search.constraint import ConstraintSearch
 from pytens.search.state import Action, ISplit, OSplit, SearchState
@@ -26,7 +26,7 @@ from pytens.search.utils import (
     remove_temp_dir,
     to_splits,
 )
-from pytens.types import DimTreeNode, Index, IndexMerge, IndexOp
+from pytens.types import Index, IndexMerge, IndexOp
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -102,17 +102,27 @@ class PartitionSearch(SearchAlgo):
         new_st.links.append(new_link.name)
         return new_st
 
-    def _random_actions(self, data_tensor: DataTensor, merge_ops: Sequence[IndexMerge], exclusions: Optional[Sequence[Index]]) -> Sequence[Action]:
+    def _random_actions(
+        self,
+        data_tensor: DataTensor,
+        merge_ops: Sequence[IndexMerge],
+        exclusions: Optional[Sequence[Index]],
+    ) -> Sequence[Action]:
         assert self.config.synthesizer.algo == config.SearchAlgo.RANDOM
         curr_st = init_state(data_tensor, self._delta)
         for _ in range(1, self.config.engine.max_ops + 1):
-            if random.random() < 0.25:
+            if random.random() < 0.1:
+                # print("skipping the action")
                 continue
 
             is_osplit = self.config.synthesizer.action_type == "osplit"
-            actions = curr_st.get_legal_actions(is_osplit, merge_ops)
+            actions = curr_st.get_legal_actions(
+                is_osplit, merge_ops, out_of_order=True
+            )
             if actions:
                 actions = random.choices(actions)
+            # else:
+            #     print("no legal actions")
 
             for action in actions:
                 if (
@@ -121,11 +131,13 @@ class PartitionSearch(SearchAlgo):
                     and len(action.indices) == 1
                     and action.indices[0] in exclusions
                 ):
+                    # print("illegal action")
                     continue
 
+                # print("getting action", str(action))
                 curr_st = self._sketch_execution(curr_st, action)
 
-        return curr_st.past_actions
+        return list(sorted(curr_st.past_actions))
 
     def _enumerate(
         self,
@@ -312,7 +324,10 @@ class PartitionSearch(SearchAlgo):
             ac.target_size = None
             st = self._sketch_execution(st, ac)
 
-        if self.config.synthesizer.algo == config.SearchAlgo.RANDOM or self.config.synthesizer.replay_from is not None:
+        if (
+            self.config.synthesizer.algo == config.SearchAlgo.RANDOM
+            or self.config.synthesizer.replay_from is not None
+        ):
             best_costs = []
         else:
             best_costs = [self._data_tensor.cost()]
@@ -371,11 +386,11 @@ class PartitionSearch(SearchAlgo):
             complement_ac = OSplit(comb_complement)
             ac = min(comb_ac, complement_ac)
 
+            logger.debug("preprocess for the action %s", ac)
             self.constraint_engine.preprocess_comb(
                 self._data_tensor,
                 ac.indices,
                 compute_uv=self.config.rank_search.search_mode == "all",
-                #cross=self.config.preprocess.reorder_algo == ReorderAlgo.CROSS,
             )
 
         if self.config.output.remove_temp_after_run:
@@ -416,7 +431,9 @@ class PartitionSearch(SearchAlgo):
             empty_net.add_node(
                 "G", Tensor(np.empty(0), self._data_tensor.free_indices())
             )
-            self._replay_from = self._random_actions(empty_net, merge_ops, exclusions)
+            self._replay_from = self._random_actions(
+                empty_net, merge_ops, exclusions
+            )
 
         preprocess_start = time.time()
         self.preprocess(merge_ops, exclusions)

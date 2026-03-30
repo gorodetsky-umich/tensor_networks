@@ -25,6 +25,7 @@ BAD_SCORE = 9999999999999
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class ILPSolver:
     """An ILP solver to find near-optimal rank assignments."""
 
@@ -69,22 +70,27 @@ class ILPSolver:
                 coeff[(ind.name, sz)] = p
 
         logger.debug("adding coeffs: %s", coeff)
-        logger.debug("allowed delta: %s", delta ** 2)
+        logger.debug("allowed delta: %s", delta**2)
 
         # rescale the numbers to avoid overflow
-        numbers = [v for v in coeff.values() if v > 1e-6] + [delta ** 2]
-        scale = (max(numbers) ** 0.5) *  (min(numbers) ** 0.5)
+        numbers = [v for v in coeff.values() if v > 1e-8] + [delta**2]
+        scale = (max(numbers) ** 0.5) * (min(numbers) ** 0.5)
         if scale == 0:
             scale = 1.0
 
         for k in coeff:
             coeff[k] /= scale
 
-        self.model.addConstr(self.vars.prod(coeff) <= delta**2 / scale, name="total_error")
+        self.model.addConstr(
+            self.vars.prod(coeff) <= delta**2 / scale, name="total_error"
+        )
         # self.model.update()
 
     def set_objective(
-        self, free_indices: List[Index], nodes: List[Tensor], upper: Optional[int]
+        self,
+        free_indices: List[Index],
+        nodes: List[Tensor],
+        upper: Optional[int],
     ):
         """Set the objective for the solver."""
         # max_cost = np.prod([i.size for i in free_indices])
@@ -177,7 +183,7 @@ class ConstraintSearch:
                 prev_sum = sv
                 cnt = 1
 
-        if cnt != 0 and cnt != 1:
+        if cnt not in (0, 1):
             s_sizes.append(cnt)
             s_sums.append(prev_sum)
 
@@ -200,7 +206,8 @@ class ConstraintSearch:
         bin_size = self.config.synthesizer.bin_size
         err = self.delta * bin_size
         assert isinstance(data_tensor, TensorTrain)
-        # create a merge func that merges comb into one index and the rest into the other
+        # create a merge func that merges comb into one index and the rest
+        # into the other
         data_indices = data_tensor.free_indices()
 
         comb_size = int(np.prod([i.size for i in comb]))
@@ -241,7 +248,7 @@ class ConstraintSearch:
         )
         errors = info["epss"]
         # TODO: process the errors
-        sizes, sums = zip(*reversed(ranks_and_errors))
+        sizes, sums = zip(*reversed(errors))
         # print(sizes, sums)
 
         # pick 10 according to the error change
@@ -315,7 +322,6 @@ class ConstraintSearch:
                 algo=SVDAlgorithm.SVD if not cross else SVDAlgorithm.CROSS,
             )
 
-        # logger.debug("get singular values with sum: %s, net norm: %s", sum(s ** 2), data_tensor.norm() ** 2)
         res = self.abstract(s, True)
         if res is not None:
             sums, sizes = res
@@ -326,7 +332,9 @@ class ConstraintSearch:
             logger.debug("no truncation for %s", comb)
             self.split_actions[OSplit(comb)] = ([], [])
 
-    def solve(self, st: SearchState, upper: Optional[int]) -> Optional[SearchState]:
+    def solve(
+        self, st: SearchState, upper: Optional[int]
+    ) -> Optional[SearchState]:
         """Compute cost for a given set of splits."""
         solver = ILPSolver(self.config)
 
@@ -373,7 +381,13 @@ class ConstraintSearch:
                 rhs = constr.RHS
                 # Get the constraint sense
                 sense = constr.Sense
-                logger.debug("Constraint: %s, %s %s %s", constr.ConstrName, lhs, sense, rhs)
+                logger.debug(
+                    "Constraint: %s, %s %s %s",
+                    constr.ConstrName,
+                    lhs,
+                    sense,
+                    rhs,
+                )
 
         solver.model.optimize()
 
@@ -398,12 +412,20 @@ class ConstraintSearch:
                 rhs_value = constr.RHS
                 # Get the constraint sense
                 sense = constr.Sense
-                logger.debug("Constraint: %s, %s %s %s", constr.ConstrName, lhs_value, sense, rhs_value)
+                logger.debug(
+                    "Constraint: %s, %s %s %s",
+                    constr.ConstrName,
+                    lhs_value,
+                    sense,
+                    rhs_value,
+                )
 
         st.network.relabel_indices(relabel_map)
         st.network.rerange_indices(rerange_map)
         solver.model.dispose()
         solver.env.dispose()
-        
-        logger.debug("Get cost %s for network %s", st.network.cost(), st.network)
+
+        logger.debug(
+            "Get cost %s for network %s", st.network.cost(), st.network
+        )
         return st

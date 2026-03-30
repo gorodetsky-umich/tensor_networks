@@ -21,19 +21,20 @@ from pytens.cross.runner import (
 from pytens.search.algs.exhaustive import BFSSearch, DFSSearch
 from pytens.search.algs.partition import PartitionSearch
 from pytens.search.configuration import (
-    ClusterMethod,
     InitStructType,
     SearchConfig,
 )
 from pytens.search.hierarchical.error_dist import AlphaErrorDist
-from pytens.search.hierarchical.index_cluster import (
-    CrossIndexCluster,
-    RandomIndexCluster,
-    SVDIndexCluster,
-    SVDNbrIndexCluster,
+from pytens.search.hierarchical.top_down import (
+    BlackBoxTopDownSearch,
+    TopDownSearch,
+    WhiteBoxTopDownSearch,
 )
-from pytens.search.hierarchical.top_down import BlackBoxTopDownSearch, TopDownSearch, WhiteBoxTopDownSearch
-from pytens.search.hierarchical.types import HSearchState, ReplayTrace, TopDownSearchResult
+from pytens.search.hierarchical.types import (
+    HSearchState,
+    ReplayTrace,
+    TopDownSearchResult,
+)
 from pytens.search.state import SearchState
 from pytens.search.utils import (
     approx_error,
@@ -44,6 +45,7 @@ from pytens.search.utils import (
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 class SearchEngine:
     """Tensor network topology search engine."""
@@ -144,7 +146,9 @@ class TopDownSearchEngine(SearchEngine):
         super().__init__(config)
         self._top_down_runner = TopDownSearch(config)
 
-    def top_down(self, replay_traces: Optional[Sequence[ReplayTrace]] = None) -> TopDownSearchResult:
+    def top_down(
+        self, replay_traces: Optional[Sequence[ReplayTrace]] = None
+    ) -> TopDownSearchResult:
         """Start point of a top down hierarchical search."""
         self._initialize()
         self._top_down_runner.error_dist = AlphaErrorDist(
@@ -158,6 +162,7 @@ class TopDownSearchEngine(SearchEngine):
         assert best_st is not None
         best_st.network.compress()
         best_network = best_st.network
+
         result = TopDownSearchResult()
         result.best_state = SearchState(best_network, 0)
         result.stats = self._top_down_runner.stats
@@ -168,7 +173,6 @@ class TopDownSearchEngine(SearchEngine):
         if self.config.output.collect_stats:
             self._collect_stats(result, best_st)
         return result
-
 
     @abstractmethod
     def _initialize(self):
@@ -256,15 +260,34 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
         #     valid.append(np.random.randint(0, ind.size, size=sample_size))
         # valid = np.stack(valid, axis=-1)
 
-        data_val = self._data_tensor(self._validation_set)
+        if self._validation_set is None:
+            data_tensor = self._data_tensor.net.contract()
+            data_val = data_tensor.value
+            free_indices = data_tensor.indices
+            new_inds, new_valid = unravel_indices(
+                best_st.reshape_history,
+                free_indices,
+                np.array([[0] * len(free_indices)]),
+            )
+            best_indices = best_network.free_indices()
+            perm = [best_indices.index(ind) for ind in new_inds]
+            approx_val = (
+                best_network.contract()
+                .value.transpose(perm)
+                .reshape(44800, 64, 128)
+            )
+        else:
+            data_val = self._data_tensor(self._validation_set)
 
-        logger.debug("reshape history: %s", best_st.reshape_history)
-        new_inds, new_valid = unravel_indices(
-            best_st.reshape_history, free_indices, self._validation_set
-        )
-        best_indices = best_network.free_indices()
-        perm = [new_inds.index(ind) for ind in best_indices]
-        approx_val = best_network.evaluate(best_indices, new_valid[:, perm])
+            logger.debug("reshape history: %s", best_st.reshape_history)
+            new_inds, new_valid = unravel_indices(
+                best_st.reshape_history, free_indices, self._validation_set
+            )
+            best_indices = best_network.free_indices()
+            perm = [new_inds.index(ind) for ind in best_indices]
+            approx_val = best_network.evaluate(
+                best_indices, new_valid[:, perm]
+            )
 
         # reshaped_func = reshape_func(
         #     best_st.reshape_history, self._data_tensor
