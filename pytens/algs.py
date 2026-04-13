@@ -2209,6 +2209,31 @@ class TTRandRound:
             return w
 
         raise ValueError("Invalid option")
+
+    def partial_contraction_lr(
+        self, tt: TensorNetwork, y: List[np.ndarray]
+    ) -> List[np.ndarray]:
+        """
+        Partial contraction of TT cores from left to right.
+        Returns W_n^L matrices of shape (ell_n x r_n) for n=1..d-1.
+        """
+        w: List[np.ndarray] = []
+        for i in range(self.d - 1):
+            x = tt.value(i)
+            sx = x.shape
+            sy = y[i].shape
+            if i == 0:
+                # x: (n1, r1), y: (n1, ell1)
+                w.append(y[i].T @ x)
+                continue
+            # w_prev: (ell_{i-1} x r_{i-1})
+            w_prev = w[-1]
+            tmp = w_prev @ x.reshape((sx[0], -1))  # ell_{i-1} x (n_i r_i)
+            tmp = tmp.reshape((sy[0] * sy[1], sx[-1]))  # (ell_{i-1} n_i) x r_i
+            lmat = y[i].reshape((sy[0] * sy[1], sy[2]))  # (ell_{i-1} n_i) x ell_i
+            w.append(lmat.T @ tmp)  # ell_i x r_i
+
+        return w
     
     def khatri_rao_gaussians(self, rank: int) -> np.ndarray:
         """"""
@@ -2459,6 +2484,99 @@ class TTRandRound:
             res.network.nodes[k + 1]["tensor"].update_val_size(ykp1)
 
             current_tt_core = res.value(k + 1)
+
+        return res
+
+    def rand_then_orth_two_sided(
+        self,
+        target_ranks: Optional[List[int]] = None,
+        oversample: Union[int, List[int]] = 5,
+        tol: float = 1e-12,
+    ) -> TensorNetwork:
+        """Two-sided randomized TT rounding (generalized Nyström)."""
+        if isinstance(self.y, List):
+            raise ValueError(
+                "Two-sided randomized rounding only supports a single TT tensor."
+            )
+
+        if target_ranks is None:
+            target_ranks = self.target_ranks
+
+        if len(target_ranks) != self.d - 1:
+            raise ValueError("target_ranks must have length d-1.")
+
+        # original TT ranks
+        r_orig = self.y.ranks()
+
+        if isinstance(oversample, list):
+            if len(oversample) != self.d - 1:
+                raise ValueError("oversample list must have length d-1.")
+            rho = [
+                min(r_orig[i], target_ranks[i] + oversample[i])
+                for i in range(self.d - 1)
+            ]
+        else:
+            rho = [
+                min(r_orig[i], target_ranks[i] + oversample)
+                for i in range(self.d - 1)
+            ]
+
+        # random TT tensors L and R
+        L_rand = self.init_rand_mat(ranks=target_ranks)
+        R_rand = self.init_rand_mat(ranks=rho)
+
+        # partial contractions
+        W_L = self.partial_contraction_lr(self.y, L_rand)  # ell_n x r_n
+        W_R = self.partial_contraction(self.y, R_rand, "rl")  # r_n x rho_n
+
+        L_factors: List[np.ndarray] = []
+        R_factors: List[np.ndarray] = []
+
+        for n in range(self.d - 1):
+            A = W_L[n] @ W_R[n]  # (ell_n x rho_n)
+            U, s, Vt = np.linalg.svd(A, full_matrices=False)
+            ell_n = min(target_ranks[n], U.shape[1])
+            if ell_n == 0:
+                raise RuntimeError("Computed zero target rank.")
+            U = U[:, :ell_n]
+            s = s[:ell_n]
+            V = Vt[:ell_n, :].T
+
+            s_inv_sqrt = np.zeros_like(s)
+            s_inv_sqrt[s > tol] = 1.0 / np.sqrt(s[s > tol])
+            S_inv_sqrt = np.diag(s_inv_sqrt)
+
+            L_n = W_R[n] @ V @ S_inv_sqrt  # r_n x ell_n
+            R_n = S_inv_sqrt @ U.T @ W_L[n]  # ell_n x r_n
+
+            L_factors.append(L_n)
+            R_factors.append(R_n)
+
+        res = copy.deepcopy(self.y)
+
+        # first core
+        y0 = self.y.value(0)
+        x0 = y0 @ L_factors[0]
+        res.network.nodes[0]["tensor"].update_val_size(x0)
+
+        # middle cores
+        for n in range(1, self.d - 1):
+            yn = self.y.value(n)
+            r_prev, n_dim, r_next = yn.shape
+            V = yn.reshape((r_prev * n_dim, r_next)) @ L_factors[n]
+            core_tmp = V.reshape((r_prev, n_dim, L_factors[n].shape[1]))
+            H = core_tmp.reshape((r_prev, n_dim * L_factors[n].shape[1]))
+            H = R_factors[n - 1] @ H
+            x_n = H.reshape(
+                (R_factors[n - 1].shape[0], n_dim, L_factors[n].shape[1])
+            )
+            res.network.nodes[n]["tensor"].update_val_size(x_n)
+
+        # last core
+        y_last = self.y.value(self.d - 1)
+        H_last = y_last.reshape((y_last.shape[0], -1))
+        x_last = R_factors[-1] @ H_last
+        res.network.nodes[self.d - 1]["tensor"].update_val_size(x_last)
 
         return res
 
@@ -2821,6 +2939,19 @@ def tt_randomized_round(y: TensorNetwork, target_ranks: List) -> TensorNetwork:
 
     rand_setup = TTRandRound(y, target_ranks)
     return rand_setup.rand_then_orth()
+
+
+def tt_randomized_round_twosided(
+    y: TensorNetwork,
+    target_ranks: List[int],
+    oversample: Union[int, List[int]] = 5,
+    tol: float = 1e-12,
+) -> TensorNetwork:
+    """Two-sided randomized TT rounding (generalized Nyström)."""
+    rand_setup = TTRandRound(y, target_ranks)
+    return rand_setup.rand_then_orth_two_sided(
+        target_ranks=target_ranks, oversample=oversample, tol=tol
+    )
 
 
 def tt_sum_randomized_round(
