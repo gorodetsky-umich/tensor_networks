@@ -1181,11 +1181,29 @@ class TensorNetwork:  # pylint: disable=R0904
     def sketch_node(self,
                     sketching_node: NodeName,
                     orthogonalization_node: NodeName,
-                    all_sketches: Dict[Tuple[Index, NodeName], np.ndarray]):
+                    all_sketches: Dict[Tuple[Index, NodeName], np.ndarray],
+                    sketch_cache: Optional[
+                        Dict[Tuple[NodeName, NodeName], np.ndarray]
+                    ] = None):
         """Only works for tree tensor networks for now"""
-        # TODO: avoid redundant sketching
         # TODO: Possibly optimize khtri-rao contractions
         # TODO: Try replacing khatri-rao with einsum
+        cache_key = (sketching_node, orthogonalization_node)
+        if sketch_cache is not None and cache_key in sketch_cache:
+            cached_sketch = sketch_cache[cache_key]
+            sketching_tensor = self.network.nodes[sketching_node]["tensor"]
+            orth_tensor = self.network.nodes[orthogonalization_node]["tensor"]
+            truncation_index = None
+            for index in sketching_tensor.indices:
+                if index in orth_tensor.indices:
+                    truncation_index = index
+                    break
+            if truncation_index is None:
+                raise ValueError(
+                    f"sketching node {sketching_node} and orthogonalization node {orthogonalization_node} do not have a common index"
+                )
+            all_sketches[(truncation_index, orthogonalization_node)] = cached_sketch
+            return
         
         # Get truncation index between sketch node and orthogonalization node
         truncation_index = None
@@ -1203,7 +1221,8 @@ class TensorNetwork:  # pylint: disable=R0904
             if neighbor != orthogonalization_node:
                 self.sketch_node(sketching_node=neighbor,
                                  orthogonalization_node=sketching_node,
-                                 all_sketches=all_sketches)
+                                 all_sketches=all_sketches,
+                                 sketch_cache=sketch_cache)
         
         # Perform contraction to get the sketch
         first_flag = True
@@ -1234,6 +1253,8 @@ class TensorNetwork:  # pylint: disable=R0904
 
         sketch = sketch_node_val @ total_kr_contraction
         all_sketches[(truncation_index, orthogonalization_node)] = sketch
+        if sketch_cache is not None:
+            sketch_cache[cache_key] = sketch
 
     @staticmethod
     def rand_tt(indices: List[Index], ranks: List[int]) -> "TensorNetwork":
@@ -3211,6 +3232,7 @@ def _tree_edge_sketch(
         sketching_node=parent,
         orthogonalization_node=node,
         all_sketches=all_sketches,
+        sketch_cache={},
     )
 
     parent_sketch = all_sketches[(edge_index, node)]
@@ -3220,6 +3242,44 @@ def _tree_edge_sketch(
         -1, node_tensor.value.shape[edge_pos]
     )
     return node_mat @ parent_sketch, node_mat, edge_pos, edge_index
+
+
+def _tree_edge_sketch_blocks(
+    tn: TensorNetwork,
+    node: NodeName,
+    parent: NodeName,
+    block_sizes: Sequence[int],
+) -> Tuple[List[np.ndarray], np.ndarray, int, Index]:
+    """Sketch one edge for several independent sample blocks in one traversal."""
+    total_samples = int(np.sum(block_sizes))
+    if total_samples <= 0:
+        raise ValueError("At least one sketch sample is required.")
+
+    edge_index = tn.get_contraction_index(node, parent)[0]
+    component_nodes = _tree_component_nodes(tn, parent, node)
+    all_sketches = _tree_free_index_sketches(tn, component_nodes, total_samples)
+    tn.sketch_node(
+        sketching_node=parent,
+        orthogonalization_node=node,
+        all_sketches=all_sketches,
+        sketch_cache={},
+    )
+
+    parent_sketch = all_sketches[(edge_index, node)]
+    node_tensor = tn.node_tensor(node)
+    edge_pos = node_tensor.indices.index(edge_index)
+    node_mat = np.moveaxis(node_tensor.value, edge_pos, -1).reshape(
+        -1, node_tensor.value.shape[edge_pos]
+    )
+
+    sketches = []
+    start = 0
+    for block_size in block_sizes:
+        stop = start + block_size
+        sketches.append(node_mat @ parent_sketch[:, start:stop])
+        start = stop
+
+    return sketches, node_mat, edge_pos, edge_index
 
 
 def _tree_absorb_factor(
@@ -3299,16 +3359,15 @@ def tree_adaptive_rand_round(
 
         init_b = max(int(np.floor(max_cols * init_f)), 1)
         init_samples = max(init_b, min_samples)
-        sketch, node_mat, edge_pos, edge_index = _tree_edge_sketch(
-            res, node, parent_node, init_samples
-        )
-        q_basis, _ = np.linalg.qr(sketch)
-
         b_inc = max(int(np.floor(max_cols * incr_f)), 1)
         sample_size = max(b_inc, min_samples)
-        residual_sketch, _, _, _ = _tree_edge_sketch(
-            res, node, parent_node, sample_size
+        sketch_blocks, node_mat, edge_pos, edge_index = _tree_edge_sketch_blocks(
+            res, node, parent_node, [init_samples, sample_size]
         )
+        sketch = sketch_blocks[0]
+        residual_sketch = sketch_blocks[1]
+        q_basis, _ = np.linalg.qr(sketch)
+
         residual_sketch = residual_sketch - q_basis @ (q_basis.T @ residual_sketch)
 
         while (
