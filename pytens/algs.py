@@ -1176,6 +1176,64 @@ class TensorNetwork:  # pylint: disable=R0904
             chunk_start += batch_size
 
         return results
+    
+
+    def sketch_node(self,
+                    sketching_node: NodeName,
+                    orthogonalization_node: NodeName,
+                    all_sketches: Dict[Tuple[Index, NodeName], np.ndarray]):
+        """Only works for tree tensor networks for now"""
+        # TODO: avoid redundant sketching
+        # TODO: Possibly optimize khtri-rao contractions
+        # TODO: Try replacing khatri-rao with einsum
+        
+        # Get truncation index between sketch node and orthogonalization node
+        truncation_index = None
+        for index in self.network.nodes[sketching_node]["tensor"].indices:
+            if index in self.network.nodes[orthogonalization_node]["tensor"].indices:
+                truncation_index = index
+                break
+        if truncation_index is None:
+            raise ValueError(
+                f"sketching node {sketching_node} and orthogonalization node {orthogonalization_node} do not have a common index"
+            )
+
+        # Recursively sketch the children except the orthogonalization node
+        for neighbor in self.network.neighbors(sketching_node):
+            if neighbor != orthogonalization_node:
+                self.sketch_node(sketching_node=neighbor,
+                                 orthogonalization_node=sketching_node,
+                                 all_sketches=all_sketches)
+        
+        # Perform contraction to get the sketch
+        first_flag = True
+        for i, index in enumerate(self.network.nodes[sketching_node]["tensor"].indices):
+            if index == truncation_index:
+                tr_ind_pos = i
+            else:
+                if (index, sketching_node) not in all_sketches:
+                    raise ValueError(
+                        f"Sketch for index {index} and node {sketching_node} not found in all_sketches."
+                    )
+                curr_kr_contraction = all_sketches[(index, sketching_node)]
+                if first_flag:
+                    total_kr_contraction = curr_kr_contraction
+                    first_flag = False
+                else:
+                    total_kr_contraction = khatri_rao(
+                        total_kr_contraction, curr_kr_contraction
+                    )
+
+        if first_flag:
+            total_kr_contraction = np.ones((1, 1))
+        
+        sketch_node_val = self.network.nodes[sketching_node]["tensor"].value
+        sketch_node_val = np.moveaxis(sketch_node_val,
+                                      tr_ind_pos,
+                                      0).reshape(sketch_node_val.shape[tr_ind_pos], -1)
+
+        sketch = sketch_node_val @ total_kr_contraction
+        all_sketches[(truncation_index, orthogonalization_node)] = sketch
 
     @staticmethod
     def rand_tt(indices: List[Index], ranks: List[int]) -> "TensorNetwork":
@@ -3077,6 +3135,245 @@ def tt_adaptive_rand_round(
             res.network.nodes[i - 1]["tensor"].update_val_size(tens_next)
 
     return res
+
+
+def _tree_parent_depth(
+    tn: TensorNetwork, root: NodeName
+) -> Tuple[Dict[NodeName, Optional[NodeName]], Dict[NodeName, int]]:
+    """Build parent/depth maps for a rooted tree."""
+    if root not in tn.network:
+        raise ValueError(f"Root node {root} is not in the tensor network.")
+    if not nx.is_tree(tn.network):
+        raise ValueError("Adaptive tree rounding requires the network to be a tree.")
+
+    parent: Dict[NodeName, Optional[NodeName]] = {root: None}
+    depth: Dict[NodeName, int] = {root: 0}
+    queue: List[NodeName] = [root]
+
+    while queue:
+        node = queue.pop(0)
+        for neighbor in tn.network.neighbors(node):
+            if neighbor in parent:
+                continue
+            parent[neighbor] = node
+            depth[neighbor] = depth[node] + 1
+            queue.append(neighbor)
+
+    return parent, depth
+
+
+def _tree_component_nodes(
+    tn: TensorNetwork, start: NodeName, blocked: NodeName
+) -> Set[NodeName]:
+    """Return nodes reachable from start when the edge to blocked is removed."""
+    component: Set[NodeName] = set()
+    stack = [start]
+    visited = {blocked}
+
+    while stack:
+        node = stack.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        component.add(node)
+        for neighbor in tn.network.neighbors(node):
+            if neighbor not in visited:
+                stack.append(neighbor)
+
+    return component
+
+
+def _tree_free_index_sketches(
+    tn: TensorNetwork, component_nodes: Set[NodeName], num_samples: int
+) -> Dict[Tuple[Index, NodeName], np.ndarray]:
+    """Create Gaussian sketches for free indices in a tree component."""
+    free_indices = set(tn.free_indices())
+    sketches: Dict[Tuple[Index, NodeName], np.ndarray] = {}
+    for node in component_nodes:
+        tensor = tn.node_tensor(node)
+        for index in tensor.indices:
+            if index in free_indices:
+                sketches[(index, node)] = np.random.randn(index.size, num_samples)
+    return sketches
+
+
+def _tree_edge_sketch(
+    tn: TensorNetwork,
+    node: NodeName,
+    parent: NodeName,
+    num_samples: int,
+) -> Tuple[np.ndarray, np.ndarray, int, Index]:
+    """Sketch the matricization of node along the edge to its parent."""
+    edge_index = tn.get_contraction_index(node, parent)[0]
+    component_nodes = _tree_component_nodes(tn, parent, node)
+    all_sketches = _tree_free_index_sketches(tn, component_nodes, num_samples)
+    tn.sketch_node(
+        sketching_node=parent,
+        orthogonalization_node=node,
+        all_sketches=all_sketches,
+    )
+
+    parent_sketch = all_sketches[(edge_index, node)]
+    node_tensor = tn.node_tensor(node)
+    edge_pos = node_tensor.indices.index(edge_index)
+    node_mat = np.moveaxis(node_tensor.value, edge_pos, -1).reshape(
+        -1, node_tensor.value.shape[edge_pos]
+    )
+    return node_mat @ parent_sketch, node_mat, edge_pos, edge_index
+
+
+def _tree_absorb_factor(
+    tn: TensorNetwork,
+    node: NodeName,
+    parent: NodeName,
+    q_basis: np.ndarray,
+    node_mat: np.ndarray,
+    edge_pos: int,
+    edge_index: Index,
+) -> None:
+    """Replace node by an orthonormal basis and absorb the factor into its parent."""
+    node_tensor = tn.node_tensor(node)
+    parent_tensor = tn.node_tensor(parent)
+    parent_pos = parent_tensor.indices.index(edge_index)
+
+    factor = q_basis.T @ node_mat
+    new_rank = q_basis.shape[1]
+    new_index = edge_index.with_new_size(new_rank)
+
+    moved_node = np.moveaxis(node_tensor.value, edge_pos, -1)
+    new_node_value = q_basis.reshape(moved_node.shape[:-1] + (new_rank,))
+    new_node_value = np.moveaxis(new_node_value, -1, edge_pos)
+    new_node_indices = list(node_tensor.indices)
+    new_node_indices[edge_pos] = new_index
+    tn.set_node_tensor(node, Tensor(new_node_value, new_node_indices))
+
+    parent_value = np.tensordot(factor, parent_tensor.value, axes=(1, parent_pos))
+    parent_value = np.moveaxis(parent_value, 0, parent_pos)
+    new_parent_indices = list(parent_tensor.indices)
+    new_parent_indices[parent_pos] = new_index
+    tn.set_node_tensor(parent, Tensor(parent_value, new_parent_indices))
+
+
+def tree_adaptive_rand_round(
+    tn: TensorNetwork,
+    tol: float,
+    root: NodeName,
+    init_f: float = 0.1,
+    incr_f: float = 0.05,
+    min_samples: int = 20,
+    tol_scale: float = 1.0,
+    postprocess: bool = False,
+) -> TensorNetwork:
+    """Adaptive randomized rounding for tree tensor networks."""
+    if not (0 < init_f < 1) or not (0 < incr_f < 1):
+        raise ValueError("init_f and incr_f must satisfy 0 < f < 1.")
+
+    if tn.network.number_of_edges() == 0:
+        return copy.deepcopy(tn)
+
+    res = copy.deepcopy(tn)
+    parent, depth = _tree_parent_depth(res, root)
+    num_edges = res.network.number_of_edges()
+    tau = tol * res.norm() / np.sqrt(num_edges)
+
+    traversal = sorted(
+        [node for node in res.network.nodes if node != root],
+        key=lambda node: depth[node],
+        reverse=True,
+    )
+
+    for node in traversal:
+        parent_node = parent[node]
+        if parent_node is None:
+            continue
+
+        node_tensor = res.node_tensor(node)
+        edge_index = res.get_contraction_index(node, parent_node)[0]
+        edge_pos = node_tensor.indices.index(edge_index)
+        node_mat = np.moveaxis(node_tensor.value, edge_pos, -1).reshape(
+            -1, node_tensor.value.shape[edge_pos]
+        )
+        max_cols = min(node_mat.shape)
+        if max_cols <= 1:
+            continue
+
+        init_b = max(int(np.floor(max_cols * init_f)), 1)
+        init_samples = max(init_b, min_samples)
+        sketch, node_mat, edge_pos, edge_index = _tree_edge_sketch(
+            res, node, parent_node, init_samples
+        )
+        q_basis, _ = np.linalg.qr(sketch)
+
+        b_inc = max(int(np.floor(max_cols * incr_f)), 1)
+        sample_size = max(b_inc, min_samples)
+        residual_sketch, _, _, _ = _tree_edge_sketch(
+            res, node, parent_node, sample_size
+        )
+        residual_sketch = residual_sketch - q_basis @ (q_basis.T @ residual_sketch)
+
+        while (
+            np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(residual_sketch.shape[1])
+            > tau / tol_scale
+        ):
+            if q_basis.shape[1] >= max_cols:
+                break
+
+            add_cols = min(b_inc, max_cols - q_basis.shape[1])
+            if add_cols <= 0:
+                break
+
+            candidate = residual_sketch[:, :add_cols]
+            q_new, _ = np.linalg.qr(candidate)
+            q_new, _ = np.linalg.qr(q_new - q_basis @ (q_basis.T @ q_new))
+            if q_new.shape[1] == 0:
+                break
+            q_basis = np.concatenate((q_basis, q_new), axis=1)
+
+            sample_size = max(add_cols, min_samples)
+            residual_sketch, _, _, _ = _tree_edge_sketch(
+                res, node, parent_node, sample_size
+            )
+            residual_sketch = residual_sketch - q_basis @ (
+                q_basis.T @ residual_sketch
+            )
+
+        _tree_absorb_factor(
+            res,
+            node,
+            parent_node,
+            q_basis,
+            node_mat,
+            edge_pos,
+            edge_index,
+        )
+
+    if postprocess:
+        res.round(root, tol)
+
+    return res
+
+
+def ttn_adaptive_rand_round(
+    tn: TensorNetwork,
+    tol: float,
+    root: NodeName,
+    init_f: float = 0.1,
+    incr_f: float = 0.05,
+    min_samples: int = 20,
+    tol_scale: float = 1.0,
+    postprocess: bool = False,
+) -> TensorNetwork:
+    """Alias for adaptive randomized tree rounding."""
+    return tree_adaptive_rand_round(
+        tn=tn,
+        tol=tol,
+        root=root,
+        init_f=init_f,
+        incr_f=incr_f,
+        min_samples=min_samples,
+        tol_scale=tol_scale,
+        postprocess=postprocess,
+    )
 
 
 def ttop_rank1(
