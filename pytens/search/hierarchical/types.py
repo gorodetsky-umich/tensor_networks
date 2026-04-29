@@ -1,6 +1,6 @@
 """Type definitions for hierarchical search"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import List, Sequence, Self
 import copy
 from pytens.search.types import Action
@@ -76,22 +76,22 @@ class HSearchState:
         return new_st
 
 
+@dataclass
 class TopDownSearchResult(SearchResult):
-    def __init__(
-        self,
-        stats=SearchStats(),
-        best_state=None,
-        unused_delta=0.0,
-        init_splits=0,
-        valid_set=None,
-        valid_indices=None,
-        reshape_history=None,
-    ):
-        super().__init__(stats, best_state, unused_delta)
-        self.init_splits = init_splits
-        self.valid_set = valid_set
-        self.valid_indices = valid_indices
-        self.reshape_history = reshape_history
+    """Result for top-down hierarchical tensor network search."""
+
+    stats: SearchStats = dataclass_field(default_factory=SearchStats)
+    best_state: object = None
+    unused_delta: float = 0.0
+    init_splits: int = 0
+    valid_set: object = None
+    valid_indices: object = None
+    reshape_history: object = None
+
+    def __post_init__(self):
+        SearchResult.__init__(
+            self, self.stats, self.best_state, self.unused_delta
+        )
 
 
 class SubnetResult:
@@ -128,7 +128,21 @@ class SuperIndex(Index):
 
 
 @dataclass
+class PartitionSearchInput:
+    """Input bundle for _finalize_partition_result."""
+
+    result: SearchResult
+    merge_ops: Sequence[IndexMerge]
+    split_ops: Sequence[IndexSplit]
+    before_split: Sequence[Index]
+    remaining_delta: float
+    reverse_map: dict
+
+
+@dataclass
 class ReplayTrace:
+    """One level of recorded splits and actions for replay."""
+
     level: int
     splits: Sequence[IndexSplit]
     merge_ops: Sequence[IndexMerge]
@@ -138,5 +152,7 @@ class ReplayTrace:
 
 @dataclass
 class ReplaySweep:
+    """A sweep of replay traces over a set of indices."""
+
     indices: Sequence[Index]
     traces: Sequence[ReplayTrace]

@@ -1,6 +1,7 @@
 """Classes for search states."""
 
 import copy
+import dataclasses
 import itertools
 from typing import Generator, List, Optional, Self, Sequence, Tuple
 import logging
@@ -20,30 +21,25 @@ from pytens.algs import (
     TreeNetwork,
 )
 from pytens.cross.cross import TensorFunc
-from pytens.types import PartitionStatus, SVDAlgorithm
+from pytens.types import AlgoParams, PartitionStatus, SVDAlgorithm, SVDParams
 from pytens.search.types import Action
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+@dataclasses.dataclass(eq=False)
 class OSplit(Action):
     """Class for output-directed splits."""
 
-    def __init__(
-        self,
-        indices: Sequence[Index],
-        target_size: Optional[int] = None,
-        delta: Optional[float] = None,
-        reversible: bool = False,
-        reverse_edge: Optional[Tuple[NodeName, NodeName]] = None,
-    ):
-        super().__init__()
-        self.indices = sorted(indices)
-        self.target_size = target_size
-        self.delta = delta
-        self.reversible = reversible
-        self.reverse_edge = reverse_edge
+    indices: Sequence[Index] = dataclasses.field(default_factory=list)
+    target_size: Optional[int] = None
+    delta: Optional[float] = None
+    reversible: bool = False
+    reverse_edge: Optional[Tuple[NodeName, NodeName]] = None
+
+    def __post_init__(self):
+        self.indices = sorted(self.indices)
 
     def __str__(self) -> str:
         return f"OSplit({[i.name for i in self.indices]})"
@@ -87,7 +83,6 @@ class OSplit(Action):
 
         return True
 
-    # TODO: Reorganize the code in this function
     def to_isplit(self, net: TreeNetwork) -> Tuple[PartitionStatus, "ISplit"]:
         """Convert an output-directed split to an input-directed one."""
         res = net.partition_node(self.indices)
@@ -174,42 +169,44 @@ class OSplit(Action):
     def svals(
         self,
         net: TreeNetwork,
-        svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
-        algo: SVDAlgorithm = SVDAlgorithm.SVD,
-        max_rank=100,
-        orthonormal=None,
-        eps=0,
-        rand: bool = True,
+        algo_params: AlgoParams = AlgoParams(),
+        svd_params: SVDParams = SVDParams(),
     ) -> np.ndarray:
         """Compute the singular values of the split action."""
         logger.debug("performing actions: %s", self)
 
-        if algo == SVDAlgorithm.CROSS:
-            return net.svals_by_cross(self.indices, max_rank=max_rank, eps=eps)
+        if algo_params.algo == SVDAlgorithm.CROSS:
+            return net.svals_by_cross(
+                self.indices, max_rank=svd_params.max_rank, eps=algo_params.eps
+            )
 
+        rand = svd_params.random_seed is not None
         if isinstance(net, TensorTrain):
             logger.debug(
                 "computing singular values for a tensor train: %s", net
             )
-            # if algo == SVDAlgorithm.FOLD:
-            #     return net.svals_by_fold(self.indices, max_rank=max_rank)
-
             return net.svals_by_merge(
-                self.indices, max_rank=max_rank, rand=rand
+                self.indices, max_rank=svd_params.max_rank, rand=rand
             )
-
-            # return net.svals(self.indices, max_rank=max_rank, delta=delta)
 
         if isinstance(net, HierarchicalTucker):
             return net.svals(
-                self.indices, max_rank=max_rank, orthonormal=orthonormal
+                self.indices,
+                max_rank=svd_params.max_rank,
+                orthonormal=svd_params.orthonormal,
             )
 
         if isinstance(net, FoldedTensorTrain):
             logger.debug("computing singular values for a folded tensor train")
-            return net.svals(self.indices, max_rank=max_rank, rand=rand)
+            return net.svals(
+                self.indices,
+                max_rank=svd_params.max_rank,
+                random_seed=svd_params.random_seed,
+            )
 
-        return net.svals_by_merge(self.indices, max_rank=max_rank, rand=rand)
+        return net.svals_by_merge(
+            self.indices, max_rank=svd_params.max_rank, rand=rand
+        )
 
 
 class ISplit(Action):
@@ -270,7 +267,6 @@ class ISplit(Action):
         """Execute a split action."""
         linds = self.left_indices
 
-        # TODO: clean up this if block
         if svd is None:
             if compute_data:
                 net.orthonormalize(self.node)
@@ -342,7 +338,6 @@ class ISplit(Action):
         (_, s, _), _ = self.svd(net, svd, compute_data=True, compute_uv=False)
         return np.diag(net.value(s))
 
-    # TODO: reorganize the code in this funciton
     def to_osplit(self, st, idx):
         """Convert a split action to OSplit."""
         connect_nodes = []
@@ -374,6 +369,7 @@ class Merge(Action):
     """Merge action."""
 
     def __init__(self, node1: NodeName, node2: NodeName):
+        super().__init__()
         self.node1 = node1
         self.node2 = node2
 
@@ -410,7 +406,6 @@ class SearchState:
 
         return cnt
 
-    # TODO: check how to implement isplit osplit in a better way
     def get_legal_actions(
         self, index_actions=False, merge_ops=None, out_of_order=False
     ):
@@ -559,7 +554,7 @@ class SearchState:
             new_state.past_actions = self.past_actions + [action]
             return new_state
 
-        elif isinstance(action, Merge):
+        if isinstance(action, Merge):
             new_net = copy.deepcopy(self.network)
             action.execute(new_net)
             # new_net.draw()
@@ -572,8 +567,7 @@ class SearchState:
             new_state.past_actions = self.past_actions + [action]
             return new_state
 
-        else:
-            raise TypeError("Unrecognized action type")
+        raise TypeError("Unrecognized action type")
 
     def optimize(self):
         """Optimize the current structure."""

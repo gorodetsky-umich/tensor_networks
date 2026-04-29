@@ -1,6 +1,6 @@
 """Utility functions for hierarchical search"""
 
-from typing import Literal, Sequence
+from typing import List, Literal, Sequence, Tuple
 from collections import defaultdict
 
 import numpy as np
@@ -12,11 +12,14 @@ from pytens.cross.funcs import TensorFunc, SplitFunc
 
 
 class DisjointSet:
+    """A disjoint-set (union-find) data structure."""
+
     def __init__(self):
         self.parent = {}
         self.elems = set()
 
     def find(self, i):
+        """Find the root representative of element i with path compression."""
         if i not in self.parent:
             return i
 
@@ -24,6 +27,10 @@ class DisjointSet:
         return self.parent[i]
 
     def union(self, i, j):
+        """
+        Union the sets containing i and j;
+        return True if they were disjoint.
+        """
         self.elems.add(i)
         self.elems.add(j)
         root_i = self.find(i)
@@ -36,6 +43,7 @@ class DisjointSet:
         return False  # Already in the same set
 
     def groups(self):
+        """Return the mapping from each root to its members."""
         groups = defaultdict(list)
 
         for x in self.elems:
@@ -53,16 +61,6 @@ def corr(
     agg: Literal["mean", "det", "norm", "sval"],
 ) -> float:
     """Compute the correlation over the random samples of the given data."""
-    # samples = np.random.choice(
-    #     corr_data.shape[0],
-    #     size=min(sample_size, corr_data.shape[0]),
-    #     replace=False,
-    # )
-    # sample_data = corr_data[samples]
-    # # TODO: modify this part to support correlation for cross approximation
-    # corr_res = np.corrcoef(
-    #     sample_data + np.random.random(sample_data.shape) * 1e-13
-    # )
     if agg == "mean":
         return float(-np.mean(np.abs(corr_res)))
 
@@ -102,7 +100,38 @@ def split_func(
     return SplitFunc(free_indices, old_func, var_mapping)
 
 
+def build_bipartite_sample(
+    left_inds: List[Index],
+    right_inds: List[Index],
+    free_inds: List[Index],
+    selected_inds: List[np.ndarray],
+) -> Tuple[np.ndarray, List[Index]]:
+    """Build a Cartesian-product sample matrix for a bipartite index split.
+
+    Returns the stacked index matrix (num_left * num_right, total_dims) and
+    the ordering of indices used (left_inds + right_inds).
+    """
+    left_ind_vals = []
+    for ind in left_inds:
+        left_ind_vals.append(selected_inds[free_inds.index(ind)])
+
+    right_ind_vals = []
+    for ind in right_inds:
+        right_ind_vals.append(selected_inds[free_inds.index(ind)])
+
+    left_stacked = np.stack(left_ind_vals, axis=-1)
+    right_stacked = np.stack(right_ind_vals, axis=-1)
+
+    # Cartesian product: repeat left N times, tile right M times
+    left = np.repeat(left_stacked, len(right_stacked), axis=0)
+    right = np.tile(right_stacked, (len(left_stacked), 1))
+    full_indices = np.hstack((left, right))
+    return full_indices, left_inds + right_inds
+
+
 def tntorch_wrapper(f):
+    """Wrap a tensor function to accept tntorch-style index arguments."""
+
     def g(*args):
         if len(args[0].shape) == 1:
             inds = np.stack([a.numpy() for a in args], axis=-1)
@@ -114,6 +143,7 @@ def tntorch_wrapper(f):
 
 
 def tntorch_to_tt(res, split_indices):
+    """Convert a tntorch tensor train result to a TensorTrain network."""
     net = TensorTrain()
     for ni, n in enumerate(res.cores):
         if ni == 0:

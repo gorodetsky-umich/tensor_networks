@@ -566,6 +566,21 @@ files = [
 ]
 
 [[package]]
+name = "numpy-typing-compat"
+version = "20251206.2.1"
+description = "Static typing compatibility layer for older versions of NumPy"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "numpy_typing_compat-20251206.2.1-py3-none-any.whl", hash = "sha256:703ae61be7877ab0af562298776b89eae609a3985414d92011a39a42350b42e1"},
+    {file = "numpy_typing_compat-20251206.2.1.tar.gz", hash = "sha256:8a868da29e8d076c2aaef8ea9ebb602af917c9752063cfe7c95d6cb60c7b9ea3"},
+]
+
+[package.dependencies]
+numpy = ">=2.1,<2.2"
+
+[[package]]
 name = "opt-einsum"
 version = "3.4.0"
 description = "Path optimization of einsum functions."
@@ -576,6 +591,26 @@ files = [
     {file = "opt_einsum-3.4.0-py3-none-any.whl", hash = "sha256:69bb92469f86a1565195ece4ac0323943e83477171b91d24c35afe028a90d7cd"},
     {file = "opt_einsum-3.4.0.tar.gz", hash = "sha256:96ca72f1b886d148241348783498194c577fa30a8faac108586b14f1ba4473ac"},
 ]
+
+[[package]]
+name = "optype"
+version = "0.17.0"
+description = "Building Blocks for Precise & Flexible Type Hints"
+optional = false
+python-versions = ">=3.11"
+groups = ["main"]
+files = [
+    {file = "optype-0.17.0-py3-none-any.whl", hash = "sha256:8c2d88ff13149454bcf6eb47502f80d288bc542e7238fcc412ac4d222c439397"},
+    {file = "optype-0.17.0.tar.gz", hash = "sha256:31351a1e64d9eba7bf67e14deefb286e85c66458db63c67dd5e26dd72e4664e5"},
+]
+
+[package.dependencies]
+numpy = {version = ">=1.26,<2.7", optional = true, markers = "extra == \"numpy\""}
+numpy-typing-compat = {version = ">=20250818.1.25,<20251207", optional = true, markers = "extra == \"numpy\""}
+typing-extensions = {version = ">=4.10", markers = "python_full_version < \"3.13.0\""}
+
+[package.extras]
+numpy = ["numpy (>=1.26,<2.7)", "numpy-typing-compat (>=20250818.1.25,<20251207)"]
 
 [[package]]
 name = "packaging"
@@ -1038,6 +1073,24 @@ files = [
 ]
 
 [[package]]
+name = "scipy-stubs"
+version = "1.17.1.3"
+description = "Type annotations for SciPy"
+optional = false
+python-versions = ">=3.11"
+groups = ["main"]
+files = [
+    {file = "scipy_stubs-1.17.1.3-py3-none-any.whl", hash = "sha256:7b91d3f05aa47da06fbca14eb6c5bb4c28994e9245fd250cc847e375bab31297"},
+    {file = "scipy_stubs-1.17.1.3.tar.gz", hash = "sha256:5eb87a8d23d726706259b012ebe76a4a96a9ae9e141fc59bf55fc8eac2ed9e0f"},
+]
+
+[package.dependencies]
+optype = {version = ">=0.14.0,<0.18", extras = ["numpy"]}
+
+[package.extras]
+scipy = ["scipy (>=1.17.1,<1.18)"]
+
+[[package]]
 name = "seaborn"
 version = "0.13.2"
 description = "Statistical data visualization"
@@ -1132,4 +1185,4 @@ search = ["gurobipy", "sympy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">= 3.11"
-content-hash = "43a7e23e96e22c4450ae970f8d809a319b4fd2f50985c3b4c8f031f3c302e18b"
+content-hash = "114dde20e3dae690ed32bcb0b0156a38efac45ec69b177daa945d3cc769ab3f2"

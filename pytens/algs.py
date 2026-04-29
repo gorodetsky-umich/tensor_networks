@@ -19,14 +19,14 @@ from typing import (
     Set,
     Tuple,
     Union,
+    cast,
 )
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import opt_einsum as oe
-from line_profiler import profile
-from sklearn.utils.extmath import randomized_svd
+from sklearn.utils.extmath import randomized_svd  # type: ignore
 import scipy
 
 from .utils import delta_svd
@@ -820,10 +820,10 @@ class TensorNetwork:  # pylint: disable=R0904
             d = config.delta
 
             if config.compute_data:
-                s, _ = x.svd(
+                s_tuple, _ = x.svd(
                     lefts, delta=config.delta, compute_uv=config.compute_uv
                 )
-                s = s[0]
+                s: Tensor = s_tuple[0]
             else:
                 s = Tensor(np.empty(0), [rl, rr])
         else:
@@ -955,7 +955,7 @@ class TensorNetwork:  # pylint: disable=R0904
         for n in self.network.nodes:
             indices = self.node_tensor(n).indices
             # print(indices)
-            n_cost = np.prod([i.size for i in indices])
+            n_cost = int(np.prod([i.size for i in indices]))
             cost += n_cost
 
         return int(cost)
@@ -1024,7 +1024,6 @@ class TensorNetwork:  # pylint: disable=R0904
         self.network = nx.relabel_nodes(self.network, node_subst, copy=True)
         return node_subst, index_subst
 
-    @profile
     def evaluate(
         self, indices: Sequence[Index], values: np.ndarray
     ) -> np.ndarray:
@@ -1174,14 +1173,14 @@ class TensorNetwork:  # pylint: disable=R0904
         free_indices = sorted(self.free_indices())
 
         free_graph = nx.Graph()
-        for i, index in enumerate(free_indices):
+        for index in free_indices:
             if index.size == 1:
                 continue
 
             free_graph.add_node(f"{index.name}-{index.size}")
 
         new_graph = nx.compose(self.network, free_graph)
-        for i, index in enumerate(free_indices):
+        for index in free_indices:
             if index.size == 1:
                 continue
 
@@ -1209,95 +1208,78 @@ class TensorNetwork:  # pylint: disable=R0904
             else:
                 node_groups["B"].append(node)
 
-        for group, nodes in node_groups.items():
-            if group == "A":
-                nx.draw_networkx_nodes(
-                    new_graph,
-                    pos,
-                    ax=ax,
-                    nodelist=nodes,
-                    node_color="tab:blue",
-                    node_shape=shape_map[group],
-                    node_size=size_map[group],
-                    linewidths=2.0,
-                    edgecolors="k",
-                )
+        # node_info maps each group to (nodes_list, shape, size)
+        node_info = {
+            g: (nodes, shape_map[g], size_map[g])
+            for g, nodes in node_groups.items()
+        }
+        render_ctx = {"pos": pos, "ax": ax}
+        self._draw_nodes(new_graph, render_ctx, node_info, node_label)
+        self._draw_edges(new_graph, render_ctx)
 
-                if node_label:
-                    node_labels = {node: node for node in node_groups["A"]}
-                    nx.draw_networkx_labels(
-                        new_graph, pos, ax=ax, labels=node_labels, font_size=12
-                    )
-            elif group == "C":
-                nx.draw_networkx_nodes(
-                    new_graph,
-                    pos,
-                    ax=ax,
-                    nodelist=nodes,
-                    node_color="w",
-                    # node_color=range(1, len(nodes) + 1),
-                    node_shape=shape_map[group],
-                    node_size=size_map[group],
-                    # cmap=plt.get_cmap("tab20"),
-                    # with_label=with_label[group]
-                )
-            else:
-                nx.draw_networkx_nodes(
-                    new_graph,
-                    pos,
-                    ax=ax,
-                    nodelist=nodes,
-                    node_color="w",
-                    # node_color=range(1, len(nodes) + 1),
-                    node_shape=shape_map[group],
-                    node_size=size_map[group],
-                    # cmap=plt.get_cmap("tab20"),
-                    # with_label=with_label[group]
-                )
-
+    def _draw_nodes(
+        self, graph: Any, render_ctx: Any, node_info: Any, node_label: Any
+    ) -> None:
+        """Draw all node groups with their labels."""
+        pos, ax = render_ctx["pos"], render_ctx["ax"]
+        for group, (nodes, shape, size) in node_info.items():
+            color = "tab:blue" if group == "A" else "w"
+            nx.draw_networkx_nodes(
+                graph,
+                pos,
+                ax=ax,
+                nodelist=nodes,
+                node_color=color,
+                node_shape=shape,
+                node_size=size,
+                **(
+                    {"linewidths": 2.0, "edgecolors": "k"}
+                    if group == "A"
+                    else {}
+                ),
+            )
+            if group == "A" and node_label:
                 node_labels = {node: node for node in nodes}
                 nx.draw_networkx_labels(
-                    new_graph,
-                    pos,
-                    ax=ax,
-                    labels=node_labels,
-                    font_size=12,
-                    # verticalalignment="top",
+                    graph, pos, ax=ax, labels=node_labels, font_size=12
+                )
+            if group == "B":
+                node_labels = {node: node for node in nodes}
+                nx.draw_networkx_labels(
+                    graph, pos, ax=ax, labels=node_labels, font_size=12
                 )
 
+    def _draw_edges(self, graph: Any, render_ctx: Any) -> None:
+        """Draw visible and invisible edges plus edge labels."""
+        pos, ax = render_ctx["pos"], render_ctx["ax"]
         edge_labels = {}
         for u, v in self.network.edges():
             indices = self.get_contraction_index(u, v)
-            labels = [f"{i.size}" for i in indices]
-            label = "-".join(labels)
-            edge_labels[(u, v)] = label
+            edge_labels[(u, v)] = "-".join(f"{i.size}" for i in indices)
 
         visible_edges, invisible_edges = [], []
-        for u, v in new_graph.edges:
-            if str(u).endswith("_node") and str(u).startswith(str(v)):
+        for u, v in graph.edges:
+            is_ghost = (
+                str(u).endswith("_node") and str(u).startswith(str(v))
+            ) or (str(v).endswith("_node") and str(v).startswith(str(u)))
+            if is_ghost:
                 invisible_edges.append((u, v))
-                continue
-
-            if str(v).endswith("_node") and str(v).startswith(str(u)):
-                invisible_edges.append((u, v))
-                continue
-
-            visible_edges.append((u, v))
+            else:
+                visible_edges.append((u, v))
 
         nx.draw_networkx_edges(
-            new_graph, pos, edgelist=visible_edges, ax=ax, width=2.0
+            graph, pos, edgelist=visible_edges, ax=ax, width=2.0
         )
         nx.draw_networkx_edges(
-            new_graph,
+            graph,
             pos,
             edgelist=invisible_edges,
             ax=ax,
             width=0.0,
             edge_color="white",
         )
-
         nx.draw_networkx_edge_labels(
-            new_graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
+            graph, pos, ax=ax, edge_labels=edge_labels, font_size=10
         )
 
     def to_dict(self) -> dict:
@@ -1396,10 +1378,6 @@ class TensorNetwork:  # pylint: disable=R0904
 class TreeNetwork(TensorNetwork):
     """Class for arbitrary tree-structured networks"""
 
-    def __init__(self):
-        super().__init__()
-        self.node_status = {}
-
     def round(
         self, node_name: NodeName, delta: float, visited: Optional[set] = None
     ) -> Tuple[NodeName, float]:
@@ -1465,11 +1443,12 @@ class TreeNetwork(TensorNetwork):
 
         return r, delta
 
-    def _compress_indices(self, node: NodeName) -> List[IndexMerge]:
+    def collect_node_index_merges(self, node: NodeName) -> List[IndexMerge]:
+        """Collect index merge operations for a single node."""
         merges = []
         all_indices = self.free_indices()
         node_indices = self.node_tensor(node).indices
-        ind_groups = {}
+        ind_groups: Dict[str, List[Index]] = {}
         for ind in node_indices:
             if ind not in all_indices:
                 continue
@@ -1490,6 +1469,7 @@ class TreeNetwork(TensorNetwork):
                     all_children.append(ind)
 
             parent_size = math.prod(c.size for c in children)
+            parent_name: IndexName
             if all(c in children for c in all_children):
                 parent_name = parent
             else:
@@ -1501,7 +1481,7 @@ class TreeNetwork(TensorNetwork):
 
         return merges
 
-    def compress_indices(self) -> List[IndexMerge]:
+    def _compress_indices(self) -> List[IndexMerge]:
         """Compress consectutive indices that are decomposed from one index"""
         tree = TreeNetwork()
         tree.network = self.network
@@ -1509,7 +1489,7 @@ class TreeNetwork(TensorNetwork):
 
         # collect all the indices in the current network by the original names
         for node in tree.network.nodes:
-            node_merges = tree._compress_indices(node)
+            node_merges = tree.collect_node_index_merges(node)
             merges.extend(node_merges)
 
         for merge_op in merges:
@@ -1542,7 +1522,6 @@ class TreeNetwork(TensorNetwork):
         tree.network = self.network
         return tree
 
-    @profile
     def postorder_orthonormal(
         self,
         visited: Dict[NodeName, int],
@@ -1654,7 +1633,8 @@ class TreeNetwork(TensorNetwork):
         """
         # traverse the tree rooted at the given node in the post order
         # 1 for visited and 2 for processed
-        return self.postorder_orthonormal({}, None, name)
+        result: NodeName = self.postorder_orthonormal({}, None, name)
+        return result
 
     def canonical_structure(self, consider_ranks: bool = False) -> int:
         """Compute the canonical structure of the tensor network.
@@ -1750,14 +1730,15 @@ class TreeNetwork(TensorNetwork):
 
     def node_by_free_index(self, index: IndexName) -> NodeName:
         """Identify the node in the network containing the given free index"""
-        for n in self.network.nodes:
-            tensor = self.node_tensor(n)
+        node: NodeName
+        for node in self.network.nodes:
+            tensor = self.node_tensor(node)
             if index in [ind.name for ind in tensor.indices]:
-                return n
+                return node
 
         raise KeyError(f"Cannot find index {index} in the network")
 
-    def canonicalize_indices(self, tree: DimTreeNode):
+    def _canonicalize_indices(self, tree: DimTreeNode) -> None:
         """sort the children by free indices
         and get the corresponding children nodes
         """
@@ -1768,7 +1749,7 @@ class TreeNetwork(TensorNetwork):
 
         # children indices
         for n in sorted(tree.down_info.nodes):
-            self.canonicalize_indices(n)
+            self._canonicalize_indices(n)
             ind = self.get_contraction_index(n.node, tree.node)[0]
             indices.append(ind)
 
@@ -1845,7 +1826,7 @@ class TreeNetwork(TensorNetwork):
 
         tree = construct(set(), root)
         assign_indices(tree)
-        self.canonicalize_indices(tree)
+        self._canonicalize_indices(tree)
         return tree
 
     def merge_index(self, merge_op: IndexMerge) -> Self:
@@ -1865,7 +1846,7 @@ class TreeNetwork(TensorNetwork):
         return self
 
     @staticmethod
-    def tucker(indices: Sequence[Index]) -> "TreeNetwork":
+    def _tucker(indices: Sequence[Index]) -> "TreeNetwork":
         """Create a Tucker with the given indices."""
         net = TreeNetwork()
         core_indices = [Index(f"s{i}", 1) for i in range(len(indices))]
@@ -1880,8 +1861,7 @@ class TreeNetwork(TensorNetwork):
 
         return net
 
-    @profile
-    def corrcoef(
+    def _corrcoef(
         self, indices: Sequence[Index], sample_size: int = 50000
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Compute the Pearson's correlation coefficient along the given
@@ -1889,16 +1869,21 @@ class TreeNetwork(TensorNetwork):
         # print(indices)
         # 1) sample points along the two indices
         ind_sizes = [ind.size for ind in indices]
+        raw_samples: List[np.ndarray]
         if sample_size < int(np.prod(ind_sizes)):
-            samples = []
+            raw_samples = []
             for ind in indices:
-                samples.append(
+                raw_samples.append(
                     np.random.randint(0, ind.size, size=(sample_size, 1))
                 )
         else:
-            samples = np.meshgrid(*[np.arange(0, ind.size) for ind in indices])
+            raw_samples = list(
+                np.meshgrid(*[np.arange(0, ind.size) for ind in indices])
+            )
 
-        samples = np.stack(samples, axis=-1).reshape(-1, len(samples))
+        samples: np.ndarray = np.stack(raw_samples, axis=-1).reshape(
+            -1, len(raw_samples)
+        )
 
         # create a sample network
         # net = self.evaluate(indices, samples)
@@ -1907,23 +1892,23 @@ class TreeNetwork(TensorNetwork):
         other_size = np.prod([ind.size for ind in others])
         # 2) compute the sum value, i.e. integration over selected indices
         weights = np.ones(len(others))
-        sums = self.integrate(others, weights)
-        # print(sums.free_indices())
-        # print(sums)
-        sums = sums.evaluate(indices, samples)
+        sums_net = self.integrate(others, weights)
+        # print(sums_net.free_indices())
+        # print(sums_net)
+        sums = sums_net.evaluate(indices, samples)
         # print(sums.shape)
 
         # 3) compute the inner product over the selected indices
-        inner = self.attach(self, indices=others)
-        # print(inner.free_indices())
-        # print(inner)
+        inner_net = self.attach(self, indices=others)
+        # print(inner_net.free_indices())
+        # print(inner_net)
         inner_indices = [
             ind.with_new_name(f"G{ind.name}") for ind in indices
         ] + [ind.with_new_name(f"H{ind.name}") for ind in indices]
         samples_i, samples_j = np.triu_indices(len(samples))
         pairs = np.hstack((samples[samples_i], samples[samples_j]))
-        half_inner = inner.evaluate(inner_indices, pairs)
-        inner = np.empty((len(samples), len(samples)))
+        half_inner = inner_net.evaluate(inner_indices, pairs)
+        inner: np.ndarray = np.empty((len(samples), len(samples)))
         inner[samples_i, samples_j] = half_inner
         inner[samples_j, samples_i] = half_inner
         # print(inner.shape)
@@ -1945,11 +1930,10 @@ class TreeNetwork(TensorNetwork):
     # Swap and its helper functions
     # ========================================
 
-    @profile
     def swap(
         self,
         ind_nodes: Sequence[NodeName],
-        delta: float = 0,
+        _delta: float = 0,
         anchor: Optional[NodeName] = None,
     ) -> Tuple[NodeName, NodeName]:
         """Swap the indices so that the target indices are adjacent."""
@@ -1960,9 +1944,7 @@ class TreeNetwork(TensorNetwork):
             return self._max_dist_nodes(ind_nodes, ind_nodes[0])
 
         if anchor is None:
-            anchor, _ = self.best_anchor(ind_nodes)
-        self.node_status = {}
-        self.node_status[anchor] = NodeStatus.CONFIRMED
+            anchor, _ = self._best_anchor(ind_nodes)
         logger.debug(
             "swapping nodes %s to be neighbors in the network %s",
             ind_nodes,
@@ -1970,13 +1952,11 @@ class TreeNetwork(TensorNetwork):
         )
         for node in ind_nodes:
             path = nx.shortest_path(self.network, node, anchor)
-            self.swap_along_path(path, node)
-            self.node_status[node] = NodeStatus.CONFIRMED
+            self._swap_along_path(path, node)
 
         return self._max_dist_nodes(ind_nodes, anchor)
 
-    @profile
-    def move_index(self, ind1: Index, ind2: Index):
+    def _move_index(self, ind1: Index, ind2: Index) -> None:
         """Move ind1 to the neighborhood of ind2"""
         logger.debug("moving index %s to index %s", ind1, ind2)
         node1 = self.node_by_free_index(ind1.name)
@@ -1988,19 +1968,22 @@ class TreeNetwork(TensorNetwork):
         path = nx.shortest_path(self.network, node1, node2)
         for n in path[1:]:
             swapping_ind = None if n != node2 else ind2
-            self.swap_nbr(path, node1, n, ind1, swapping_ind)
+            self.swap_nbr(
+                path,
+                NodeIndexPair(node1, ind1),
+                NodeIndexPair(n, swapping_ind),
+            )
             logger.debug("after swapping %s and %s, get %s", node1, n, self)
 
-    @profile
     def swap_nbr(
         self,
         path: Sequence[NodeName],
-        node1: NodeName,
-        node2: NodeName,
-        ind1: Optional[Index] = None,
-        ind2: Optional[Index] = None,
-    ):
+        node1_pair: NodeIndexPair,
+        node2_pair: NodeIndexPair,
+    ) -> None:
         """Swap two neighbor nodes."""
+        node1, ind1 = node1_pair.node, node1_pair.ind
+        node2, ind2 = node2_pair.node, node2_pair.ind
         logger.debug("swapping the neighbors %s and %s", node1, node2)
         common_ind = self.get_contraction_index(node1, node2)[0]
         node_indices = []
@@ -2008,14 +1991,14 @@ class TreeNetwork(TensorNetwork):
         # Collect indices from node1 that should be kept
         for ind in self.node_tensor(node1).indices:
             if self._should_keep_index_from_left(
-                path, common_ind, ind, node1, ind1
+                path, common_ind, NodeIndexPair(node1, ind), ind1
             ):
                 node_indices.append(ind)
 
         # Collect indices from node2 that should be kept
         for ind in self.node_tensor(node2).indices:
             if self._should_keep_index_from_right(
-                path, common_ind, ind, node2, ind2
+                path, common_ind, NodeIndexPair(node2, ind), ind2
             ):
                 node_indices.append(ind)
 
@@ -2029,10 +2012,10 @@ class TreeNetwork(TensorNetwork):
         self,
         visited: Set[NodeName],
         nodes: Sequence[NodeName],
-        num_confirmed: int,
-        curr_dist: int,
         node: NodeName,
+        dist_state: Tuple[int, int] = (0, 0),
     ) -> int:
+        num_confirmed, curr_dist = dist_state
         visited.add(node)
 
         total_dist = curr_dist - num_confirmed
@@ -2042,12 +2025,12 @@ class TreeNetwork(TensorNetwork):
         for nbr in self.network.neighbors(node):
             if nbr not in visited:
                 total_dist += self._anchor_distance(
-                    visited, nodes, num_confirmed, curr_dist + 1, nbr
+                    visited, nodes, nbr, (num_confirmed, curr_dist + 1)
                 )
 
         return total_dist
 
-    def best_anchor(
+    def _best_anchor(
         self, candidates: Sequence[NodeName]
     ) -> Tuple[NodeName, float]:
         """Find the best anchor node such that all other nodes are closest
@@ -2058,7 +2041,7 @@ class TreeNetwork(TensorNetwork):
 
         for anchor_candidate in candidates:
             total_dist = self._anchor_distance(
-                set(), candidates, 0, 0, anchor_candidate
+                set(), candidates, anchor_candidate
             )
 
             if total_dist < best_dist:
@@ -2067,24 +2050,18 @@ class TreeNetwork(TensorNetwork):
 
         return best_anchor, best_dist
 
-    def swap_along_path(
+    def _swap_along_path(
         self,
         path: Sequence[NodeName],
         moving_node: NodeName,
-    ):
+    ) -> None:
         """Swap a node along the given path."""
         logger.debug("moving %s along the path %s", moving_node, path)
         for other in path[1:]:
-            # if we encounter a confirmed node,
-            # we should have seen all following nodes.
-            status = self.node_status.get(other, NodeStatus.UNKNOWN)
-            if status == NodeStatus.CONFIRMED:
-                break
-
             # Swap the nodes along the path
-            self.swap_nbr(path, moving_node, other)
-
-        self.node_status[moving_node] = NodeStatus.CONFIRMED
+            self.swap_nbr(
+                path, NodeIndexPair(moving_node), NodeIndexPair(other)
+            )
 
     def _max_dist_nodes(
         self, ind_nodes: Sequence[NodeName], anchor: NodeName
@@ -2145,11 +2122,11 @@ class TreeNetwork(TensorNetwork):
         self,
         path: Sequence[NodeName],
         common_ind: Index,
-        ind: Index,
-        node: NodeName,
+        ind_node: NodeIndexPair,
         swapping_ind: Optional[Index] = None,
     ) -> bool:
         """Determine if an index from the left should be kept during swap."""
+        ind, node = ind_node.ind, ind_node.node
         if (
             ind == common_ind
             or (swapping_ind is None and ind in self.free_indices())
@@ -2157,15 +2134,13 @@ class TreeNetwork(TensorNetwork):
         ):
             return False
 
+        assert ind is not None
         if self._index_appears_on_path(ind, path):
             return True
 
         for nbr in self.network.neighbors(node):
             if ind in self.node_tensor(nbr).indices:
-                return (
-                    self.node_status.get(nbr, NodeStatus.UNKNOWN)
-                    != NodeStatus.ATTACHED
-                )
+                return True
 
         return False
 
@@ -2173,26 +2148,21 @@ class TreeNetwork(TensorNetwork):
         self,
         path: Sequence[NodeName],
         common_ind: Index,
-        ind: Index,
-        node: NodeName,
+        ind_node: NodeIndexPair,
         swapping_ind: Optional[Index] = None,
     ) -> bool:
         """Determine if an index from the right should be kept during swap."""
+        ind, node = ind_node.ind, ind_node.node
         if (swapping_ind is None and ind in self.free_indices()) or (
             swapping_ind is not None and ind == swapping_ind
         ):
             return True
 
         for nbr in self.network.neighbors(node):
-            if ind in self.node_tensor(nbr).indices:
+            if ind is not None and ind in self.node_tensor(nbr).indices:
                 # found the correct neighbor
-                return (
-                    ind != common_ind
-                    and not self._index_appears_on_path(ind, path)
-                    and (
-                        self.node_status.get(nbr, NodeStatus.UNKNOWN)
-                        == NodeStatus.ATTACHED
-                    )
+                return ind != common_ind and not self._index_appears_on_path(
+                    ind, path
                 )
 
         return False
@@ -2203,7 +2173,7 @@ class TreeNetwork(TensorNetwork):
 
     def fold(
         self, nodes: Sequence[NodeName]
-    ) -> Tuple["TreeNetwork", NodeName]:
+    ) -> Tuple["TreeNetwork", Optional[NodeName]]:
         """Transform the network such that the target indices are merged to
         a single node while the nodes between them are folded.
         """
@@ -2245,13 +2215,6 @@ class TreeNetwork(TensorNetwork):
         net.network.remove_edge(path[len(path) // 2 - 1], path[len(path) // 2])
         return net, res
 
-    def _check_neighbor_status(self, node: NodeName, ind: Index):
-        for nbr in self.network.neighbors(node):
-            if ind in self.node_tensor(nbr).indices:
-                return self.node_status.get(nbr, NodeStatus.UNKNOWN)
-
-        return NodeStatus.UNKNOWN
-
     def qr_decompose_anchor(
         self,
         node: NodeName,
@@ -2287,7 +2250,7 @@ class TreeNetwork(TensorNetwork):
         max_dist: int = 5,
     ) -> Sequence[Sequence[NodeName]]:
         groups = []
-        anchor, _ = self.best_anchor(ind_nodes)
+        anchor, _ = self._best_anchor(ind_nodes)
         remaining_nodes = list(
             sorted(ind_nodes, key=lambda x: self.distance(x, anchor))
         )
@@ -2319,11 +2282,12 @@ class TreeNetwork(TensorNetwork):
         # if all(len(group) == 1 for group in groups):
         #     groups = [[n for group in groups for n in group]]
 
-        anchors = []
+        anchors: List[NodeName] = []
         net = self
         for group in groups:
             net, anchor_node = net.fold(group)
-            anchors.append(anchor_node)
+            if anchor_node is not None:
+                anchors.append(anchor_node)
 
         # we need to temporarily detach other nodes and only keep the anchors
         # before proceeding to the next hierarchy
@@ -2353,7 +2317,7 @@ class TreeNetwork(TensorNetwork):
         return result_net, anchor
 
     @staticmethod
-    def rand_tree(indices: List[Index], ranks: List[int]) -> "TreeNetwork":
+    def _rand_tree(indices: List[Index], ranks: List[int]) -> "TreeNetwork":
         """Return a random tensor tree."""
 
         ndims = len(indices)
@@ -2468,6 +2432,7 @@ class TreeNetwork(TensorNetwork):
 
         return result_net
 
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
     def _binary_op(
         self,
         other: "TreeNetwork",
@@ -2476,22 +2441,22 @@ class TreeNetwork(TensorNetwork):
         tree2: DimTreeNode,
         result_net: Self,
     ) -> None:
-        tensor1 = self.node_tensor(tree1.info.node)
-        tensor2 = other.node_tensor(tree2.info.node)
+        tensor1 = self.node_tensor(tree1.node)
+        tensor2 = other.node_tensor(tree2.node)
         assert len(tensor1.indices) == len(tensor2.indices)
 
         if op == "add":
-            res = tensor1.block_diagonal(tensor2, len(tree1.info.free_indices))
+            res = tensor1.block_diagonal(tensor2, len(tree1.free_indices))
         elif op == "mul":
             res = tensor1.mult(tensor2, self.free_indices())
         else:
             raise ValueError(f"Unknown operation {op}")
 
-        result_net.add_node(tree1.info.node, res)
+        result_net.add_node(tree1.node, res)
 
-        for c1, c2 in zip(tree1.conn.children, tree2.conn.children):
+        for c1, c2 in zip(tree1.down_info.nodes, tree2.down_info.nodes):
             self._binary_op(other, op, c1, c2, result_net)
-            result_net.add_edge(tree1.info.node, c1.info.node)
+            result_net.add_edge(tree1.node, c1.node)
 
     def distance(self, node1: NodeName, node2: NodeName) -> int:
         """Compute the distance between two nodes without creating dimension
@@ -2499,9 +2464,9 @@ class TreeNetwork(TensorNetwork):
         if node1 == node2:
             return 0
 
-        return nx.shortest_path_length(self.network, node1, node2)
+        return int(nx.shortest_path_length(self.network, node1, node2))
 
-    def svd_lefts(
+    def _svd_lefts(
         self, indices: Sequence[Index], svd_node: NodeName
     ) -> List[int]:
         """Get the positions such that the given indices are on the left."""
@@ -2521,19 +2486,21 @@ class TreeNetwork(TensorNetwork):
 
         return list(svd_ls)
 
-    @profile
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
     def svals(
         self,
         indices: Sequence[Index],
         max_rank: int = 100,
         orthonormal: Optional[NodeName] = None,
-        delta: float = 0,
-        random_seed: int = 42,
+        _delta: float = 0,
+        random_seed: Optional[int] = None,
     ) -> np.ndarray:
-        """Compute the singular values for a tree network structure."""
+        """Compute the singular values for a tree network structure.
+
+        random_seed: if an integer, use randomized SVD with that seed;
+                     if None, use exact SVD.
+        """
         assert len(indices) == 2
-        # print(indices)
-        # net = self.move_to(indices, delta=delta)
         net = copy.deepcopy(self)
         nodes = [net.node_by_free_index(ind.name) for ind in indices]
         unique_nodes = list(set(nodes))
@@ -2555,17 +2522,20 @@ class TreeNetwork(TensorNetwork):
         svd_rs = [i for i in range(len(tensor.indices)) if i not in svd_ls]
         lsize = np.prod([ind.size for ind in indices])
         perm = svd_ls + svd_rs
-        # print(svd_ls, svd_rs, perm)
-        # print(tensor.value.shape)
         tensor_val = tensor.value.transpose(perm).reshape(int(lsize), -1)
-        _, s, _ = randomized_svd(
-            tensor_val, max_rank, random_state=random_seed
-        )
+        s: np.ndarray
+        if random_seed is not None:
+            _, s, _ = randomized_svd(
+                tensor_val, max_rank, random_state=random_seed
+            )
+        else:
+            _, s, _ = np.linalg.svd(tensor_val, full_matrices=False)
+            s = s[:max_rank]
         return s
 
     def _check_indices(
         self, indices: Sequence[Index], visited: Set[NodeName], node: NodeName
-    ) -> Tuple[PartitionResult, Dict[Index, Sequence[Index]]]:
+    ) -> Tuple[PartitionResult, Dict[Index, List[Index]]]:
         """Check whether a node is a partition of the given indices."""
         visited.add(node)
         results = {}
@@ -2611,7 +2581,7 @@ class TreeNetwork(TensorNetwork):
         for n in self.network.nodes:
             # postorder traversal from each node and
             # if we find each index
-            visited = set()
+            visited: Set[NodeName] = set()
             # print("postordering", n)
             res, results = self._check_indices(indices, visited, n)
 
@@ -2651,17 +2621,19 @@ class TreeNetwork(TensorNetwork):
 
         return nodes
 
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
     def random_svals(
         self,
         node: NodeName,
         indices: Sequence[Index],
         max_rank: int = 100,
         rand: bool = True,
-        random_seed: int = 42,
+        _random_seed: int = 42,
     ) -> np.ndarray:
+        """Compute singular values at a specific node using randomized SVD."""
         tensor = self.node_tensor(node)
         svd_node_inds = tensor.indices
-        svd_ls = self.svd_lefts(indices, node)
+        svd_ls = self._svd_lefts(indices, node)
         svd_rs = [i for i in range(len(tensor.indices)) if i not in svd_ls]
         lsize = np.prod([svd_node_inds[lidx].size for lidx in svd_ls])
         perm = list(svd_ls) + svd_rs
@@ -2671,9 +2643,9 @@ class TreeNetwork(TensorNetwork):
         # if rank_only:
         #     return estimate_rank(tensor_val, eps=1e-6)
 
+        s: np.ndarray
         if rand:
-
-            s = scipy.sparse.linalg.svds(
+            _, s, _ = scipy.sparse.linalg.svds(
                 tensor_val,
                 k=max(min(max_rank, min(tensor_val.shape) - 1), 1),
                 return_singular_vectors=False,
@@ -2683,16 +2655,15 @@ class TreeNetwork(TensorNetwork):
 
         return s
 
-    @profile
     def svals_at(
         self,
         node: NodeName,
         indices: Sequence[Index],
         max_rank: int = 100,
         with_orthonormal: bool = True,
-        random_seed: int = 42,
     ) -> np.ndarray:
         """Compute the singular values for a tensor train at a given node."""
+        random_seed = 42
         logger.debug(
             "computing singular values at node %s with indices %s",
             node,
@@ -2720,6 +2691,7 @@ class TreeNetwork(TensorNetwork):
         if max_rank < 10:
             return delta_svd(tensor_val, delta=0, compute_uv=False).s
 
+        s: np.ndarray
         _, s, _ = randomized_svd(
             tensor_val, max_rank, random_state=random_seed
         )
@@ -2729,7 +2701,7 @@ class TreeNetwork(TensorNetwork):
         self,
         old_subnet: "TreeNetwork",
         new_subnet: "TreeNetwork",
-        split_info: Optional[List[IndexOp]] = None,
+        _split_info: Optional[List[IndexOp]] = None,
     ) -> "TreeNetwork":
         """Replace a node with a sub-tensor network."""
         for n in old_subnet.network.nodes:
@@ -2768,7 +2740,7 @@ class TreeNetwork(TensorNetwork):
         tree.network = self.network
         return tree
 
-    def longest_path(self) -> Sequence[NodeName]:
+    def _longest_path(self) -> List[NodeName]:
         """Get the longest path in the current tree."""
         u = list(self.network.nodes())[0]
         dist = nx.single_source_shortest_path_length(self.network, u)
@@ -2777,7 +2749,8 @@ class TreeNetwork(TensorNetwork):
         dist = nx.single_source_shortest_path_length(self.network, a)
         b = max(dist, key=dist.get)
 
-        return nx.shortest_path(self.network, a, b)
+        path: List[NodeName] = nx.shortest_path(self.network, a, b)
+        return path
 
     # def _nbr_to_tt(self, path: Sequence[NodeName], node: NodeName, )
 
@@ -2787,7 +2760,7 @@ class TreeNetwork(TensorNetwork):
     #     tt.network = copy.deepcopy(self.network)
 
     #     # choose the longest diameter in the tree throught two DFS
-    #     path = tt.longest_path()
+    #     path = tt._longest_path()
     #     # an over-approximation of number of split operations
     #     svd_cnts = len(tt.network.nodes) - len(path)
     #     visited = {}
@@ -2806,10 +2779,20 @@ class TreeNetwork(TensorNetwork):
 
     #         visited[n] = 2
 
-    def replay_preprocess(self, actions: Sequence[Action]):
+    def replay_preprocess(self, actions: Sequence[Action]) -> None:
         """Apply the given actions around the given ranks."""
 
-    @profile
+    def are_adjacent(self, indices: Sequence[Index]) -> bool:
+        """Check whether the nodes containing the given free indices form a
+        connected subgraph in the tree.
+        """
+        ind_nodes = list(
+            {self.node_by_free_index(ind.name) for ind in indices}
+        )
+        if len(ind_nodes) <= 1:
+            return True
+        return bool(nx.is_connected(self.network.subgraph(ind_nodes)))
+
     def svals_by_cross(
         self, indices: Sequence[Index], max_rank: int = 100, eps: float = 0.1
     ) -> np.ndarray:
@@ -2833,9 +2816,10 @@ class TreeNetwork(TensorNetwork):
             cross_engine = CrossApproximation(func, cross_config)
             cross_engine.cross(tt, tt.end_nodes()[0], eps=eps)
             res = tt.partition_node(indices)
-            return tt.svals_at(
+            svals_result: np.ndarray = tt.svals_at(
                 res.lca_node, res.lca_indices, max_rank=max_rank
             )
+            return svals_result
 
         # find the correct node to split
         ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
@@ -2857,12 +2841,13 @@ class TreeNetwork(TensorNetwork):
         res = tt.partition_node(indices)
         tt.orthonormalize(res.lca_node)
         res = tt.partition_node(indices)
-        return tt.svals_at(
+        svals_result2: np.ndarray = tt.svals_at(
             res.lca_node,
             res.lca_indices,
             max_rank=max_rank,
             with_orthonormal=False,
         )
+        return svals_result2
 
     def end_nodes(self) -> List[NodeName]:
         """Get the leaf nodes."""
@@ -2874,8 +2859,7 @@ class TreeNetwork(TensorNetwork):
 
         return end_nodes
 
-    @profile
-    def reorder_by_svd(
+    def _reorder_by_svd(
         self, indices: Sequence[Index], eps: float = 0
     ) -> "TensorTrain":
         """Reorder the indices into the target indices through SVD"""
@@ -2889,8 +2873,7 @@ class TreeNetwork(TensorNetwork):
 
         return TensorTrain.tt_svd(data.permute(perm).value, indices, eps)
 
-    @profile
-    def reorder_by_cross(
+    def _reorder_by_cross(
         self,
         indices: Sequence[Index],
         eps: float = 0.1,
@@ -2929,7 +2912,6 @@ class TreeNetwork(TensorNetwork):
 
         return False, tt
 
-    @profile
     def svals_by_merge(
         self,
         indices: Sequence[Index],
@@ -2944,7 +2926,7 @@ class TreeNetwork(TensorNetwork):
         if len(nodes) > 1:
             ind_nodes = [tree.node_by_free_index(ind.name) for ind in indices]
             tree.orthonormalize(ind_nodes[0])
-            # anchor, _ = tree.best_anchor(ind_nodes)
+            # anchor, _ = tree._best_anchor(ind_nodes)
             n = tree.merge_along_path(ind_nodes)
             # for n in set(ind_nodes):
             #     if n != anchor:
@@ -2971,7 +2953,7 @@ class TreeNetwork(TensorNetwork):
             )
         else:
             s = np.linalg.svdvals(tensor_val)
-        return s
+        return cast(np.ndarray, s)
 
 
 class HierarchicalTucker(TreeNetwork):
@@ -3042,11 +3024,12 @@ class HierarchicalTucker(TreeNetwork):
         build_child(-1, 0, indices, rank)
         return ht
 
-    def root(self):
+    def root(self) -> NodeName:
         """Find the root node for a hierarchical tucker."""
 
         free_inds = self.free_indices()
 
+        n: NodeName
         for n in self.network.nodes:
             node_inds = self.node_tensor(n).indices
             if len(node_inds) != 2:
@@ -3060,9 +3043,8 @@ class HierarchicalTucker(TreeNetwork):
         # impossible path
         raise ValueError("Invalid hierarchical tucker, cannot find the root.")
 
-    @profile
     def move_to(
-        self, indices: Sequence[Index], delta: float = 0
+        self, indices: Sequence[Index], _delta: float = 0
     ) -> "HierarchicalTucker":
         """Swap the target indices to the same subtree."""
         # find the LCA and a path to move the indices
@@ -3122,7 +3104,11 @@ class HierarchicalTucker(TreeNetwork):
                 # print("before swap")
                 # print(self)
                 # print("swapping", pnodes[i].node, pnodes[i+1].node)
-                new_net.swap_nbr(pnodes[i].node, pnodes[i + 1].node)
+                new_net.swap_nbr(
+                    [n.node for n in pnodes],
+                    NodeIndexPair(pnodes[i].node),
+                    NodeIndexPair(pnodes[i + 1].node),
+                )
                 # print("after swap")
                 # print(self)
                 pnodes[i], pnodes[i + 1] = pnodes[i + 1], pnodes[i]
@@ -3131,7 +3117,11 @@ class HierarchicalTucker(TreeNetwork):
                 # print("before swap")
                 # print(self)
                 # print("swapping", pnodes[i].node, pnodes[i - 1].node)
-                new_net.swap_nbr(pnodes[i].node, pnodes[i - 1].node)
+                new_net.swap_nbr(
+                    [n.node for n in pnodes],
+                    NodeIndexPair(pnodes[i].node),
+                    NodeIndexPair(pnodes[i - 1].node),
+                )
                 # print("after swap")
                 # print(self)
                 pnodes[i - 1], pnodes[i] = pnodes[i], pnodes[i - 1]
@@ -3154,6 +3144,25 @@ class HierarchicalTucker(TreeNetwork):
         return subnet
 
     @staticmethod
+    def _build_ht_layers(
+        free_inds: Sequence[Index],
+    ) -> List[List[Sequence[Index]]]:
+        """Build the binary dimension-tree layers from root to leaves."""
+        layer: List[Sequence[Index]] = [free_inds]
+        layers = [layer]
+        while not all(len(ind_group) <= 1 for ind_group in layers[-1]):
+            next_layer: List[Sequence[Index]] = []
+            for ind_group in layers[-1]:
+                if len(ind_group) > 1:
+                    mid = len(ind_group) // 2
+                    next_layer.append(ind_group[:mid])
+                    next_layer.append(ind_group[mid:])
+                else:
+                    next_layer.append([])
+            layers.append(next_layer)
+        return layers
+
+    @staticmethod
     def ht_svd(
         data: np.ndarray, free_inds: Sequence[Index], eps: float
     ) -> "HierarchicalTucker":
@@ -3165,20 +3174,7 @@ class HierarchicalTucker(TreeNetwork):
         ind_sizes = [ind.size for ind in free_inds]
         assert data.shape == tuple(ind_sizes)
 
-        # first, build the dimension trees
-        layer = [free_inds]
-        layers = [layer]
-        while not all(len(ind_group) <= 1 for ind_group in layers[-1]):
-            layer = []
-            for ind_group in layers[-1]:
-                if len(ind_group) > 1:
-                    mid = len(ind_group) // 2
-                    layer.append(ind_group[:mid])
-                    layer.append(ind_group[mid:])
-                else:
-                    layer.append([])
-
-            layers.append(layer)
+        layers = HierarchicalTucker._build_ht_layers(free_inds)
 
         # from leaves to root
         leaf_inds = list(free_inds)[:]
@@ -3282,7 +3278,9 @@ class FoldedTensorTrain(TreeNetwork):
             self.backbone_nodes = []
 
     @staticmethod
-    def rand_ftt(index_groups: Sequence[Sequence[Index]]):
+    def rand_ftt(
+        index_groups: Sequence[Sequence[Index]],
+    ) -> "FoldedTensorTrain":
         """Construct a random structure for the specified groups of indices"""
         ftt = FoldedTensorTrain()
 
@@ -3324,14 +3322,14 @@ class FoldedTensorTrain(TreeNetwork):
 
     def _should_keep_index_from_left(
         self,
-        path: Sequence[NodeName],
+        _path: Sequence[NodeName],
         common_ind: Index,
-        ind: Index,
-        node: NodeName,
+        ind_node: NodeIndexPair,
+        _swapping_ind: Optional[Index] = None,
     ) -> bool:
         # an index should be kept if it is a connection between backbone nodes
         # and it is not the common index
-
+        ind, node = ind_node.ind, ind_node.node
         if ind == common_ind or ind in self.free_indices():
             return False
 
@@ -3344,14 +3342,14 @@ class FoldedTensorTrain(TreeNetwork):
 
     def _should_keep_index_from_right(
         self,
-        path: Sequence[NodeName],
+        _path: Sequence[NodeName],
         common_ind: Index,
-        ind: Index,
-        node: NodeName,
+        ind_node: NodeIndexPair,
+        _swapping_ind: Optional[Index] = None,
     ) -> bool:
         # an index should be kept if it is a connection between backbone nodes
         # and it is not the common index
-
+        ind, node = ind_node.ind, ind_node.node
         if ind == common_ind:
             return False
 
@@ -3362,7 +3360,7 @@ class FoldedTensorTrain(TreeNetwork):
 
         return True
 
-    def move_to_end(self, backbone_targets: Sequence[NodeName]):
+    def move_to_end(self, backbone_targets: Sequence[NodeName]) -> None:
         """Move the targets to one of the ends of the FTT"""
         # swap the backbone targets to make them adjacent and at the end
         ends = []
@@ -3402,18 +3400,23 @@ class FoldedTensorTrain(TreeNetwork):
                         self.network, source=n, target=anchor
                     )
                     logger.debug("swapping %s along the path %s", n, path)
-                    self.swap_along_path(path, n)
+                    self._swap_along_path(path, n)
 
     def svals(
-        self, indices: Sequence[Index], max_rank: int = 100, rand: bool = True
+        self,
+        indices: Sequence[Index],
+        max_rank: int = 100,
+        _orthonormal: Optional[NodeName] = None,
+        _delta: float = 0,
+        random_seed: Optional[int] = None,
     ) -> np.ndarray:
         """Compute the singular values for a folded tensor train.
 
         A folded tensor train has a backbone tensor train structure,
         with each node representing the merged nodes in the original
-        tensor train.
+        tensor train. Pass an integer random_seed to enable randomized SVD,
+        or None to use exact SVD.
         """
-
         logger.debug("computing singular values for indices %s", indices)
         logger.debug(self)
 
@@ -3441,7 +3444,14 @@ class FoldedTensorTrain(TreeNetwork):
 
         res = net.partition_node(indices)
         net.postorder_orthonormal(visited, None, res.lca_node)
-        return net.random_svals(res.lca_node, indices, max_rank, rand=rand)
+        seed = random_seed if random_seed is not None else 42
+        return net.random_svals(
+            res.lca_node,
+            indices,
+            max_rank,
+            rand=(random_seed is not None),
+            _random_seed=seed,
+        )
 
     def target_backbone_nodes(
         self, indices: Sequence[Index]
@@ -3495,7 +3505,7 @@ class FoldedTensorTrain(TreeNetwork):
         net.backbone_nodes.append(qrs[-1])
         return net, qrs[-1]
 
-    def is_end(self, node):
+    def is_end(self, node: NodeName) -> bool:
         """Returns True if the given node is one of the ends"""
         inds = self.node_tensor(node).indices
         return len(inds) <= 3
@@ -3520,7 +3530,7 @@ class FoldedTensorTrain(TreeNetwork):
 
         return True
 
-    def replay_preprocess(self, actions: Sequence[Action]):
+    def replay_preprocess(self, actions: Sequence[Action]) -> None:
         """Apply the given actions around the given ranks."""
         for ac in actions:
             operand_nodes = self.target_backbone_nodes(ac.indices)
@@ -3534,7 +3544,8 @@ class TensorTrain(TreeNetwork):
     """Class for tensor trains"""
 
     @property
-    def backbone_nodes(self):
+    def backbone_nodes(self) -> List[NodeName]:
+        """Return all backbone nodes in the tensor train."""
         return list(self.network.nodes)
 
     @staticmethod
@@ -3587,7 +3598,9 @@ class TensorTrain(TreeNetwork):
             while curr_pos > target_pos:
                 prev_pos = curr_pos - 1
                 net.swap_nbr(
-                    path, ordered_nodes[curr_pos], ordered_nodes[prev_pos]
+                    path,
+                    NodeIndexPair(ordered_nodes[curr_pos]),
+                    NodeIndexPair(ordered_nodes[prev_pos]),
                 )
                 (ordered_nodes[curr_pos], ordered_nodes[prev_pos]) = (
                     ordered_nodes[prev_pos],
@@ -3599,12 +3612,32 @@ class TensorTrain(TreeNetwork):
 
         return net
 
-    @profile
+    def _find_best_end_node(
+        self,
+        end_nodes: List[NodeName],
+        indices: Sequence[Index],
+    ) -> NodeName:
+        """Return the end node minimising total distance to all index nodes."""
+        min_dist = float("inf")
+        best_end_node = end_nodes[0]
+        for end_node in end_nodes:
+            all_dist = sum(
+                self.distance(end_node, node)
+                for node in self.network.nodes
+                if any(
+                    ind in self.node_tensor(node).indices for ind in indices
+                )
+            )
+            if all_dist < min_dist:
+                best_end_node = end_node
+                min_dist = all_dist
+        return best_end_node
+
     def swap_to_end(
         self,
         indices: Sequence[Index],
         orthonormal: Optional[NodeName] = None,
-        delta: float = 0,
+        _delta: float = 0,
     ) -> Tuple[Self, NodeName]:
         """Swap the indices to the end of the tensor train.
 
@@ -3625,23 +3658,7 @@ class TensorTrain(TreeNetwork):
         if orthonormal is not None:
             best_end_node = orthonormal
         else:
-            # check the distance between the given indices and the end nodes
-            # pick the end node that is closest to all given indices
-            min_dist = float("inf")
-            best_end_node = None
-            for end_node in end_nodes:
-                all_dist = 0
-                for node in self.network.nodes:
-                    tensor = self.node_tensor(node)
-                    if any(ind in tensor.indices for ind in indices):
-                        dist = self.distance(end_node, node)
-                        all_dist += dist
-
-                if all_dist < min_dist:
-                    best_end_node = end_node
-                    min_dist = all_dist
-
-            assert best_end_node is not None
+            best_end_node = self._find_best_end_node(end_nodes, indices)
             # print("Best end node:", best_end_node)
 
         # swap the given indices to the best end node
@@ -3663,7 +3680,11 @@ class TensorTrain(TreeNetwork):
             # print("node index", node_idx, "ind_idx", ind_idx)
             while node_idx > ind_idx:
                 # print("swapping", nodes[node_idx], nodes[node_idx - 1])
-                net.swap_nbr(nodes[node_idx], nodes[node_idx - 1], delta)
+                net.swap_nbr(
+                    nodes,
+                    NodeIndexPair(nodes[node_idx]),
+                    NodeIndexPair(nodes[node_idx - 1]),
+                )
                 # print("after swap")
                 # print(net)
                 nodes[node_idx], nodes[node_idx - 1] = (
@@ -3695,7 +3716,7 @@ class TensorTrain(TreeNetwork):
 
         return net, nodes[0]
 
-    def are_adjacent(self, indices: Sequence[Index]):
+    def are_adjacent(self, indices: Sequence[Index]) -> bool:
         """Check whether the specified indices are next to each other"""
         end = self.end_nodes()[0]
         ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
@@ -3704,6 +3725,22 @@ class TensorTrain(TreeNetwork):
         # if there are adjacent, the distance should be consecutive
         dist_diffs = [x - y for x, y in zip(ind_dists[1:], ind_dists[:-1])]
         return all(d == 1 for d in dist_diffs)
+
+    def linear_nodes(self, start: Optional[NodeName] = None) -> List[NodeName]:
+        """Return nodes in linear order starting from start."""
+        if start is None:
+            start = self.end_nodes()[0]
+        visited: List[NodeName] = [start]
+        current = start
+        while True:
+            neighbors = [
+                n for n in self.network.neighbors(current) if n not in visited
+            ]
+            if not neighbors:
+                break
+            current = neighbors[0]
+            visited.append(current)
+        return visited
 
     def __add__(self, other: Any) -> Self:
         """Add two tensor trains.
@@ -3762,12 +3799,11 @@ class TensorTrain(TreeNetwork):
         return new_tens
 
     def get_divisors(
-        self, end_node: NodeName, node1: NodeName, node2: NodeName
+        self, _end_node: NodeName, node1: NodeName, node2: NodeName
     ) -> Tuple[NodeName, NodeName]:
         """Get the nodes on the boundary."""
         return node1, node2
 
-    @profile
     def _scatter_to_ends(
         self, node_move_dsts: Dict[NodeName, NodeName]
     ) -> Tuple[Optional[NodeName], Optional[NodeName]]:
@@ -3776,13 +3812,11 @@ class TensorTrain(TreeNetwork):
         left_dist = right_dist = -1
         ends = self.end_nodes()
         left_end, right_end = ends[0], ends[1]
-        self.node_status = {}
 
         # we should sort the nodes to avoid unnecessary moves
         for node, target_end in node_move_dsts.items():
             path = nx.shortest_path(self.network, node, target_end)
-            self.swap_along_path(path, node)
-            self.node_status[node] = NodeStatus.CONFIRMED
+            self._swap_along_path(path, node)
 
         for node, target_end in node_move_dsts.items():
             distance = min(self.distance(node, e) for e in self.end_nodes())
@@ -3795,20 +3829,11 @@ class TensorTrain(TreeNetwork):
                 right_dist = distance
                 right_anchor = node
 
-            self.node_status[node] = NodeStatus.ATTACHED
-
-        # after scatter, we know the nodes now attached to the anchors
-        if left_anchor is not None:
-            self.node_status[left_anchor] = NodeStatus.CONFIRMED
-
-        if right_anchor is not None:
-            self.node_status[right_anchor] = NodeStatus.CONFIRMED
-
         return left_anchor, right_anchor
 
     def _fold_at_ends(
         self, node_move_dsts: Dict[NodeName, NodeName]
-    ) -> Tuple[TreeNetwork, NodeName]:
+    ) -> Tuple[TreeNetwork, Optional[NodeName]]:
         left_anchor, right_anchor = self._scatter_to_ends(node_move_dsts)
 
         if left_anchor is None:
@@ -3854,8 +3879,9 @@ class TensorTrain(TreeNetwork):
 
         return dist_to_ends, node_move_dsts
 
-    @profile
-    def fold(self, nodes: Sequence[NodeName]) -> Tuple[TreeNetwork, NodeName]:
+    def fold(
+        self, nodes: Sequence[NodeName]
+    ) -> Tuple[TreeNetwork, Optional[NodeName]]:
         """Fold the given nodes into one subtree of the results."""
         # depending on the location of the indices
         # we adopt different folding strategies
@@ -3864,17 +3890,8 @@ class TensorTrain(TreeNetwork):
         # case II: if the indices are closer to the center,
         # we move them to the center and fold the center nodes
 
-        # now we find the left and right anchor positions
-        # ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
-        # for src, dst in itertools.combinations(ind_nodes, 2):
-        #     path = nx.shortest_path(self.network, src, dst)
-        #     if len(path) == len(ind_nodes):
-        #         break
-
-        # left_anchor, right_anchor = path[0], path[-1]
-
         # alternatively we may scatter the indices to both ends
-        _, min_dist = self.best_anchor(nodes)
+        _, min_dist = self._best_anchor(nodes)
         dist_to_ends, node_move_dsts = self._dist_to_ends(nodes)
 
         if len(nodes) == 1:
@@ -3895,12 +3912,6 @@ class TensorTrain(TreeNetwork):
         """Merge the indices on two nodes"""
         # take the path between nodes[0] and nodes[1]
         path = nx.shortest_path(self.network, source=node1, target=node2)
-        # if fold_dir is None:
-        #     # fold the path by merging the pairs of nodes
-        #     for i in range(len(path) // 2):
-        #         self.merge(path[i], path[-i - 1])
-
-        #     return self, path[0]
 
         net = FoldedTensorTrain()
         net.network = copy.deepcopy(self.network)
@@ -3924,13 +3935,13 @@ class TensorTrain(TreeNetwork):
         net.backbone_nodes.append(qrs[-1])
         return net, qrs[-1]
 
-    @profile
     def svals(
         self,
         indices: Sequence[Index],
         max_rank: int = 100,
         orthonormal: Optional[NodeName] = None,
-        delta: float = 0,
+        _delta: float = 0,
+        _random_seed: Optional[int] = None,
     ) -> np.ndarray:
         """Compute the singular values for a hierarchical tucker."""
         ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
@@ -3943,43 +3954,15 @@ class TensorTrain(TreeNetwork):
 
         return net.random_svals(svd_node, indices, max_rank)
 
-    # @profile
-    # def svals(
-    #     self,
-    #     indices: Sequence[Index],
-    #     max_rank: int = 100,
-    #     orthonormal: Optional[NodeName] = None,
-    #     delta: float = 0,
-    # ) -> np.ndarray:
-    #     """Compute the singular values for a tensor train."""
-    #     # move the indices to one side of the tensor train
-    #     net, end_node = self.swap_to_end(
-    #         indices, orthonormal=orthonormal, delta=delta
-    #     )
-    #     # print(net)
-    #     # print("best end node", best_end_node)
-    #     # print("target neighbor", target_nbr)
-    #     nodes = net.linear_nodes(end_node)
-    #     node1, node2 = net.get_divisors(
-    #         end_node, nodes[len(indices) - 1], nodes[len(indices)]
-    #     )
-    #     return net.svals_nbr(
-    #         node1,
-    #         node2,
-    #         max_rank=max_rank,
-    #         orthonormal=orthonormal is not None,
-    #     )
-
-    @profile
     def svals_at(
         self,
         node: NodeName,
         indices: Sequence[Index],
         max_rank: int = 100,
         with_orthonormal: bool = True,
-        random_seed: int = 42,
     ) -> np.ndarray:
         """Compute the singular values for a tensor train at a given node."""
+        random_seed = 42
         if with_orthonormal:
             self.orthonormalize(node)
 
@@ -3995,15 +3978,11 @@ class TensorTrain(TreeNetwork):
         left_size = np.prod([ind.size for ind in indices])
         tensor_val = tensor.value.transpose(perm).reshape(left_size, -1)
 
-        # if max_rank < 10:
-        #     return delta_svd(tensor_val, delta=0, compute_uv=False).s
-
         _, s, _ = randomized_svd(
             tensor_val, max_rank, random_state=random_seed
         )
-        return s
+        return cast(np.ndarray, s)
 
-    @profile
     def svals_by_merge(
         self,
         indices: Sequence[Index],
@@ -4018,10 +3997,6 @@ class TensorTrain(TreeNetwork):
             path = nx.shortest_path(self.network, nodes[0], nodes[1])
             # contract the network along the path
             n = self.merge_along_path(path)
-            # for n in path:
-            #     if n != nodes[0]:
-            #         self.merge(nodes[0], n)
-            # n = nodes[0]
         else:
             n = self.node_by_free_index(indices[0].name)
 
@@ -4043,21 +4018,9 @@ class TensorTrain(TreeNetwork):
             )
         else:
             s = np.linalg.svdvals(tensor_val)
-        return s
+        return cast(np.ndarray, s)
 
-    # def svals_by_fold(
-    #     self, indices: Sequence[Index], max_rank: int = 100
-    # ) -> np.ndarray:
-    #     """Compute the singular values for a tensor train."""
-    #     ind_nodes = [self.node_by_free_index(ind.name) for ind in indices]
-    #     ind_nodes = list(set(ind_nodes))
-    #     assert len(ind_nodes) == 2, "svals_by_fold only suppport two nodes"
-    #     net, _ = self.fold_nodes(ind_nodes[0], ind_nodes[1])
-    #     res = net.partition_node(indices)
-    #     return net.random_svals(res.lca_node, indices, max_rank)
-
-    @profile
-    def ttize(self):
+    def ttize(self) -> None:
         """Split the indices into multiple tensor train carriages."""
         # going from one end to the other end
         ends = self.end_nodes()
@@ -4086,14 +4049,15 @@ class TensorTrain(TreeNetwork):
             prev_node = curr_node
 
     @staticmethod
-    @profile
     def tt_svd(
         data: np.ndarray, indices: Sequence[Index], eps: float = 0.1
     ) -> "TensorTrain":
+        """Decompose a data tensor into a tensor train via SVD truncation."""
         tt = TensorTrain()
         norm = np.linalg.norm(data)
         tt.add_node("G0", Tensor(data, list(indices)))
-        left_node, right_node = None, "G0"
+        left_node: Optional[NodeName] = None
+        right_node: NodeName = "G0"
 
         for ind in indices[:-1]:
             left_inds = tt.node_tensor(right_node).indices
@@ -4113,16 +4077,15 @@ class TensorTrain(TreeNetwork):
 
         return tt
 
-    @profile
     def svals_nbr(
         self,
         node1: NodeName,
         node2: NodeName,
         max_rank: int = 100,
         orthonormal: bool = False,
-        random_seed: int = 42,
     ) -> np.ndarray:
         """Compute the singular values for two neighbor nodes."""
+        random_seed = 42
         if not orthonormal:
             self.orthonormalize(node1)
         tensor = self.node_tensor(node1)
@@ -4133,12 +4096,13 @@ class TensorTrain(TreeNetwork):
         _, s, _ = randomized_svd(
             tensor_val, max_rank, random_state=random_seed
         )
-        return s
+        return cast(np.ndarray, s)
 
-    def flatten(self):
+    def flatten(self) -> "TensorTrain":
+        """Return self (tensor train is already flat)."""
         return self
 
-    def ends(self):
+    def ends(self) -> List[NodeName]:
         """Compute the end nodes for the current tensor train."""
         res = []
         for n in self.network.nodes:
@@ -4147,7 +4111,6 @@ class TensorTrain(TreeNetwork):
 
         return res
 
-    @profile
     def svals_all(self) -> Dict[Sequence[Index], np.ndarray]:
         """Compute singular values for the given index combos."""
         assert len(self.network.nodes) <= 4, "expecting only four indices"
@@ -4230,36 +4193,38 @@ class TensorTrain(TreeNetwork):
         assert len(ends) == 2
         path = nx.shortest_path(self.network, ends[0], ends[1])
 
-        def _to_ht(nodes, connecting_inds) -> NodeName:
-            # merge nodes by groups
+        def _merge_pair(
+            n1: NodeName, n2: NodeName, connecting_inds: List[Index]
+        ) -> NodeName:
+            contract_edges = ht.get_contraction_index(n1, n2)
+            rs = []
+            for n in (n1, n2):
+                indices = ht.node_tensor(n).indices
+                split_pos = [
+                    indices.index(ind)
+                    for ind in indices
+                    if ind not in connecting_inds and ind not in contract_edges
+                ]
+                _, r = ht.qr(n, split_pos)
+                rs.append(r)
+            return ht.merge(rs[0], rs[1])
+
+        def _to_ht(
+            nodes: Sequence[NodeName], connecting_inds: List[Index]
+        ) -> NodeName:
             if len(nodes) == 1:
                 return nodes[0]
-
             if len(nodes) == 2:
-                rs = []
-                contract_edges = ht.get_contraction_index(nodes[0], nodes[1])
-                for n in nodes:
-                    n_indices = ht.node_tensor(n).indices
-                    split_pos = []
-                    for ind in n_indices:
-                        if (
-                            ind not in connecting_inds
-                            and ind not in contract_edges
-                        ):
-                            split_pos.append(n_indices.index(ind))
+                return _merge_pair(nodes[0], nodes[1], connecting_inds)
 
-                    _, r = ht.qr(n, split_pos)
-                    rs.append(r)
-
-                return ht.merge(rs[0], rs[1])
-
+            mid = len(nodes) // 2
             contract_ind = ht.get_contraction_index(
-                nodes[len(nodes) // 2 - 1], nodes[len(nodes) // 2]
+                nodes[mid - 1], nodes[mid]
             )[0]
             connecting_inds.append(contract_ind)
-            r1 = _to_ht(nodes[: len(nodes) // 2], connecting_inds)
-            r2 = _to_ht(nodes[len(nodes) // 2 :], connecting_inds)
-            return _to_ht([r1, r2], connecting_inds)
+            r1 = _to_ht(nodes[:mid], connecting_inds)
+            r2 = _to_ht(nodes[mid:], connecting_inds)
+            return _merge_pair(r1, r2, connecting_inds)
 
         _to_ht(path, [])
         return ht
@@ -4279,10 +4244,14 @@ class HTensorTrain(TensorTrain):
         self.node_mapping = node_mapping
         self.merge_ops = merge_ops
 
-    @profile
-    def swap_nbr(self, node1: NodeName, node2: NodeName):
+    def swap_nbr(
+        self,
+        path: Sequence[NodeName],
+        node1_pair: NodeIndexPair,
+        node2_pair: NodeIndexPair,
+    ) -> None:
         """Swap two neighbor nodes in a hierarchical tensor train."""
-
+        node1, node2 = node1_pair.node, node2_pair.node
         # For hierarchical tensor trains, we don't perform svd but
         # delegate this operation until we reach the lowest hierarchy.
         common_ind = self.get_contraction_index(node1, node2)[0]
@@ -4320,11 +4289,16 @@ class HTensorTrain(TensorTrain):
 
         # print("sorted n1", n1_nodes_sorted)
         # print("sorted n2", n2_nodes_sorted)
+        tt_nodes = self.tt.linear_nodes()
         for n2 in n2_nodes_sorted:
             for n1 in n1_nodes_sorted:
                 # print("swapping", n2, n1, "in the subnet")
                 # print(self.tt)
-                self.tt.swap_nbr(n2, n1)
+                self.tt.swap_nbr(
+                    tt_nodes,
+                    NodeIndexPair(n2),
+                    NodeIndexPair(n1),
+                )
 
     def get_divisors(
         self, end_node: NodeName, node1: NodeName, node2: NodeName
@@ -4360,15 +4334,18 @@ class HTensorTrain(TensorTrain):
 
         return self.tt.get_divisors(tt_end, tt_node1, tt_node2)
 
-    @profile
     def svals_nbr(
-        self, node1: NodeName, node2: NodeName, max_rank: int = 100
+        self,
+        node1: NodeName,
+        node2: NodeName,
+        max_rank: int = 100,
+        _orthonormal: bool = False,
     ) -> np.ndarray:
         """Compute the singular values for two neighbor nodes in a
         hierarchical tensor train."""
         return self.tt.svals_nbr(node1, node2, max_rank=max_rank)
 
-    def flatten(self):
+    def flatten(self) -> TensorTrain:
         """Flatten the hierarchical structure into a normal tensor train
         by merging the grouped nodes.
         """
@@ -4398,7 +4375,6 @@ class HTensorTrain(TensorTrain):
             # sort the nodes by node positions
             ns = sorted(ns, key=nodes.index)
             for n in ns[1:]:
-
                 net.merge(ns[0], n)
 
             # how do we build the connection between the nodes and indices?
@@ -4414,12 +4390,18 @@ class HTensorTrain(TensorTrain):
         res_net.network = net.network
         return res_net
 
-    @profile
-    def svals(self, indices: Sequence[Index], delta: float = 0) -> np.ndarray:
+    def svals(
+        self,
+        indices: Sequence[Index],
+        max_rank: int = 100,
+        orthonormal: Optional[NodeName] = None,
+        _delta: float = 0,
+        _random_seed: Optional[int] = None,
+    ) -> np.ndarray:
         """Compute the singular values for a tensor train."""
         # trigger the svals for underlying tensor train
         # convert indices to the underlying indices
-        underlying_indices = []
+        underlying_indices: List[Index] = []
         for merge_op in self.merge_ops:
             for ind in indices:
                 if ind == merge_op.result:
@@ -4427,7 +4409,7 @@ class HTensorTrain(TensorTrain):
                 else:
                     underlying_indices.append(ind)
 
-        return self.tt.svals(underlying_indices, delta)
+        return self.tt.svals(underlying_indices, max_rank, orthonormal)
 
 
 def vector(

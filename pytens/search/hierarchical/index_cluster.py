@@ -17,12 +17,14 @@ from pytens.cross.funcs import FuncTensorNetwork
 from pytens.types import Index, IndexOp, IndexSplit, NodeName
 from pytens.search.state import OSplit
 from pytens.cross.cross import CrossApproximation, CrossConfig
+from pytens.search.hierarchical.utils import build_bipartite_sample
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
 def eff_rank(svals: np.ndarray):
+    """Compute the effective rank of a spectrum via entropy."""
     s = svals  # ** 2
     s = s[s > 1e-8]
     p = s / s.sum()
@@ -30,6 +32,7 @@ def eff_rank(svals: np.ndarray):
 
 
 def spectrum_similarity(s1, s2):
+    """Compute the dot-product similarity between two normalised spectra."""
     p1 = s1**2 / np.sum(s1**2)
     p2 = s2**2 / np.sum(s2**2)
     return np.dot(p1, p2)
@@ -127,44 +130,45 @@ class SVDIndexCluster(IndexCluster):
         logger.debug("sorted combs: %s", list(comb_corr))
 
         # start from the largest group and expand until the threshold
-        q, r = divmod(len(indices), threshold)
         group_size = len(indices) // threshold
         num_groups = min(threshold, len(indices) - threshold)
 
         # Idea 2: randomly sample a few clusters and pick the top k
         # Idea 1: start from the topmost, second topmost, etc..
         k_ind_sets = []
-        for k in range(5):
-            index_sets = []
-            visited = set()
-            for i in range(num_groups):
-                group = set()
-                for xs, _ in comb_corr:
-                    if random.random() < 0.1:
-                        continue
-
-                    if xs[0] in visited and xs[0] not in group:
-                        continue
-
-                    if xs[1] in visited and xs[1] not in group:
-                        continue
-
-                    logger.debug("adding %s to group %s", xs, group)
-                    group.update(xs)
-                    visited.update(xs)
-
-                    if len(group) >= group_size and i != threshold - 1:
-                        break
-
-                if group:
-                    index_sets.append(list(group))
-
+        for _ in range(5):
+            index_sets = self._sample_index_sets(
+                comb_corr, num_groups, group_size, threshold
+            )
             k_ind_sets.append(index_sets)
 
         for index_sets in k_ind_sets:
             logger.debug("getting index clusters: %s", index_sets)
 
         return k_ind_sets
+
+    @staticmethod
+    def _sample_index_sets(comb_corr, num_groups, group_size, threshold):
+        """One random sample of index groupings from correlation pairs."""
+        index_sets = []
+        visited = set()
+        for i in range(num_groups):
+            group = set()
+            for xs, _ in comb_corr:
+                if random.random() < 0.1:
+                    continue
+                if xs[0] in visited and xs[0] not in group:
+                    continue
+                if xs[1] in visited and xs[1] not in group:
+                    continue
+                logger.debug("adding %s to group %s", xs, group)
+                group.update(xs)
+                visited.update(xs)
+                if len(group) >= group_size and i != threshold - 1:
+                    break
+            if group:
+                index_sets.append(list(group))
+        return index_sets
 
     def _cluster_dimensions(
         self, singular_value_matrix, k_clusters, n_neighbors=5
@@ -317,41 +321,11 @@ class SVDIndexCluster(IndexCluster):
                 # reorganize the values according to reordered indices
                 left_inds = [indi, indj]
                 right_inds = [ind for ind in indices if ind not in left_inds]
-                left_ind_vals = []
-                left_ind_shape = []
-                for ind in left_inds:
-                    idx = free_inds.index(ind)
-                    left_ind_vals.append(selected_inds[idx])
-                    left_ind_shape.append(net.shape()[idx])
+                full_indices, eval_inds = build_bipartite_sample(
+                    left_inds, right_inds, list(free_inds), selected_inds
+                )
 
-                right_ind_vals = []
-                right_ind_shape = []
-                for ind in right_inds:
-                    idx = free_inds.index(ind)
-                    right_ind_vals.append(selected_inds[idx])
-                    right_ind_shape.append(net.shape()[idx])
-
-                left_ind_vals = np.stack(left_ind_vals, axis=-1)
-                right_ind_vals = np.stack(right_ind_vals, axis=-1)
-                # 1. Repeat each row of 'rows' N times (N = num col samples)
-                # This gives: [[1,2,3], [1,2,3], [1,2,4], [1,2,4]]
-                left = np.repeat(left_ind_vals, len(right_ind_vals), axis=0)
-
-                # 2. Tile 'cols' array M times (M = num row samples)
-                # This gives: [[5,6,7], [5,6,8], [5,6,7], [5,6,8]]
-                right = np.tile(right_ind_vals, (len(left_ind_vals), 1))
-
-                # 3. Join them horizontally
-                full_indices = np.hstack((left, right))
-
-                # permute back into the original order
-                # perm = [new_indices.index(ind) for ind in free_inds]
-                # full_indices = full_indices[:, perm]
-                # vals = np.empty((len(full_indices),))
-                # for i, findices in enumerate(full_indices):
-                #     vals[i] = data_tensor[findices]
-
-                vals = net.evaluate(left_inds + right_inds, full_indices)
+                vals = net.evaluate(eval_inds, full_indices)
                 s = np.linalg.svdvals(vals.reshape(sample_size, sample_size))
                 comb_corr[tuple([indi, indj])] = eff_rank(s)
 
@@ -455,7 +429,7 @@ class SVDIndexCluster(IndexCluster):
         comb_corr = {}
         # for single node networks, we can directly compute the SVDs
         for i, ind_i in enumerate(indices):
-            for j, ind_j in enumerate(indices[i + 1 :]):
+            for ind_j in indices[i + 1 :]:
                 ac = OSplit([ind_i, ind_j])
                 svals = net.svals(ac.indices, max_rank=100, orthonormal=True)
                 if len(svals) >= 2:
@@ -479,6 +453,8 @@ class SVDIndexCluster(IndexCluster):
 
 
 class SVDNbrIndexCluster(SVDIndexCluster):
+    """Cluster indices using neighbor-based SVD scores along a tensor train."""
+
     @profile
     def cluster(
         self, net: TreeNetwork, ind_splits: Sequence[IndexOp]
@@ -535,7 +511,7 @@ class SVDNbrIndexCluster(SVDIndexCluster):
         return ind_sets
 
     def _split_scores(
-        self, net: TensorTrain, indices: Sequence[Index]
+        self, net: TensorTrain, _indices: Sequence[Index]
     ) -> Dict[int, float]:
         # remove duplicate node swapping
         ends = net.end_nodes()
@@ -571,6 +547,8 @@ class SVDNbrIndexCluster(SVDIndexCluster):
 
 
 class CrossIndexCluster(IndexCluster):
+    """Cluster indices using cross approximation rank estimates."""
+
     def __init__(self, threshold: int, eps: float):
         super().__init__(threshold)
 
@@ -589,7 +567,6 @@ class CrossIndexCluster(IndexCluster):
         indices = net.free_indices()
         nodes = [net.node_by_free_index(ind.name) for ind in indices]
         # get the two ends where the nodes have only one nbr in nodes
-        # TODO: handle single nodes
         ends = []
         for n in nodes:
             nbrs = list(net.network.neighbors(n))

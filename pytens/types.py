@@ -334,9 +334,15 @@ class IndexMerge(pydantic.BaseModel):
 
     def __lt__(self, other: "IndexMerge") -> bool:
         if self.indices != other.indices:
-            return self.indices < other.indices
+            return tuple(self.indices) < tuple(other.indices)
 
-        return tuple(self.result) < tuple(other.result)
+        if self.result is None:
+            return True
+
+        if other.result is None:
+            return False
+
+        return self.result < other.result
 
 
 class IndexSplit(pydantic.BaseModel):
@@ -379,6 +385,7 @@ IndexOp = Union[IndexMerge, IndexSplit, IndexPermute, IndexSwap]
 def split_index(
     ind: Index, indices: List[Index], vals: np.ndarray, split_op: IndexSplit
 ) -> Tuple[List[Index], np.ndarray]:
+    """Split the given index into multiple sub-indices."""
     assert split_op.result is not None
 
     pos = indices.index(ind)
@@ -412,22 +419,15 @@ class NodeInfo:
         self.rank = 0
 
 
+@dataclass
 class DimTreeNode:
     """Class for a dimension tree node"""
 
-    def __init__(
-        self,
-        node: NodeName,
-        indices: List[Index],
-        free_indices: List[Index],
-        up_info: NodeInfo,
-        down_info: NodeInfo,
-    ):
-        self.node = node
-        self.indices = indices
-        self.free_indices = free_indices
-        self.up_info = up_info
-        self.down_info = down_info
+    node: NodeName
+    indices: List[Index]
+    free_indices: List[Index]
+    up_info: NodeInfo
+    down_info: NodeInfo
 
     def __lt__(self, other: Self) -> bool:
         return sorted(self.indices) < sorted(other.indices)
@@ -436,7 +436,7 @@ class DimTreeNode:
         """Get the list of tree nodes in the pre-order traversal."""
         results = [self]
         for c in self.down_info.nodes:
-            results = itertools.chain(results, c.preorder())
+            results = list(itertools.chain(results, c.preorder()))
 
         return list(results)
 
@@ -581,6 +581,7 @@ class DimTreeNode:
         return len(self.path(node1, node2))
 
     def entries(self) -> np.ndarray:
+        """Return the entry values from up_info."""
         if len(self.up_info.vals) != 0:
             vals = self.up_info.vals
         else:
@@ -598,10 +599,10 @@ class DimTreeNode:
         return vals
 
     def known_entries(self) -> np.ndarray:
+        """Return all known entry values combining down and up info."""
+        vals = np.empty((0, len(self.indices)))
         if len(self.up_info.vals) != 0:
             vals = np.concat([self.down_info.vals, self.up_info.vals], axis=-1)
-        else:
-            vals = np.empty((0, len(self.indices)))
 
         self_inds = self.down_info.indices + self.up_info.indices
         for c in self.down_info.nodes:
@@ -691,3 +692,40 @@ class SVDAlgorithm(Enum):
     MERGE = auto()
     CROSS = auto()
     FOLD = auto()
+
+
+@dataclass
+class NodeIndexPair:
+    """A node together with an optional associated index."""
+
+    node: NodeName
+    ind: Optional[Index] = None
+
+
+@dataclass
+class ReversalInfo:
+    """Information for reversible split actions."""
+
+    reversible: bool = False
+    reverse_edge: Optional[Tuple[NodeName, NodeName]] = None
+
+
+@dataclass
+class AlgoParams:
+    """Algorithm selection parameters for singular value computation."""
+
+    algo: "SVDAlgorithm" = None  # type: ignore[assignment]
+    eps: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.algo is None:
+            self.algo = SVDAlgorithm.SVD
+
+
+@dataclass
+class SVDParams:
+    """Parameters controlling the SVD truncation and randomisation."""
+
+    max_rank: int = 100
+    orthonormal: Optional[NodeName] = None
+    random_seed: Optional[int] = None

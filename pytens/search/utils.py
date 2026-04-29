@@ -489,14 +489,13 @@ def get_conflicts(ac: OSplit, past_acs: List[OSplit]) -> Optional[OSplit]:
         ):
             if past_ac.reversible:
                 return past_ac
-            else:
-                print(
-                    "Warning: the action",
-                    past_ac,
-                    "conflicts with",
-                    ac,
-                    "but it is not reversible",
-                )
+            print(
+                "Warning: the action",
+                past_ac,
+                "conflicts with",
+                ac,
+                "but it is not reversible",
+            )
 
     return None
 

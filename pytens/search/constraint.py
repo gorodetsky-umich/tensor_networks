@@ -18,7 +18,7 @@ from pytens.search.configuration import SearchConfig
 from pytens.search.hierarchical.utils import tntorch_wrapper
 from pytens.search.state import OSplit, SearchState
 from pytens.search.utils import DataTensor, reshape_func
-from pytens.types import IndexMerge, SVDAlgorithm
+from pytens.types import AlgoParams, IndexMerge, SVDAlgorithm, SVDParams
 
 BAD_SCORE = 9999999999999
 
@@ -247,7 +247,6 @@ class ConstraintSearch:
             return_info=True,
         )
         errors = info["epss"]
-        # TODO: process the errors
         sizes, sums = zip(*reversed(errors))
         # print(sizes, sums)
 
@@ -286,19 +285,12 @@ class ConstraintSearch:
         self,
         data_tensor: DataTensor,
         comb: Sequence[Index],
-        compute_uv: bool = False,
+        _compute_uv: bool = False,
         cross: bool = False,
     ):
         """Precompute the singluar values for a given index combination."""
         logger.debug("preprocess %s", comb)
         logger.debug("%s", data_tensor)
-
-        # if cross:
-        #     self._preprocess_cross(
-        #         FuncTensorNetwork(data_tensor.free_indices(), data_tensor),
-        #         comb,
-        #     )
-        #     return
 
         ac = OSplit(comb)
         if ac in self.split_actions:
@@ -314,12 +306,18 @@ class ConstraintSearch:
             self.first_steps[ac] = file_name
         else:
             net = copy.deepcopy(data_tensor)
+            rand_seed = 42 if self.config.preprocess.rand_svd else None
             s = ac.svals(
                 net,
-                max_rank=self.config.preprocess.max_rank,
-                rand=self.config.preprocess.rand_svd,
-                eps=self.config.engine.eps,
-                algo=SVDAlgorithm.SVD if not cross else SVDAlgorithm.CROSS,
+                algo_params=AlgoParams(
+                    algo=SVDAlgorithm.SVD if not cross else SVDAlgorithm.CROSS,
+                    eps=self.config.engine.eps,
+                ),
+                svd_params=SVDParams(
+                    max_rank=self.config.preprocess.max_rank,
+                    orthonormal=None,
+                    random_seed=rand_seed,
+                ),
             )
 
         res = self.abstract(s, True)
@@ -331,6 +329,24 @@ class ConstraintSearch:
         else:
             logger.debug("no truncation for %s", comb)
             self.split_actions[OSplit(comb)] = ([], [])
+
+    @staticmethod
+    def _log_constraints(solver: ILPSolver, solved: bool) -> None:
+        """Log constraint values for debugging."""
+        for constr in solver.model.getConstrs():
+            if solved:
+                lhs = solver.model.getRow(constr).getValue()
+            else:
+                lhs = solver.model.getRow(constr)
+            rhs = constr.RHS
+            sense = constr.Sense
+            logger.debug(
+                "Constraint: %s, %s %s %s",
+                constr.ConstrName,
+                lhs,
+                sense,
+                rhs,
+            )
 
     def solve(
         self, st: SearchState, upper: Optional[int]
@@ -347,9 +363,7 @@ class ConstraintSearch:
             else:
                 index_ac = ac
 
-            # print(index_ac)
             ac_sums, ac_sizes = self.split_actions[index_ac]
-            # print(index_ac, ac_sums, ac_sizes, st.links[idx])
             pfsums[st.links[idx]] = ac_sums
             # we need to substitute the links to all
             relabel_map[st.links[idx]] = tuple(ac_sizes)
@@ -358,9 +372,6 @@ class ConstraintSearch:
         indices = st.network.all_indices()
         free_indices = st.network.free_indices()
         var_indices = []
-        # st.network.draw()
-        # plt.show()
-        # print(st.network.all_indices())
         rerange_map = {}
         for ind in indices:
             rerange_map[ind.name] = ind.value_choices
@@ -374,20 +385,7 @@ class ConstraintSearch:
 
         if logger.level == logging.DEBUG:
             logger.debug("constraints to be solved:")
-            for constr in solver.model.getConstrs():
-                # Get the value of the LHS expression in the current solution
-                lhs = solver.model.getRow(constr)
-                # Get the RHS value
-                rhs = constr.RHS
-                # Get the constraint sense
-                sense = constr.Sense
-                logger.debug(
-                    "Constraint: %s, %s %s %s",
-                    constr.ConstrName,
-                    lhs,
-                    sense,
-                    rhs,
-                )
+            self._log_constraints(solver, solved=False)
 
         solver.model.optimize()
 
@@ -405,20 +403,7 @@ class ConstraintSearch:
 
         logger.debug("feasible rank assignment: %s", relabel_map)
         if logger.level == logging.DEBUG:
-            for constr in solver.model.getConstrs():
-                # Get the value of the LHS expression in the current solution
-                lhs_value = solver.model.getRow(constr).getValue()
-                # Get the RHS value
-                rhs_value = constr.RHS
-                # Get the constraint sense
-                sense = constr.Sense
-                logger.debug(
-                    "Constraint: %s, %s %s %s",
-                    constr.ConstrName,
-                    lhs_value,
-                    sense,
-                    rhs_value,
-                )
+            self._log_constraints(solver, solved=True)
 
         st.network.relabel_indices(relabel_map)
         st.network.rerange_indices(rerange_map)
