@@ -3366,7 +3366,7 @@ def tree_adaptive_rand_round(
     res = copy.deepcopy(tn)
     parent, depth = _tree_parent_depth(res, root)
     num_edges = res.network.number_of_edges()
-    tau = tol * res.norm() / np.sqrt(num_edges)
+    tau: Optional[float] = None
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray] = {}
 
     traversal = sorted(
@@ -3403,6 +3403,9 @@ def tree_adaptive_rand_round(
         )
         sketch = sketch_blocks[0]
         residual_sketch = sketch_blocks[1]
+        if tau is None:
+            norm_est = np.linalg.norm(sketch, ord="fro") / np.sqrt(sketch.shape[1])
+            tau = tol * norm_est / np.sqrt(num_edges)
         q_basis, _ = np.linalg.qr(sketch)
         sketch_columns_used = init_samples + sample_size
 
@@ -3410,7 +3413,7 @@ def tree_adaptive_rand_round(
 
         while (
             np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(residual_sketch.shape[1])
-            > tau / tol_scale
+            > cast(float, tau) / tol_scale
         ):
             if q_basis.shape[1] >= max_cols:
                 break
