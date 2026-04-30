@@ -30,8 +30,6 @@ class InitStructType(Enum):
     TUCKER = auto()
     HT = auto()
     TT = auto()
-    FTT = auto()
-    TT_CROSS = auto()
 
 
 class ReshapeOption(Enum):
@@ -214,7 +212,7 @@ class CrossConfig(pydantic.BaseModel):
         description="Initial error setting for cross approximation",
     )
     init_struct: InitStructType = pydantic.Field(
-        default=InitStructType.TT_CROSS,
+        default=InitStructType.TT,
         description="Choice of the initial network structure before cross",
     )
     init_dim: int = pydantic.Field(
@@ -233,6 +231,11 @@ class CrossConfig(pydantic.BaseModel):
     init_cross: bool = pydantic.Field(
         default=True,
         description="Whether to convert the input network into a tensor train",
+    )
+    use_input_net: bool = pydantic.Field(
+        default=False,
+        description="Skip cross approximation and use the network wrapped in "
+        "FuncTensorNetwork as the initial tensor network",
     )
 
 

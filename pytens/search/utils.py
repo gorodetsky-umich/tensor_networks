@@ -6,20 +6,13 @@ from typing import Dict, List, Literal, Optional, Self, Tuple, Union
 
 import numpy as np
 import pydantic
-import torch
 
 from pytens.algs import Tensor, TreeNetwork
-from pytens.cross.funcs import (
-    CountingFunc,
-    MergeFunc,
-    PermuteFunc,
-    SplitFunc,
-    TensorFunc,
-)
+from pytens.cross.func_interface import CachedFunc, TensorFunc
 from pytens.search.state import OSplit, SearchState
-from pytens.types import Index, IndexMerge, IndexPermute, IndexSplit, NodeName
+from pytens.types import Index, IndexMerge, IndexSplit, NodeName
 
-DataTensor = Union[TreeNetwork, CountingFunc]
+DataTensor = Union[TreeNetwork, CachedFunc]
 
 
 class SearchStats(pydantic.BaseModel):
@@ -204,55 +197,6 @@ def reshape_indices(reshape_ops, indices, data):
         indices = new_indices
 
     return indices, data
-
-
-def reshape_func(reshape_ops, func):
-    """Reshape the function inputs according to the operations."""
-    old_func = func
-    indices = func.indices
-    for reshape_op in reshape_ops:
-        if isinstance(reshape_op, IndexSplit):
-            # find the source index and replace with result indices
-            split_indices = []
-            ind_mapping = {}
-            for i, ind in enumerate(indices):
-                if ind == reshape_op.index:
-                    assert reshape_op.result is not None
-                    split_indices.extend(reshape_op.result)
-
-                    result_start = len(split_indices) - len(reshape_op.result)
-                    result_end = len(split_indices)
-                    split_pos = range(result_start, result_end)
-                    split_sizes = [x.size for x in reshape_op.result]
-                    ind_mapping[i] = (split_pos, split_sizes)
-                else:
-                    split_indices.append(ind)
-
-            old_func = SplitFunc(split_indices, old_func, ind_mapping)
-            indices = split_indices
-
-        elif isinstance(reshape_op, IndexMerge):
-            assert reshape_op.result is not None
-            merge_indices = [reshape_op.result]
-            ind_mapping = {0: []}
-            for ind in reshape_op.indices:
-                ind_mapping[0].append((indices.index(ind), ind.size))
-            for i, ind in enumerate(indices):
-                if ind not in reshape_op.indices:
-                    merge_indices.append(ind)
-
-            ind_mapping[0] = list(zip(*ind_mapping[0]))
-            old_func = MergeFunc(merge_indices, old_func, ind_mapping)
-            indices = merge_indices
-
-        elif isinstance(reshape_op, IndexPermute):
-            indices = [indices[i] for i in reshape_op.perm]
-            old_func = PermuteFunc(indices, old_func, reshape_op.unperm)
-
-        else:
-            raise TypeError("Unknown operation type")
-
-    return old_func
 
 
 def unravel_indices(reshape_ops, indices, data):
@@ -513,15 +457,15 @@ def seed_all(seed_value: int) -> None:
     # Set NumPy's random seed
     np.random.seed(seed_value)
 
-    # Set PyTorch's random seed for all devices (CPU and CUDA)
-    torch.manual_seed(seed_value)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed_value)
-        torch.cuda.manual_seed_all(seed_value)  # For multi-GPU setups
+    # # Set PyTorch's random seed for all devices (CPU and CUDA)
+    # torch.manual_seed(seed_value)
+    # if torch.cuda.is_available():
+    #     torch.cuda.manual_seed(seed_value)
+    #     torch.cuda.manual_seed_all(seed_value)  # For multi-GPU setups
 
     # Set PYTHONHASHSEED environment variable for hash-based operations
     os.environ["PYTHONHASHSEED"] = str(seed_value)
 
-    # Ensure deterministic behavior for cuDNN
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # # Ensure deterministic behavior for cuDNN
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False

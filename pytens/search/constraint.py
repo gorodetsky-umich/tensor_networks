@@ -8,17 +8,13 @@ from typing import List, Optional, Sequence
 
 import gurobipy as gp
 import numpy as np
-import tntorch
-import torch
 from gurobipy import GRB
 
-from pytens.algs import Index, Tensor, TensorTrain
-from pytens.cross.funcs import FuncTensorNetwork
+from pytens.algs import Index, Tensor
 from pytens.search.configuration import SearchConfig
-from pytens.search.hierarchical.utils import tntorch_wrapper
 from pytens.search.state import OSplit, SearchState
-from pytens.search.utils import DataTensor, reshape_func
-from pytens.types import AlgoParams, IndexMerge, SVDAlgorithm, SVDParams
+from pytens.search.utils import DataTensor
+from pytens.types import AlgoParams, SVDAlgorithm, SVDParams
 
 BAD_SCORE = 9999999999999
 
@@ -199,87 +195,6 @@ class ConstraintSearch:
         return self.config.preprocess.force_recompute or not os.path.exists(
             file_name
         )
-
-    def _preprocess_cross(
-        self, data_tensor: DataTensor, comb: Sequence[Index]
-    ):
-        bin_size = self.config.synthesizer.bin_size
-        err = self.delta * bin_size
-        assert isinstance(data_tensor, TensorTrain)
-        # create a merge func that merges comb into one index and the rest
-        # into the other
-        data_indices = data_tensor.free_indices()
-
-        comb_size = int(np.prod([i.size for i in comb]))
-        comb_merge = IndexMerge(
-            indices=comb,
-            result=Index(
-                "_".join([str(i.name) for i in comb]),
-                comb_size,
-                range(comb_size),
-            ),
-        )
-
-        other_indices = [ind for ind in data_indices if ind not in comb]
-        other_size = int(np.prod([i.size for i in other_indices]))
-        other_merge = IndexMerge(
-            indices=other_indices,
-            result=Index(
-                "_".join([str(i.name) for i in other_indices]),
-                other_size,
-                range(other_size),
-            ),
-        )
-        merge_func = reshape_func(
-            [comb_merge, other_merge],
-            FuncTensorNetwork(data_tensor.free_indices(), data_tensor),
-        )
-
-        # get ranks and errors for the comb
-        domains = [torch.arange(s) for s in [comb_size, other_size]]
-        _, info = tntorch.cross(
-            tntorch_wrapper(merge_func),
-            domains,
-            eps=err,
-            kickrank=1,
-            max_iter=self.config.preprocess.max_rank,
-            verbose=False,
-            return_info=True,
-        )
-        errors = info["epss"]
-        sizes, sums = zip(*reversed(errors))
-        # print(sizes, sums)
-
-        # pick 10 according to the error change
-        bin_num = int(1 / bin_size)
-        final_sums, final_sizes = [], []
-        prev_idx = -1
-        for bin_idx in range(1, bin_num + 1):
-            eps = err * bin_idx
-            if eps < sums[0] or eps > sums[-1]:
-                continue
-
-            min_idx = np.searchsorted(sums, eps) - 1
-            if min_idx == prev_idx:
-                continue
-
-            final_sums.append(sums[min_idx] ** 2)
-            final_sizes.append(sizes[min_idx])
-            prev_idx = min_idx
-
-        if prev_idx != len(sizes) - 1:
-            final_sums.append(sums[prev_idx + 1] ** 2)
-            final_sizes.append(sizes[prev_idx + 1])
-
-        # print(final_sums, final_sizes)
-
-        self.split_actions[OSplit(comb)] = (final_sums, final_sizes)
-
-    # def preprocess_tt(self, result: Dict[Sequence[Index], np.ndarray]):
-    #     for comb, s in result.items():
-    #         ac = OSplit(comb)
-    #         sums, sizes = self.abstract(s)
-    #         self.split_actions[ac] = (sums, sizes)
 
     def preprocess_comb(
         self,

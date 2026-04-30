@@ -29,23 +29,25 @@ import opt_einsum as oe
 from sklearn.utils.extmath import randomized_svd  # type: ignore
 import scipy
 
-from .utils import delta_svd
-from .types import (
+from pytens.utils import delta_svd
+from pytens.types import (
     IndexName,
-    IntOrStr,
     NodeName,
     Index,
     SVDConfig,
     DimTreeNode,
     FoldDir,
-    IndexSwap,
     NodeInfo,
     IndexMerge,
-    IndexName,
     IndexOp,
     IndexSplit,
+    NodeIndexPair,
+    PartitionStatus,
+    PartitionResult,
 )
-from pytens.utils import delta_svd
+from pytens.search.types import Action
+from pytens.cross.cross import CrossApproximation, CrossConfig
+from pytens.cross.func_impl import FuncTensorNetwork
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -333,45 +335,9 @@ class Tensor:
         perm = [index_names.index(n) for n in target_indices]
         return self.permute(perm)
 
-    def block_diagonal(
-        self, other: "Tensor", free_inds: Sequence[Index]
+    def merge_indices(
+        self, merged_indices: Sequence[Index], new_ind: IndexName
     ) -> "Tensor":
-        """
-        Concat tensors along contract indices diagonally but keep free indices.
-        When there is only one contract index, concat them directly.
-        """
-        sz = []
-        start_offsets = {}
-        for i, ind in enumerate(self.indices):
-            if ind in free_inds:
-                assert ind.size == other.indices[i].size
-                sz.append(ind.size)
-            else:
-                sz.append(ind.size + other.indices[i].size)
-                start_offsets[i] = 0
-
-        large_array = np.zeros(sz, dtype=self.value.dtype)
-        for arr in [self.value, other.value]:
-            slices = []
-            for i in range(len(sz)):
-                if self.indices[i] in free_inds:
-                    slices.append(slice(None))
-                else:
-                    start = start_offsets[i]
-                    end = start + arr.shape[i]
-                    slices.append(slice(start, end))
-                    start_offsets[i] = end
-
-            # Place the current array on the diagonal
-            large_array[tuple(slices)] = arr
-
-        large_indices: List[Index] = []
-        for i, ind in enumerate(self.indices):
-            large_indices.append(Index(ind.name, large_array.shape[i]))
-
-        return Tensor(large_array, large_indices)
-
-    def merge_indices(self, merged_indices: Sequence[Index], new_ind: IndexName) -> "Tensor":
         """Merge the specified indices into one"""
         # print("merge_indices:", self.indices)
         if set(merged_indices).issubset(set(self.indices)):
@@ -1129,10 +1095,10 @@ class TensorNetwork:  # pylint: disable=R0904
         """Get the ranks between the nodes on the given path."""
         ranks = []
         for i, ni in enumerate(path[:-1]):
-            ranks.append(self.get_contraction_index(ni, path[i+1])[0].size)
+            ranks.append(self.get_contraction_index(ni, path[i + 1])[0].size)
 
         return ranks
-    
+
     def merge_along_path(self, path: Sequence[NodeName]) -> NodeName:
         """Merge the nodes on the given path."""
         # node = path[0]
@@ -1156,6 +1122,10 @@ class TensorNetwork:  # pylint: disable=R0904
             self.add_edge(path[0], nbr)
 
         return path[0]
+
+    def as_func(self, indices: List[Index]) -> FuncTensorNetwork:
+        """Convert the tensor network to a function call representation."""
+        return FuncTensorNetwork(indices, self)
 
     @typing.no_type_check
     def draw(self, ax=None, node_label=False):
@@ -1288,7 +1258,7 @@ class TensorNetwork:  # pylint: disable=R0904
         plain_graph = nx.Graph()
         plain_graph.add_nodes_from(self.network.nodes)
         plain_graph.add_edges_from(self.network.edges)
-    
+
         for node_name, node_data in self.network.nodes(data=True):
             if "tensor" in node_data:
                 plain_graph.nodes[node_name]["tensor_dict"] = node_data[
@@ -1375,7 +1345,9 @@ class TensorNetwork:  # pylint: disable=R0904
                     "indices": node_data.pop("tensor_indices"),
                 }
         return cls.from_dict(metadata)
-class TreeNetwork(TensorNetwork):
+
+
+class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
     """Class for arbitrary tree-structured networks"""
 
     def round(
@@ -1682,13 +1654,16 @@ class TreeNetwork(TensorNetwork):
         self,
         visited: Set[NodeName],
         node_name: NodeName,
-        cut: Set[IndexName] = set(),
+        cut: Optional[Set[IndexName]] = None,
     ) -> List:
         """Get all leaf indices for the subtree rooted at the given node."""
         indices = self.node_tensor(node_name).indices
         perm = []
         leaves = []
         visited.add(node_name)
+
+        if cut is None:
+            cut = set()
 
         # free indices are added first
         if len(visited) != 1:
@@ -2811,7 +2786,7 @@ class TreeNetwork(TensorNetwork):
         if not isinstance(self, TensorTrain) or not self.are_adjacent(indices):
             inds = [ind.with_new_rng(range(ind.size)) for ind in target_inds]
             tt = TensorTrain.rand_tt(inds)
-            func = FuncTensorNetwork(inds, self)
+            func = self.as_func(inds)
             cross_config = CrossConfig(kickrank=100, max_iters=max_rank - 1)
             cross_engine = CrossApproximation(func, cross_config)
             cross_engine.cross(tt, tt.end_nodes()[0], eps=eps)
@@ -4122,7 +4097,7 @@ class TensorTrain(TreeNetwork):
 
         nodes = self.linear_nodes(ends[0])
         # now we can compute all nodes from one end to the other
-        result = {}
+        result: Dict[Sequence[Index], np.ndarray] = {}
         prior_frees = []
         for ni, n in enumerate(nodes):
             # find the free index
@@ -4151,8 +4126,12 @@ class TensorTrain(TreeNetwork):
                 tmp_net.merge(n, nodes[ni - 1])
                 tmp_indices = tmp_net.node_tensor(n).indices
                 tmp_lefts = [tmp_indices.index(ind) for ind in indices]
-                (_, s, _), _ = tmp_net.svd(n, tmp_lefts, SVDConfig(delta=0))
-                result[tuple(indices)] = np.diag(tmp_net.node_tensor(s).value)
+                (_, sv_node, _), _ = tmp_net.svd(
+                    n, tmp_lefts, SVDConfig(delta=0)
+                )
+                result[tuple(indices)] = np.diag(
+                    tmp_net.node_tensor(sv_node).value
+                )
 
             if ni < len(nodes) - 1:
                 _, r = self.qr(n, list(set(lefts + frees)))

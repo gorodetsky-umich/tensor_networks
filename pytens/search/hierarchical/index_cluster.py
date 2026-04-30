@@ -12,8 +12,9 @@ import networkx as nx
 import numpy as np
 from sklearn.cluster import SpectralClustering
 
-from pytens.algs import TreeNetwork, TensorTrain
-from pytens.cross.funcs import FuncTensorNetwork
+import pytens.algs as pt
+
+# from pytens.cross.func_impl import FuncTensorNetwork
 from pytens.types import Index, IndexOp, IndexSplit, NodeName
 from pytens.search.state import OSplit
 from pytens.cross.cross import CrossApproximation, CrossConfig
@@ -46,7 +47,7 @@ class IndexCluster:
 
     @abstractmethod
     def cluster(
-        self, net: TreeNetwork, ind_splits: Sequence[IndexOp]
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
     ) -> Sequence[Sequence[Sequence[Index]]]:
         """Cluster the given indices into groups."""
         raise NotImplementedError
@@ -60,7 +61,7 @@ class RandomIndexCluster(IndexCluster):
         self._rand = rand
 
     def cluster(
-        self, net: TreeNetwork, ind_splits: Sequence[IndexOp]
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
     ) -> Sequence[Sequence[Sequence[Index]]]:
         # randomly partition the indices into @threshold@ sets
         threshold = self._threshold
@@ -102,7 +103,7 @@ class SVDIndexCluster(IndexCluster):
 
     @profile
     def cluster(
-        self, net: TreeNetwork, ind_splits: Sequence[IndexOp]
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
     ) -> Sequence[Sequence[Sequence[Index]]]:
         """Consider all possible combinations of indices.
 
@@ -118,7 +119,7 @@ class SVDIndexCluster(IndexCluster):
         comb_corr = {}
         if len(net.network.nodes) == 1:
             comb_corr = self._single_node_corr(net, indices)
-        elif isinstance(net, TensorTrain):
+        elif isinstance(net, pt.TensorTrain):
             comb_corr = self._tt_corr(net, indices)
 
         else:
@@ -221,7 +222,7 @@ class SVDIndexCluster(IndexCluster):
         return clusters
 
     def _tt_corr(
-        self, net: TensorTrain, indices: Sequence[Index]
+        self, net: pt.TensorTrain, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
         comb_corr = {}
         # remove duplicate node swapping
@@ -287,7 +288,7 @@ class SVDIndexCluster(IndexCluster):
         return comb_corr
 
     def _collect_inds(
-        self, net: TreeNetwork, visited: Set[NodeName], curr_node: NodeName
+        self, net: pt.TreeNetwork, visited: Set[NodeName], curr_node: NodeName
     ) -> List[Index]:
         visited.add(curr_node)
         all_inds = []
@@ -304,7 +305,7 @@ class SVDIndexCluster(IndexCluster):
         return all_inds
 
     def _tree_subsample_score(
-        self, net: TreeNetwork, indices: Sequence[Index]
+        self, net: pt.TreeNetwork, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
         """Sample some entries from the tree and compute the scores"""
         comb_corr = {}
@@ -332,7 +333,7 @@ class SVDIndexCluster(IndexCluster):
         return comb_corr
 
     def _tree_score(
-        self, net: TreeNetwork, indices: Sequence[Index]
+        self, net: pt.TreeNetwork, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
         comb_corr = {}
 
@@ -343,7 +344,7 @@ class SVDIndexCluster(IndexCluster):
         # traverse the tree to compute pairs with DFS
         def dfs(
             visited: Set[NodeName],
-            curr_net: TreeNetwork,
+            curr_net: pt.TreeNetwork,
             prev: Optional[NodeName],
             curr: NodeName,
         ):
@@ -424,7 +425,7 @@ class SVDIndexCluster(IndexCluster):
         return comb_corr
 
     def _single_node_corr(
-        self, net: TreeNetwork, indices: Sequence[Index]
+        self, net: pt.TreeNetwork, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
         comb_corr = {}
         # for single node networks, we can directly compute the SVDs
@@ -457,7 +458,7 @@ class SVDNbrIndexCluster(SVDIndexCluster):
 
     @profile
     def cluster(
-        self, net: TreeNetwork, ind_splits: Sequence[IndexOp]
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
     ) -> Sequence[Sequence[Index]]:
         """Consider all possible combinations of indices.
 
@@ -471,7 +472,7 @@ class SVDNbrIndexCluster(SVDIndexCluster):
             return [], []
 
         comb_corr = {}
-        if isinstance(net, TensorTrain):
+        if isinstance(net, pt.TensorTrain):
             comb_corr = self._split_scores(net, indices)
         elif len(net.network.nodes) == 1:
             comb_corr = self._single_node_corr(net, indices)
@@ -511,7 +512,7 @@ class SVDNbrIndexCluster(SVDIndexCluster):
         return ind_sets
 
     def _split_scores(
-        self, net: TensorTrain, _indices: Sequence[Index]
+        self, net: pt.TensorTrain, _indices: Sequence[Index]
     ) -> Dict[int, float]:
         # remove duplicate node swapping
         ends = net.end_nodes()
@@ -556,7 +557,7 @@ class CrossIndexCluster(IndexCluster):
 
     @profile
     def cluster(
-        self, net: TreeNetwork, ind_splits: Sequence[IndexOp]
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
     ) -> Sequence[Sequence[Index]]:
         """
         Incrementally run cross until we find a low rank representation.
@@ -590,15 +591,15 @@ class CrossIndexCluster(IndexCluster):
                 indices.append(ordered_indices[j])
                 indices.extend(ordered_indices[i:j])
                 indices.extend(ordered_indices[j + 1 :])
-                tt = TensorTrain.rand_tt(indices)
-                net_inds = [
-                    ind.with_new_rng(range(ind.size)) for ind in indices
-                ]
+                tt = pt.TensorTrain.rand_tt(indices)
+                # net_inds = [
+                #     ind.with_new_rng(range(ind.size)) for ind in indices
+                # ]
                 cross_config = CrossConfig(
                     kickrank=5, max_rank=max_so_far, max_iters=max_so_far
                 )
                 cross_engine = CrossApproximation(
-                    FuncTensorNetwork(net_inds, net), cross_config
+                    net.as_func(net.free_indices()), cross_config
                 )
                 res = cross_engine.cross(tt, tt.end_nodes()[0], eps=self._eps)
                 if res.ranks_and_errors[-1][-1] <= self._eps:

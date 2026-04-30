@@ -495,7 +495,6 @@ class SearchState:
 
         return actions
 
-
     def take_action(
         self,
         action: Action,

@@ -343,7 +343,9 @@ class PartitionSearch(SearchAlgo):
         if self._replay_from is not None:
             ind_combs = [ac.indices for ac in self._replay_from]
         else:
-            ind_combs = SearchState.all_index_combs(data_tensor.free_indices())
+            indices = []
+            for mop in merge_ops:
+                indices.append(mop.result)
 
             for ind in self._data_tensor.free_indices():
                 found = False
@@ -386,7 +388,6 @@ class PartitionSearch(SearchAlgo):
             complement_ac = OSplit(comb_complement)
             ac = min(comb_ac, complement_ac)
 
-            logger.debug("preprocess for the action %s", ac)
             self.constraint_engine.preprocess_comb(
                 self._data_tensor,
                 ac.indices,
@@ -399,9 +400,6 @@ class PartitionSearch(SearchAlgo):
                 self.config.output.output_dir,
                 self.constraint_engine.temp_files,
             )
-
-        # if isinstance(data_tensor, TensorFunc):
-        #     self.stats.search_cross_evals += data_tensor.stats
 
     @profile
     def search(

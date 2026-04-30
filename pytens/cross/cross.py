@@ -1,7 +1,9 @@
 """Cross Approximation."""
 
+from __future__ import annotations
+
 from enum import Enum, auto
-from typing import Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 import logging
 import copy
 
@@ -10,9 +12,12 @@ from line_profiler import profile
 import pydantic
 from tntorch.maxvol import py_maxvol
 
-import pytens.algs as pt
-from pytens.cross.funcs import TensorFunc
+from pytens.cross.func_interface import TensorFunc
 from pytens.types import DimTreeNode
+
+if TYPE_CHECKING:
+    import pytens.algs as pt
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

@@ -9,7 +9,6 @@ import unittest
 
 import networkx as nx
 import numpy as np
-from tensor_networks.pytens.utils import num_ht_ranks
 
 from pytens.algs import *
 from pytens.cross.cross import (
@@ -19,9 +18,8 @@ from pytens.cross.cross import (
     ConvergenceCheck,
 )
 from pytens.types import Index
-from pytens.cross.funcs import CachedFunc
+from pytens.cross.func_interface import CachedFunc
 from tests.search_test import *
-from pytens.cross.cross import TensorFunc
 from pytens.search.utils import IndexSplit, IndexMerge
 
 np.random.seed(4)

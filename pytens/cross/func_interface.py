@@ -6,7 +6,6 @@ from typing import List
 import numpy as np
 
 from pytens.types import Index
-import pytens.algs as pt
 
 
 class TensorFunc:
@@ -105,6 +104,7 @@ class TensorFunc:
         args = self.index_to_args(indices)
         return self.run(args)
 
+
 class CachedFunc(TensorFunc):
     """An abstract class for tensor function with cache.
 
@@ -132,28 +132,3 @@ class CachedFunc(TensorFunc):
     def run(self, args: np.ndarray) -> np.ndarray:
         self.calls = np.concatenate([args, self.calls])
         return self._run(args)
-
-class FuncData(CachedFunc):
-    """Class for data tensors as cross approximation targets."""
-
-    def __init__(self, indices: List[Index], data: np.ndarray):
-        super().__init__(indices)
-        self.data = data
-
-    def _run(self, args: np.ndarray) -> np.ndarray:
-        return self.data[*args.astype(int).T]
-
-
-class FuncTensorNetwork(CachedFunc):
-    """Class for data tensors as cross approximation targets."""
-
-    def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
-        super().__init__(indices)
-        self.net = net
-
-    def _run(self, args: np.ndarray) -> np.ndarray:
-        return self.net.evaluate(self.indices, args.astype(int))
-
-    def cost(self) -> int:
-        """Return the evaluation cost of the underlying tensor network."""
-        return self.net.cost()

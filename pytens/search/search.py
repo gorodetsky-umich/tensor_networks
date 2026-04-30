@@ -9,12 +9,10 @@ import logging
 import numpy as np
 
 from pytens.algs import TreeNetwork
-from pytens.cross.funcs import CountingFunc, TensorFunc
+from pytens.cross.func_interface import CachedFunc, TensorFunc
 from pytens.cross.runner import (
     CrossRunner,
-    FTTCrossRunner,
     HTCrossRunner,
-    TnTorchCrossRunner,
     TTCrossRunner,
     TuckerCrossRunner,
 )
@@ -84,8 +82,8 @@ class SearchEngine:
             # best_val = result.best_state.network.evaluate(
             #     result.best_state.network.free_indices(), validation
             # )
-            net_val = 0
-            best_val = 0
+            net_val = np.array(0)
+            best_val = np.array(0)
             start_cost = np.prod(sizes)
         else:
             raise TypeError("unknown data tensor type")
@@ -224,7 +222,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
     """Search engine for the black box functions."""
 
     def __init__(
-        self, config, data_tensor: CountingFunc, validation_set: np.ndarray
+        self, config, data_tensor: CachedFunc, validation_set: np.ndarray
     ):
         super().__init__(config)
         self._data_tensor = data_tensor
@@ -237,9 +235,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
 
         cross_runner = {
             InitStructType.TT: TTCrossRunner(),
-            InitStructType.TT_CROSS: TnTorchCrossRunner(),
             InitStructType.HT: HTCrossRunner(),
-            InitStructType.FTT: FTTCrossRunner(),
             InitStructType.TUCKER: TuckerCrossRunner(),
         }.get(self.config.cross.init_struct, CrossRunner())
 
@@ -289,10 +285,6 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
                 best_indices, new_valid[:, perm]
             )
 
-        # reshaped_func = reshape_func(
-        #     best_st.reshape_history, self._data_tensor
-        # )
-        # perm = [best_indices.index(ind) for ind in reshaped_func.indices]
         result.valid_set = self._validation_set
         result.valid_indices = best_indices
         result.reshape_history = best_st.reshape_history

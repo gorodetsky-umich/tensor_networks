@@ -4,11 +4,10 @@ from typing import List, Literal, Sequence, Tuple
 from collections import defaultdict
 
 import numpy as np
-import torch
 
-from pytens.algs import TensorTrain, Tensor
 from pytens.types import IndexSplit, Index
-from pytens.cross.funcs import TensorFunc, SplitFunc
+from pytens.cross.func_interface import TensorFunc
+from pytens.cross.func_impl import SplitFunc
 
 
 class DisjointSet:
@@ -127,41 +126,3 @@ def build_bipartite_sample(
     right = np.tile(right_stacked, (len(left_stacked), 1))
     full_indices = np.hstack((left, right))
     return full_indices, left_inds + right_inds
-
-
-def tntorch_wrapper(f):
-    """Wrap a tensor function to accept tntorch-style index arguments."""
-
-    def g(*args):
-        if len(args[0].shape) == 1:
-            inds = np.stack([a.numpy() for a in args], axis=-1)
-        else:
-            inds = np.concat([a.numpy() for a in args], axis=-1)
-        return torch.from_numpy(f(inds.astype(int)))
-
-    return g
-
-
-def tntorch_to_tt(res, split_indices):
-    """Convert a tntorch tensor train result to a TensorTrain network."""
-    net = TensorTrain()
-    for ni, n in enumerate(res.cores):
-        if ni == 0:
-            n = n.squeeze([0])
-            n_indices = [split_indices[ni], Index(f"s{ni}", n.shape[1])]
-        elif ni == len(res.cores) - 1:
-            n = n.squeeze([-1])
-            n_indices = [Index(f"s{ni - 1}", n.shape[0]), split_indices[ni]]
-        else:
-            assert len(n.shape) == 3
-            n_indices = [
-                Index(f"s{ni - 1}", n.shape[0]),
-                split_indices[ni],
-                Index(f"s{ni}", n.shape[2]),
-            ]
-        net.add_node(str(ni), Tensor(n.numpy(), n_indices))
-
-    for i in range(len(res.cores) - 1):
-        net.add_edge(str(i), str(i + 1))
-
-    return net

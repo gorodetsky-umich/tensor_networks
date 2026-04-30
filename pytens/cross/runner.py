@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 
 from pytens.cross.cross import CrossApproximation, CrossConfig
-from pytens.cross.funcs import TensorFunc
+from pytens.cross.func_interface import TensorFunc
 from pytens.algs import (
     HierarchicalTucker,
     TensorTrain,

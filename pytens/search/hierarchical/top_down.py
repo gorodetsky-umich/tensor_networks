@@ -23,13 +23,8 @@ import sympy
 from line_profiler import profile
 
 from pytens.algs import Tensor, TensorTrain, TreeNetwork
-from pytens.cross.funcs import (
-    CountingFunc,
-    FuncNeutron,
-    FuncTensorNetwork,
-    PermuteFunc,
-    TensorFunc,
-)
+from pytens.cross.func_interface import CachedFunc, TensorFunc
+from pytens.cross.func_impl import FuncTensorNetwork, PermuteFunc
 from pytens.cross.runner import CrossRunner, TTCrossRunner
 from pytens.search.algs.partition import PartitionSearch
 from pytens.search.configuration import (
@@ -1186,7 +1181,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
     def __init__(
         self,
         config: SearchConfig,
-        data_tensor: CountingFunc,
+        data_tensor: CachedFunc,
         validation_set: Optional[np.ndarray] = None,
     ):
         super().__init__(config)
@@ -1224,7 +1219,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
         return net, splits
 
     def _gen_split_func(
-        self, data_tensor: CountingFunc
+        self, data_tensor: CachedFunc
     ) -> Tuple[List[IndexOp], TensorFunc]:
         free_indices = data_tensor.indices
         splits = []
@@ -1279,7 +1274,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
     @profile
     def _run_init_cross(
         self,
-        data_tensor: CountingFunc,
+        data_tensor: CachedFunc,
         f: TensorFunc,
         _splits: Sequence[IndexOp],
     ) -> TreeNetwork:
@@ -1296,9 +1291,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
                 assert isinstance(data_tensor.net, TreeNetwork)
                 return copy.deepcopy(data_tensor.net)
 
-        if isinstance(data_tensor, FuncNeutron) and os.path.exists(
-            cross_res_file
-        ):
+        if self.config.cross.use_input_net and os.path.exists(cross_res_file):
             with open(cross_res_file, "rb") as cross_reader:
                 net = pickle.load(cross_reader)
 
@@ -1313,24 +1306,11 @@ class BlackBoxTopDownSearch(TopDownSearch):
             with open(cross_res_file, "wb") as cross_writer:
                 pickle.dump(net, cross_writer)
 
-        # net.draw()
-        # plt.savefig(f"{self.config.output.output_dir}/init_net.png", dpi=100)
-        # plt.close()
-
         self.stats.cross_time = time.time() - cross_start
         self.stats.init_cross_size = net.cost()
         self.stats.init_cross_evals = data_tensor.num_calls()
 
-        # print(net)
-        if isinstance(data_tensor, FuncNeutron):
-            self._store_neutron_func(data_tensor)
-
         return net
-
-    def _store_neutron_func(self, data_tensor: FuncNeutron):
-        cache = f"output/neutron_diffusion_{data_tensor.d}.pkl"
-        with open(cache, "wb") as cache_file:
-            pickle.dump(data_tensor.cache, cache_file)
 
     def _trigger_merge(self, ind_cnt: int, is_top: bool) -> bool:
         """Determine whether to trigger the index merge operation before
