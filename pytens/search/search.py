@@ -35,6 +35,7 @@ from pytens.search.hierarchical.types import (
 )
 from pytens.search.state import SearchState
 from pytens.search.utils import (
+    SearchResult,
     approx_error,
     reshape_indices,
     rtol,
@@ -97,7 +98,7 @@ class SearchEngine:
     def dfs(
         self,
         net: TreeNetwork,
-    ):
+    ) -> SearchResult:
         """Perform an exhaustive enumeration with the DFS algorithm."""
 
         dfs_runner = DFSSearch(self.config)

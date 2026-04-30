@@ -2,12 +2,14 @@
 
 import os
 import random
-from typing import Dict, List, Literal, Optional, Self, Tuple, Union
+from typing import Dict, List, Literal, Optional, Self, Sequence, Tuple, Union
 
 import numpy as np
 import pydantic
 
 from pytens.algs import Tensor, TreeNetwork
+from pytens.tt import TensorTrain
+
 from pytens.cross.func_interface import CachedFunc, TensorFunc
 from pytens.search.state import OSplit, SearchState
 from pytens.types import Index, IndexMerge, IndexSplit, NodeName
@@ -469,3 +471,18 @@ def seed_all(seed_value: int) -> None:
     # # Ensure deterministic behavior for cuDNN
     # torch.backends.cudnn.deterministic = True
     # torch.backends.cudnn.benchmark = False
+
+
+def reorder_by_svd(
+    net: TreeNetwork, indices: Sequence[Index], eps: float = 0
+) -> "TensorTrain":
+    """Reorder the indices into the target indices through SVD"""
+    assert all(ind in net.free_indices() for ind in indices), (
+        "all indices should be free"
+    )
+    data = net.contract()
+    indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
+
+    perm = [data.indices.index(ind) for ind in indices]
+
+    return TensorTrain.tt_svd(data.permute(perm).value, indices, eps)

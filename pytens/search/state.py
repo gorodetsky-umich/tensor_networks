@@ -3,26 +3,19 @@
 import copy
 import dataclasses
 import itertools
-from typing import Generator, List, Optional, Self, Sequence, Tuple
 import logging
+from typing import Generator, List, Optional, Self, Sequence, Tuple
 
-from line_profiler import profile
 import networkx as nx
 import numpy as np
+from line_profiler import profile
 
-from pytens.algs import (
-    FoldedTensorTrain,
-    HierarchicalTucker,
-    Index,
-    IndexName,
-    NodeName,
-    SVDConfig,
-    TensorTrain,
-    TreeNetwork,
-)
+from pytens.algs import Index, IndexName, NodeName, SVDConfig, TreeNetwork
 from pytens.cross.cross import TensorFunc
-from pytens.types import AlgoParams, PartitionStatus, SVDAlgorithm, SVDParams
 from pytens.search.types import Action
+from pytens.tt import TensorTrain
+from pytens.types import AlgoParams, PartitionStatus, SVDAlgorithm, SVDParams
+from pytens.cross.cross import CrossApproximation, CrossConfig
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -176,34 +169,14 @@ class OSplit(Action):
         logger.debug("performing actions: %s", self)
 
         if algo_params.algo == SVDAlgorithm.CROSS:
-            return net.svals_by_cross(
-                self.indices, max_rank=svd_params.max_rank, eps=algo_params.eps
+            return svals_by_cross(
+                net,
+                self.indices,
+                max_rank=svd_params.max_rank,
+                eps=algo_params.eps,
             )
 
         rand = svd_params.random_seed is not None
-        if isinstance(net, TensorTrain):
-            logger.debug(
-                "computing singular values for a tensor train: %s", net
-            )
-            return net.svals_by_merge(
-                self.indices, max_rank=svd_params.max_rank, rand=rand
-            )
-
-        if isinstance(net, HierarchicalTucker):
-            return net.svals(
-                self.indices,
-                max_rank=svd_params.max_rank,
-                orthonormal=svd_params.orthonormal,
-            )
-
-        if isinstance(net, FoldedTensorTrain):
-            logger.debug("computing singular values for a folded tensor train")
-            return net.svals(
-                self.indices,
-                max_rank=svd_params.max_rank,
-                random_seed=svd_params.random_seed,
-            )
-
         return net.svals_by_merge(
             self.indices, max_rank=svd_params.max_rank, rand=rand
         )
@@ -586,3 +559,58 @@ class SearchState:
         #     other.curr_delta**2 / other.network.cost()
         # )
         return self.network.cost() < other.network.cost()
+
+
+def svals_by_cross(
+    net: TreeNetwork,
+    indices: Sequence[Index],
+    max_rank: int = 100,
+    eps: float = 0.1,
+) -> np.ndarray:
+    """Compute the singular values for a tensor train by cross
+    approximation."""
+    # permute the indices so that the target indices are at the beginning
+    free_inds = net.free_indices()
+    target_inds = list(indices)[:]
+    for ind in free_inds:
+        if ind not in target_inds:
+            target_inds.append(ind)
+
+    tt = net
+    # if the indices are not adjacent
+    if not isinstance(net, TensorTrain) or not net.are_adjacent(indices):
+        inds = [ind.with_new_rng(range(ind.size)) for ind in target_inds]
+        tt = TensorTrain.rand_tt(inds)
+        func = net.as_func(inds)
+        cross_config = CrossConfig(kickrank=100, max_iters=max_rank - 1)
+        cross_engine = CrossApproximation(func, cross_config)
+        cross_engine.cross(tt, tt.end_nodes()[0], eps=eps)
+        res = tt.partition_node(indices)
+        svals_result: np.ndarray = tt.svals_at(
+            res.lca_node, res.lca_indices, max_rank=max_rank
+        )
+        return svals_result
+
+    # find the correct node to split
+    ind_nodes = [net.node_by_free_index(ind.name) for ind in indices]
+    ind_nodes = list(set(ind_nodes))
+    ends = []
+    for n in ind_nodes:
+        nbrs = list(tt.network.neighbors(n))
+        if len(nbrs) == 1 or not all(nbr in ind_nodes for nbr in nbrs):
+            ends.append(n)
+
+    temp_tree = TreeNetwork()
+    temp_tree.network = tt.network
+    tt = temp_tree
+
+    res = tt.partition_node(indices)
+    tt.orthonormalize(res.lca_node)
+    res = tt.partition_node(indices)
+    svals_result2: np.ndarray = tt.svals_at(
+        res.lca_node,
+        res.lca_indices,
+        max_rank=max_rank,
+        with_orthonormal=False,
+    )
+    return svals_result2

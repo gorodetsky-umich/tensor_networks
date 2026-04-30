@@ -8,9 +8,10 @@ import numpy as np
 import json
 
 from pytens.algs import TreeNetwork, Index, Tensor
-from pytens.search.configuration import SearchConfig
+from pytens.search.configuration import SearchAlgo, SearchConfig, InitStructType
 from pytens.search.state import ISplit, OSplit, SearchState
-from pytens.search.search import SearchEngine
+from pytens.search.search import BlackBoxTopDownSearchEngine, SearchEngine, TopDownSearchEngine, WhiteBoxTopDownSearchEngine
+from pytens.cross.func_impl import FuncData
 
 
 class TestConfig(unittest.TestCase):
@@ -142,10 +143,6 @@ class TestState(unittest.TestCase):
             for i, ind in enumerate(new_st.network.node_tensor(node).indices):
                 if ind not in expected:
                     expected[ind] = ISplit(node, [i])
-                    print(node, i)
-
-        for ac in new_st.get_legal_actions():
-            print(ac)
 
         self.assertListEqual(new_st.get_legal_actions(), list(expected.values()))
 
@@ -186,7 +183,7 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(result.stats.count, 8)
 
         free_indices = self.net.free_indices()
-        bn = result.best_network
+        bn = result.best_state.network
         assert bn is not None
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
@@ -209,7 +206,7 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
-        bn = result.best_network
+        bn = result.best_state.network
         assert bn is not None
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
@@ -232,7 +229,7 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
-        bn = result.best_network
+        bn = result.best_state.network
         assert bn is not None
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
@@ -255,7 +252,7 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(result.stats.count, 7)
 
         free_indices = self.net.free_indices()
-        bn = result.best_network
+        bn = result.best_state.network
         assert bn is not None
         bn_indices = bn.free_indices()
         perm = [bn_indices.index(ind) for ind in free_indices]
@@ -281,21 +278,13 @@ class TestTopDownSearch(unittest.TestCase):
         config = SearchConfig()
         config.engine.eps = 1e-1
         config.engine.verbose = True
-        config.engine.decomp_algo = "cross"
         config.cross.init_eps = 0.1
-        config.cross.init_struct = "tt"
-        config.topdown.search_algo = "merge"
+        config.cross.init_struct = InitStructType.TT
         config.topdown.merge_mode = "all"
-        search_engine = SearchEngine(config=config)
-        result = search_engine.top_down(tensor_func)
+        search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
+        result = search_engine.top_down()
         assert result.best_state is not None
         err = result.stats.re_f
-        # print("final cost", result.best_state.network.cost())
-        # print(result.stats.search_end - result.stats.search_start)
-        # print(result.best_state.network)
-        # print(err)
-        # print(result.stats.init_cross_evals)
-        # print(result.stats.search_cross_evals)
         self.assertLessEqual(float(err), 2e-1)
 
     def test_top_down_cross_init_reshape(self):
@@ -310,25 +299,16 @@ class TestTopDownSearch(unittest.TestCase):
         config = SearchConfig()
         config.engine.eps = 1e-1
         config.engine.verbose = True
-        config.engine.decomp_algo = "cross"
         config.cross.init_eps = 0.1
-        config.cross.init_struct = "tt"
-        config.topdown.search_algo = "merge"
+        config.cross.init_struct = InitStructType.TT
         config.topdown.merge_mode = "all"
-        search_engine = SearchEngine(config=config)
-        result = search_engine.top_down(tensor_func)
+        search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
+        result = search_engine.top_down()
         assert result.best_state is not None
         err = result.stats.re_f
-        print("final cost", result.best_state.network.cost())
-        print(result.stats.search_end - result.stats.search_start)
-        print(result.best_state.network)
-        print(err)
-        print(result.stats.init_cross_evals)
-        print(result.stats.search_cross_evals)
         self.assertLessEqual(float(err), 2e-1)
 
 
 if __name__ == "__main__":
     np.random.seed(1234)
-    test = TestTopDownSearch()
-    test.test_top_down_cross_init_reshape()
+    unittest.main()

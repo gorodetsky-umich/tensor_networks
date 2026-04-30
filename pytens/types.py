@@ -423,21 +423,6 @@ class PartitionResult:
     lca_indices: List[Index]
 
 
-class FoldDir(Enum):
-    """Direction of how to fold a chain."""
-
-    IN_BOUND = 0
-    OUT_BOUND = 1
-
-
-class NodeStatus(Enum):
-    """Status of nodes during node swapping."""
-
-    UNKNOWN = -1
-    ATTACHED = 0
-    CONFIRMED = 1
-
-
 class SVDAlgorithm(Enum):
     """Different way to compute singular values."""
 
@@ -453,14 +438,6 @@ class NodeIndexPair:
 
     node: NodeName
     ind: Optional[Index] = None
-
-
-@dataclass
-class ReversalInfo:
-    """Information for reversible split actions."""
-
-    reversible: bool = False
-    reverse_edge: Optional[Tuple[NodeName, NodeName]] = None
 
 
 @dataclass

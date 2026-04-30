@@ -283,10 +283,11 @@ class PartitionSearch(SearchAlgo):
         if first_iter and self.config.rank_search.search_mode == "all":
             svd_file = self.constraint_engine.first_steps.get(ac, None)
             if svd_file is None:
-                raise ValueError("get no svd file in the mode 'all'")
-
-            svd_data = np.load(svd_file)
-            svd = (svd_data["u"], svd_data["s"], svd_data["v"])
+                # raise ValueError("get no svd file in the mode 'all'")
+                svd = None
+            else:
+                svd_data = np.load(svd_file)
+                svd = (svd_data["u"], svd_data["s"], svd_data["v"])
 
         logger.debug("Applying %s with target size %s", ac, ac.target_size)
         new_st = st.take_action(ac, svd=svd)
@@ -391,7 +392,7 @@ class PartitionSearch(SearchAlgo):
             self.constraint_engine.preprocess_comb(
                 self._data_tensor,
                 ac.indices,
-                compute_uv=self.config.rank_search.search_mode == "all",
+                _compute_uv=self.config.rank_search.search_mode == "all",
             )
 
         if self.config.output.remove_temp_after_run:
@@ -460,11 +461,7 @@ class PartitionSearch(SearchAlgo):
             empty_net.add_node(
                 "G", Tensor(np.empty(0), self._data_tensor.free_indices())
             )
-            # print("starting enumeration")
-            # print(empty_net)
             sts = self._enumerate(empty_net, merge_ops, exclusions)
-            # if isinstance(data_tensor, TensorTrain) and len(merge_ops) > 0:
-            #     data_tensor = data_tensor.reorder(merge_ops, 0)
             search_res = self._top_k(sts)
 
         result = result.update_best_state(search_res)

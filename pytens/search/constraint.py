@@ -200,6 +200,7 @@ class ConstraintSearch:
         self,
         data_tensor: DataTensor,
         comb: Sequence[Index],
+        # precompute UV for ablation (back compatibility)
         _compute_uv: bool = False,
         cross: bool = False,
     ):

@@ -22,7 +22,8 @@ import numpy as np
 import sympy
 from line_profiler import profile
 
-from pytens.algs import Tensor, TensorTrain, TreeNetwork
+from pytens.algs import Tensor, TreeNetwork
+from pytens.tt import TensorTrain
 from pytens.cross.func_interface import CachedFunc, TensorFunc
 from pytens.cross.func_impl import FuncTensorNetwork, PermuteFunc
 from pytens.cross.runner import CrossRunner, TTCrossRunner
@@ -1303,8 +1304,9 @@ class BlackBoxTopDownSearch(TopDownSearch):
                 validation=self._validation_set,
             )
 
-            with open(cross_res_file, "wb") as cross_writer:
-                pickle.dump(net, cross_writer)
+            if os.path.exists(cross_res_file):
+                with open(cross_res_file, "wb") as cross_writer:
+                    pickle.dump(net, cross_writer)
 
         self.stats.cross_time = time.time() - cross_start
         self.stats.init_cross_size = net.cost()

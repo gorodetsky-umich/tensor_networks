@@ -5,13 +5,11 @@ from typing import Optional
 
 import numpy as np
 
+from pytens.algs import TreeNetwork
 from pytens.cross.cross import CrossApproximation, CrossConfig
 from pytens.cross.func_interface import TensorFunc
-from pytens.algs import (
-    HierarchicalTucker,
-    TensorTrain,
-    TreeNetwork,
-)
+from pytens.ht import HierarchicalTucker
+from pytens.tt import TensorTrain
 
 
 class CrossRunner:

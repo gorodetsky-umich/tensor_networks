@@ -1,8 +1,9 @@
 """Various index clustering algorithms."""
 
+from __future__ import annotations
 from abc import abstractmethod
 import itertools
-from typing import List, Optional, Sequence, Dict, Set
+from typing import TYPE_CHECKING, List, Optional, Sequence, Dict, Set
 import random
 import logging
 import copy
@@ -12,13 +13,14 @@ import networkx as nx
 import numpy as np
 from sklearn.cluster import SpectralClustering
 
-import pytens.algs as pt
-
-# from pytens.cross.func_impl import FuncTensorNetwork
 from pytens.types import Index, IndexOp, IndexSplit, NodeName
 from pytens.search.state import OSplit
 from pytens.cross.cross import CrossApproximation, CrossConfig
 from pytens.search.hierarchical.utils import build_bipartite_sample
+from pytens.tt import TensorTrain
+
+if TYPE_CHECKING:
+    import pytens.algs as pt
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -119,7 +121,7 @@ class SVDIndexCluster(IndexCluster):
         comb_corr = {}
         if len(net.network.nodes) == 1:
             comb_corr = self._single_node_corr(net, indices)
-        elif isinstance(net, pt.TensorTrain):
+        elif isinstance(net, TensorTrain):
             comb_corr = self._tt_corr(net, indices)
 
         else:
@@ -222,7 +224,7 @@ class SVDIndexCluster(IndexCluster):
         return clusters
 
     def _tt_corr(
-        self, net: pt.TensorTrain, indices: Sequence[Index]
+        self, net: TensorTrain, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
         comb_corr = {}
         # remove duplicate node swapping
@@ -472,15 +474,10 @@ class SVDNbrIndexCluster(SVDIndexCluster):
             return [], []
 
         comb_corr = {}
-        if isinstance(net, pt.TensorTrain):
-            comb_corr = self._split_scores(net, indices)
-        elif len(net.network.nodes) == 1:
+        if len(net.network.nodes) == 1:
             comb_corr = self._single_node_corr(net, indices)
         else:
-            raise NotImplementedError(
-                "SVD-based clustering is only implemented for TT and "
-                "single-node networks."
-            )
+            comb_corr = self._split_scores(net, indices)
 
         comb_corr = sorted(comb_corr.items(), key=lambda x: x[1])
 
@@ -512,7 +509,7 @@ class SVDNbrIndexCluster(SVDIndexCluster):
         return ind_sets
 
     def _split_scores(
-        self, net: pt.TensorTrain, _indices: Sequence[Index]
+        self, net: TensorTrain, _indices: Sequence[Index]
     ) -> Dict[int, float]:
         # remove duplicate node swapping
         ends = net.end_nodes()
@@ -591,7 +588,7 @@ class CrossIndexCluster(IndexCluster):
                 indices.append(ordered_indices[j])
                 indices.extend(ordered_indices[i:j])
                 indices.extend(ordered_indices[j + 1 :])
-                tt = pt.TensorTrain.rand_tt(indices)
+                tt = TensorTrain.rand_tt(indices)
                 # net_inds = [
                 #     ind.with_new_rng(range(ind.size)) for ind in indices
                 # ]
