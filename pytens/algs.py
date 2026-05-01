@@ -933,6 +933,7 @@ class TensorNetwork:  # pylint: disable=R0904
         self, split_op: IndexSplit, compute_data: bool = True
     ) -> Optional[NodeName]:
         """Split free indices into smaller parts"""
+        n: NodeName
         for n in self.network.nodes:
             n = typing.cast(NodeName, n)
             tensor = self.node_tensor(n)
