@@ -1,6 +1,6 @@
 """Test functions for cross approximation"""
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Dict, List, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -16,10 +16,10 @@ class FuncData(CachedFunc):
 
     def __init__(self, indices: List[Index], data: np.ndarray):
         super().__init__(indices)
-        self.data = data
+        self.data: np.ndarray = data
 
     def _run(self, args: np.ndarray) -> np.ndarray:
-        return self.data[*args.astype(int).T]
+        return cast(np.ndarray, self.data[*args.astype(int).T])
 
 
 class FuncTensorNetwork(CachedFunc):
@@ -40,23 +40,33 @@ class FuncTensorNetwork(CachedFunc):
 class PermuteFunc(TensorFunc):
     """Tensor functions for index permutation."""
 
-    def __init__(self, indices, old_func, ind_unperm):
+    def __init__(
+        self,
+        indices: List[Index],
+        old_func: TensorFunc,
+        ind_unperm: Sequence[int],
+    ):
         super().__init__(indices)
         self.old_func = old_func
         self.ind_unperm = ind_unperm
 
-    def index_to_args(self, indices: np.ndarray):
+    def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         # permute the indices back into the order before the permutation
         return self.old_func.index_to_args(indices[:, self.ind_unperm])
 
-    def run(self, args: np.ndarray):
+    def run(self, args: np.ndarray) -> np.ndarray:
         return self.old_func.run(args)
 
 
 class SplitFunc(TensorFunc):
     """Reduce the tensor function after split into the old one."""
 
-    def __init__(self, indices, old_func, ind_mapping):
+    def __init__(
+        self,
+        indices: List[Index],
+        old_func: TensorFunc,
+        ind_mapping: Dict[int, Tuple[Sequence[int], Sequence[int]]],
+    ):
         super().__init__(indices)
         self.old_func = old_func
         self.ind_mapping = ind_mapping
@@ -79,5 +89,5 @@ class SplitFunc(TensorFunc):
         # turn indices into arguments
         return self.old_func.index_to_args(old_indices)
 
-    def run(self, args: np.ndarray):
+    def run(self, args: np.ndarray) -> np.ndarray:
         return self.old_func.run(args)

@@ -1,23 +1,29 @@
 """Various index clustering algorithms."""
 
 from __future__ import annotations
-from abc import abstractmethod
-import itertools
-from typing import TYPE_CHECKING, List, Optional, Sequence, Dict, Set
-import random
-import logging
-import copy
 
-from line_profiler import profile
+import copy
+import itertools
+import logging
+import random
+from abc import abstractmethod
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
+
 import networkx as nx
 import numpy as np
-from sklearn.cluster import SpectralClustering
 
-from pytens.types import Index, IndexOp, IndexSplit, NodeName
-from pytens.search.state import OSplit
 from pytens.cross.cross import CrossApproximation, CrossConfig
 from pytens.search.hierarchical.utils import build_bipartite_sample
+from pytens.search.state import OSplit
 from pytens.tt import TensorTrain
+from pytens.types import (
+    Index,
+    IndexOp,
+    IndexSplit,
+    NodeIndexPair,
+    NodeName,
+    SVDParams,
+)
 
 if TYPE_CHECKING:
     import pytens.algs as pt
@@ -26,19 +32,19 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def eff_rank(svals: np.ndarray):
+def eff_rank(svals: np.ndarray) -> float:
     """Compute the effective rank of a spectrum via entropy."""
     s = svals  # ** 2
     s = s[s > 1e-8]
     p = s / s.sum()
-    return np.exp(-np.sum(p * np.log(p)))
+    return float(np.exp(-np.sum(p * np.log(p))))
 
 
-def spectrum_similarity(s1, s2):
+def spectrum_similarity(s1: np.ndarray, s2: np.ndarray) -> float:
     """Compute the dot-product similarity between two normalised spectra."""
     p1 = s1**2 / np.sum(s1**2)
     p2 = s2**2 / np.sum(s2**2)
-    return np.dot(p1, p2)
+    return float(np.dot(p1, p2))
 
 
 class IndexCluster:
@@ -103,7 +109,6 @@ class RandomIndexCluster(IndexCluster):
 class SVDIndexCluster(IndexCluster):
     """Cluster indices based on singular values."""
 
-    @profile
     def cluster(
         self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
     ) -> Sequence[Sequence[Sequence[Index]]]:
@@ -127,10 +132,10 @@ class SVDIndexCluster(IndexCluster):
         else:
             comb_corr = self._tree_score(net, indices)
 
-        comb_corr = sorted(
+        sorted_comb_corr = sorted(
             comb_corr.items(), key=lambda x: x[1], reverse=False
         )
-        logger.debug("sorted combs: %s", list(comb_corr))
+        logger.debug("sorted combs: %s", list(sorted_comb_corr))
 
         # start from the largest group and expand until the threshold
         group_size = len(indices) // threshold
@@ -141,7 +146,7 @@ class SVDIndexCluster(IndexCluster):
         k_ind_sets = []
         for _ in range(5):
             index_sets = self._sample_index_sets(
-                comb_corr, num_groups, group_size, threshold
+                sorted_comb_corr, num_groups, group_size, threshold
             )
             k_ind_sets.append(index_sets)
 
@@ -151,12 +156,17 @@ class SVDIndexCluster(IndexCluster):
         return k_ind_sets
 
     @staticmethod
-    def _sample_index_sets(comb_corr, num_groups, group_size, threshold):
+    def _sample_index_sets(
+        comb_corr: List[Tuple[Sequence[Index], float]],
+        num_groups: int,
+        group_size: int,
+        threshold: int,
+    ) -> List[List[Index]]:
         """One random sample of index groupings from correlation pairs."""
         index_sets = []
-        visited = set()
+        visited: Set[Index] = set()
         for i in range(num_groups):
-            group = set()
+            group: Set[Index] = set()
             for xs, _ in comb_corr:
                 if random.random() < 0.1:
                     continue
@@ -173,78 +183,13 @@ class SVDIndexCluster(IndexCluster):
                 index_sets.append(list(group))
         return index_sets
 
-    def _cluster_dimensions(
-        self, singular_value_matrix, k_clusters, n_neighbors=5
-    ):
-        """
-        Groups tensor dimensions into k clusters using Spectral Clustering.
-        Uses KNN sparsification to handle 'flat' singular value distributions.
-
-        Args:
-            singular_value_matrix: (d x d) symmetric matrix of pairwise scores.
-            k_clusters: The target number of groups.
-            n_neighbors: Number of neighbors to keep for graph sparsification.
-                        (Try d/k or slightly higher).
-        """
-
-        # 1. Preprocessing: Sparsify the graph
-        # We convert the dense, noisy matrix into a KNN graph.
-        # This forces a structure even if values are close.
-        # We use 'precomputed' mode by manually zeroing out weak links first,
-        # or rely on the clustering algo's built-in affinity.
-
-        # A robust way: zero out everything except the top N neighbors
-        d = singular_value_matrix.shape[0]
-        affinity = np.zeros_like(singular_value_matrix)
-
-        for i in range(d):
-            # Get indices of top n_neighbors
-            # argsort gives ascending, so we take the last n_neighbors
-            top_indices = np.argsort(singular_value_matrix[i, :])[
-                -n_neighbors:
-            ]
-            affinity[i, top_indices] = singular_value_matrix[i, top_indices]
-
-        # Symmetrize (KNN is directed: i might like j, but j might not like i)
-        affinity = 0.5 * (affinity + affinity.T)
-
-        # 2. Spectral Clustering
-        # This embeds the graph into k-dims and runs k-means
-        sc = SpectralClustering(
-            n_clusters=k_clusters, affinity="precomputed", random_state=42
-        )
-
-        labels = sc.fit_predict(affinity)
-
-        # Group the results
-        clusters = {}
-        for i in range(k_clusters):
-            clusters[i] = np.where(labels == i)[0].tolist()
-
-        return clusters
-
     def _tt_corr(
         self, net: TensorTrain, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
-        comb_corr = {}
+        comb_corr: Dict[Sequence[Index], float] = {}
         # remove duplicate node swapping
         ends = net.end_nodes()
         nodes = nx.shortest_path(net.network, ends[0], ends[1])
-        # for i, ni in enumerate(nodes):
-        #     if i == 0:
-        #         net.orthonormalize(ni)
-
-        #     s = net.svals(net.node_tensor(ni).indices[:1], orthonormal=ni)
-        #     logger.debug(
-        #         "svals for %s are %s", net.node_tensor(ni).indices[0], s
-        #     )
-
-        #     if i == 0:
-        #         _, r = net.qr(ni, [0])
-        #         net.merge(nodes[i + 1], r)
-        #     elif i < len(nodes) - 1:
-        #         _, r = net.qr(ni, [0, 2])
-        #         net.merge(nodes[i + 1], r)
 
         for i, ni in enumerate(nodes):
             tmp_net = copy.deepcopy(net)
@@ -254,7 +199,11 @@ class SVDIndexCluster(IndexCluster):
             for j, nj in enumerate(nodes[i + 1 :]):
                 # swap n[i] and n[i+j-1]
                 if j > 0:
-                    tmp_net.swap_nbr([ni, nodes[i + j], nj], ni, nodes[i + j])
+                    tmp_net.swap_nbr(
+                        [ni, nodes[i + j], nj],
+                        NodeIndexPair(ni),
+                        NodeIndexPair(nodes[i + j]),
+                    )
 
                 logger.debug("after swapping nbrs: %s", tmp_net)
 
@@ -310,7 +259,7 @@ class SVDIndexCluster(IndexCluster):
         self, net: pt.TreeNetwork, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
         """Sample some entries from the tree and compute the scores"""
-        comb_corr = {}
+        comb_corr: Dict[Sequence[Index], float] = {}
         for i, indi in enumerate(indices):
             for indj in indices[i + 1 :]:
                 selected_inds = []
@@ -337,11 +286,11 @@ class SVDIndexCluster(IndexCluster):
     def _tree_score(
         self, net: pt.TreeNetwork, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
-        comb_corr = {}
+        comb_corr: Dict[Sequence[Index], float] = {}
 
         # we have to pick one of the leaves as the end node
         ends = net.end_nodes()
-        visited_node_pairs = set()
+        visited_node_pairs: Set[Tuple[NodeName, NodeName]] = set()
 
         # traverse the tree to compute pairs with DFS
         def dfs(
@@ -349,7 +298,7 @@ class SVDIndexCluster(IndexCluster):
             curr_net: pt.TreeNetwork,
             prev: Optional[NodeName],
             curr: NodeName,
-        ):
+        ) -> None:
             visited.add(curr)
 
             if prev is not None:
@@ -429,12 +378,17 @@ class SVDIndexCluster(IndexCluster):
     def _single_node_corr(
         self, net: pt.TreeNetwork, indices: Sequence[Index]
     ) -> Dict[Sequence[Index], float]:
-        comb_corr = {}
+        comb_corr: Dict[Sequence[Index], float] = {}
         # for single node networks, we can directly compute the SVDs
         for i, ind_i in enumerate(indices):
             for ind_j in indices[i + 1 :]:
                 ac = OSplit([ind_i, ind_j])
-                svals = net.svals(ac.indices, max_rank=100, orthonormal=True)
+                svals = ac.svals(
+                    net,
+                    svd_params=SVDParams(
+                        max_rank=100, orthonormal=True, random_seed=42
+                    ),
+                )
                 if len(svals) >= 2:
                     comb_corr[tuple(ac.indices)] = eff_rank(
                         svals
@@ -455,95 +409,6 @@ class SVDIndexCluster(IndexCluster):
         return comb_corr
 
 
-class SVDNbrIndexCluster(SVDIndexCluster):
-    """Cluster indices using neighbor-based SVD scores along a tensor train."""
-
-    @profile
-    def cluster(
-        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
-    ) -> Sequence[Sequence[Index]]:
-        """Consider all possible combinations of indices.
-
-        For each combination, we calculate the correlation matrix of
-        the reshaped tensor. If the correlation is high enough,
-        we merge the indices.
-        """
-        indices = net.free_indices()
-        threshold = self._threshold
-        if len(indices) <= threshold:
-            return [], []
-
-        comb_corr = {}
-        if len(net.network.nodes) == 1:
-            comb_corr = self._single_node_corr(net, indices)
-        else:
-            comb_corr = self._split_scores(net, indices)
-
-        comb_corr = sorted(comb_corr.items(), key=lambda x: x[1])
-
-        # sort the nodes
-        nodes = [net.node_by_free_index(ind.name) for ind in indices]
-        # get the two ends where the nodes have only one nbr in nodes
-        ends = []
-        for n in nodes:
-            nbrs = list(net.network.neighbors(n))
-            if len(nbrs) == 1 or not all(nbr in nodes for nbr in nbrs):
-                ends.append(n)
-
-        ordered_indices = list(
-            sorted(
-                indices,
-                key=lambda x: net.distance(
-                    ends[0], net.node_by_free_index(x.name)
-                ),
-            )
-        )
-
-        ind_sets = []
-        used_len = 0
-        for i, _ in sorted(list(comb_corr)[:threshold]):
-            ind_set = ordered_indices[used_len : i + 1]
-            ind_sets.append(ind_set)
-            used_len = i + 1
-
-        return ind_sets
-
-    def _split_scores(
-        self, net: TensorTrain, _indices: Sequence[Index]
-    ) -> Dict[int, float]:
-        # remove duplicate node swapping
-        ends = net.end_nodes()
-        nodes = nx.shortest_path(net.network, ends[0], ends[1])
-        scores = {}
-        for i, ni in enumerate(nodes[:-1]):
-            if i == 0:
-                net.orthonormalize(ni)
-
-            i_inds = net.node_tensor(ni).indices
-            i_free = [i_inds[0]]
-            if i > 0:
-                i_free.append(i_inds[2])
-
-            svals = net.svals_at(
-                ni, i_free, max_rank=100, with_orthonormal=False
-            )
-            scores[i] = eff_rank(svals)  # svals[0] / svals[1]
-            logger.debug(
-                "indices: %s, svals: %s, norm: %s, score: %s",
-                i_free,
-                svals,
-                sum(svals**2),
-                scores[i],
-            )
-
-            if i < len(nodes) - 1:
-                # move the orthogonality to the right
-                _, r = net.qr(ni, [0, 2] if i != 0 else [0])
-                net.merge(nodes[i + 1], r)
-
-        return scores
-
-
 class CrossIndexCluster(IndexCluster):
     """Cluster indices using cross approximation rank estimates."""
 
@@ -552,10 +417,9 @@ class CrossIndexCluster(IndexCluster):
 
         self._eps = eps
 
-    @profile
     def cluster(
         self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
-    ) -> Sequence[Sequence[Index]]:
+    ) -> Sequence[Sequence[Sequence[Index]]]:
         """
         Incrementally run cross until we find a low rank representation.
 

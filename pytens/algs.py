@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import opt_einsum as oe
-from sklearn.utils.extmath import randomized_svd  # type: ignore
+from sklearn.utils.extmath import randomized_svd
 
 from pytens.utils import delta_svd
 from pytens.types import (
@@ -2233,7 +2233,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         other_tree = other.dimension_tree(other_root)
 
         result_net = copy.deepcopy(self)
-        self._binary_op(other, "add", self_tree, other_tree, result_net)
+        self._binary_op(other, "add", (self_tree, other_tree), result_net)
 
         return result_net
 
@@ -2267,19 +2267,18 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         other_tree = other.dimension_tree(other_root)
 
         result_net = copy.deepcopy(self)
-        self._binary_op(other, "mul", self_tree, other_tree, result_net)
+        self._binary_op(other, "mul", (self_tree, other_tree), result_net)
 
         return result_net
 
-    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
     def _binary_op(
         self,
         other: "TreeNetwork",
         op: Literal["add", "mul"],
-        tree1: DimTreeNode,
-        tree2: DimTreeNode,
+        trees: Tuple[DimTreeNode, DimTreeNode],
         result_net: Self,
     ) -> None:
+        tree1, tree2 = trees
         tensor1 = self.node_tensor(tree1.node)
         tensor2 = other.node_tensor(tree2.node)
         assert len(tensor1.indices) == len(tensor2.indices)
@@ -2294,7 +2293,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         result_net.set_node_tensor(tree1.node, res)
 
         for c1, c2 in zip(tree1.down_info.nodes, tree2.down_info.nodes):
-            self._binary_op(other, op, c1, c2, result_net)
+            self._binary_op(other, op, (c1, c2), result_net)
 
     def distance(self, node1: NodeName, node2: NodeName) -> int:
         """Compute the distance between two nodes without creating dimension

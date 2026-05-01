@@ -1,29 +1,35 @@
 """Exhaustive search of tensor network structures."""
 
-from typing import List, Optional
+from abc import abstractmethod
+from typing import List, Optional, Set
 import time
 import copy
 
-from pytens.algs import TreeNetwork
-from pytens.search.algs.base import SearchAlgo
+from pytens.algs import TreeNetwork, Tensor
 from pytens.search.configuration import SearchConfig
+from pytens.search.types import SearchContext
+from pytens.search.hierarchical.types import HSearchState
 from pytens.search.state import SearchState
-from pytens.search.utils import log_stats, SearchStats, SearchResult
+from pytens.search.utils import log_stats, SearchResult, SearchStats
 
 
-class ExhaustiveSearch(SearchAlgo):
+class ExhaustiveSearch:
     """Base class for exhaustive search"""
 
-    def __init__(self, config: SearchConfig):
+    def __init__(self, config: SearchConfig) -> None:
         self.config = config
+        self.stats = SearchStats()
 
-        self.delta = 0
-        self.target_tensor = None
-        self.best_network = None
+        self.delta = 0.0
+        self.target_tensor: Tensor
+        self.best_network: TreeNetwork
 
-        self.start = 0
-        self.logging_time = 0
-        self.search_stats = SearchStats()
+        self.start = 0.0
+        self.logging_time = 0.0
+
+    @abstractmethod
+    def search(self, st: HSearchState, context: SearchContext) -> SearchResult:
+        raise NotImplementedError
 
 
 class BFSSearch(ExhaustiveSearch):
@@ -37,10 +43,6 @@ class BFSSearch(ExhaustiveSearch):
         worklist: List[SearchState],
     ) -> TreeNetwork:
         """Add a network to a worked set to remove duplicates."""
-        # new_net.draw()
-        # plt.show()
-        # new_net_hash = hash(new_net)
-        # if new_net_hash not in worked:
         if best_network is None or best_network.cost() > new_st.network.cost():
             best_network = new_st.network
 
@@ -62,7 +64,7 @@ class BFSSearch(ExhaustiveSearch):
         """Execute the BFS search algorithm on the given tensor network"""
 
         self.target_tensor = net.contract()
-        logging_time = 0
+        logging_time = 0.0
         start = time.time()
 
         network = copy.deepcopy(net)
@@ -86,15 +88,11 @@ class BFSSearch(ExhaustiveSearch):
             for ac in st.get_legal_actions(
                 index_actions=self.config.synthesizer.action_type == "osplit"
             ):
-                # plt.subplot(2,1,1)
-                # st.network.draw()
                 new_st = st.take_action(ac)
                 if new_st is None:
                     continue
-                # plt.subplot(2,1,2)
-                # new_st.network.draw()
-                # plt.show()
-                if self.config.heuristics.prune_full_rank and new_st.is_noop:
+
+                if self.config.heuristics.prune_full_rank:
                     continue
 
                 ts = time.time() - start - logging_time
@@ -109,7 +107,7 @@ class BFSSearch(ExhaustiveSearch):
                 verbose_start = time.time()
                 if self.config.engine.verbose:
                     log_stats(
-                        self.search_stats,
+                        self.stats,
                         self.target_tensor,
                         ts,
                         new_st,
@@ -120,27 +118,30 @@ class BFSSearch(ExhaustiveSearch):
 
         end = time.time()
 
-        self.search_stats.search_start = start
-        self.search_stats.search_end = end - logging_time
-        self.search_stats.count = count
+        self.stats.search_start = start
+        self.stats.search_end = end - logging_time
+        self.stats.count = count
 
         result = SearchResult()
         if best_network is not None:
             result.best_state = SearchState(best_network, 0)
-        result.stats = self.search_stats
+        result.stats = self.stats
         return result
+
+    def search(self, st: HSearchState, context: SearchContext) -> SearchResult:
+        return self.run(st.network)
 
 
 class DFSSearch(ExhaustiveSearch):
     """Implementation of DFS search."""
 
-    def log(self, new_st: SearchState):
+    def log(self, new_st: SearchState) -> None:
         """Log statistics during search."""
         ts = time.time() - self.start - self.logging_time
         verbose_start = time.time()
         if self.config.engine.verbose:
             log_stats(
-                self.search_stats,
+                self.stats,
                 self.target_tensor,
                 ts,
                 new_st,
@@ -149,9 +150,9 @@ class DFSSearch(ExhaustiveSearch):
         verbose_end = time.time()
         self.logging_time += verbose_end - verbose_start
 
-    def dfs(self, worked: set, curr_st: SearchState):
+    def dfs(self, worked: Set[int], curr_st: SearchState) -> None:
         """Implementation of the DFS recursion."""
-        self.search_stats.count += 1
+        self.stats.count += 1
         used_ops = len(curr_st.past_actions)
         if used_ops >= self.config.engine.max_ops:
             return
@@ -176,9 +177,8 @@ class DFSSearch(ExhaustiveSearch):
             new_st = curr_st.take_action(ac)
             if new_st is None:
                 continue
-            # greedy = False
 
-            if self.config.heuristics.prune_full_rank and new_st.is_noop:
+            if self.config.heuristics.prune_full_rank:
                 continue
 
             if new_st.network.cost() < self.best_network.cost():
@@ -200,12 +200,7 @@ class DFSSearch(ExhaustiveSearch):
                 # print("max op")
                 return
 
-            # best_before = best_network.cost()
             self.dfs(worked, new_st)
-            # best_after = best_network.cost()
-            # if best_before == best_after:
-            #     # greedy = True
-            #     break
 
     def run(self, net: TreeNetwork) -> SearchResult:
         """Run a DFS search from the given tensor network."""
@@ -214,14 +209,17 @@ class DFSSearch(ExhaustiveSearch):
         self.delta = self.config.engine.eps * net.norm()
         self.best_network = net
 
-        self.logging_time = 0
+        self.logging_time = 0.0
         self.start = time.time()
 
         # network = copy.deepcopy(net)
-        worked = set()
+        worked: Set[int] = set()
         self.dfs(worked, SearchState(net, self.delta))
 
         result = SearchResult()
-        result.stats = self.search_stats
+        result.stats = self.stats
         result.best_state = SearchState(self.best_network, 0)
         return result
+
+    def search(self, st: HSearchState, context: SearchContext) -> SearchResult:
+        return self.run(st.network)

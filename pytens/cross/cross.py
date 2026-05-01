@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 from enum import Enum, auto
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple, List
 import logging
 import copy
 
 import numpy as np
-from line_profiler import profile
 import pydantic
 from tntorch.maxvol import py_maxvol
 
 from pytens.cross.func_interface import TensorFunc
-from pytens.types import DimTreeNode
+from pytens.types import DimTreeNode, Index
 import pytens.algs as pt
 
 logger = logging.getLogger(__name__)
@@ -77,7 +76,6 @@ class CrossResult(pydantic.BaseModel):
     ranks_and_errors: Sequence[Tuple[int, float]]
 
 
-@profile
 def _select_indices_maxvol(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
     Select proper indices by maxvol algorithm.
@@ -90,12 +88,15 @@ def _select_indices_maxvol(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     # #     print("Warning: cutting internal ranks")
     # q = q[:, :real_rank]
     # # print(v)
-    q = v
+    q: np.ndarray = v
     q, _ = np.linalg.qr(q)
-    return py_maxvol(q)
+    selected_inds: np.ndarray
+    b: np.ndarray
+    selected_inds, b = py_maxvol(q)
+    return selected_inds, b
 
 
-def _deim(u: np.ndarray):
+def _deim(u: np.ndarray) -> np.ndarray:
     """
     Select indices by Discrete Empirical Interpolation Method (DEIM)
     """
@@ -120,7 +121,7 @@ def _deim(u: np.ndarray):
     return indices
 
 
-def _select_indices_deim(v: np.ndarray):
+def _select_indices_deim(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Compute the cross for a single point"""
     u, _, _ = np.linalg.svd(v, full_matrices=False)
     i = _deim(u)
@@ -139,7 +140,7 @@ def _select_indices_greedy(
     return (np.empty(0), np.empty(0))
 
 
-def _cartesian_product_arrays(*arrays):
+def _cartesian_product_arrays(*arrays: np.ndarray) -> np.ndarray:
     """
     Compute the Cartesian product of multiple arrays of shape (ni, di),
     resulting in shape (n1*n2*...*nk, d1 + d2 + ... + dk).
@@ -162,7 +163,8 @@ def _cartesian_product_arrays(*arrays):
 
     # Concatenate along last axis and reshape
     stacked = np.concatenate(reshaped, axis=-1)
-    return stacked.reshape(total_n, sum(ds))
+    res: np.ndarray = stacked.reshape(total_n, sum(ds))
+    return res
 
 
 class CrossApproximation:
@@ -174,8 +176,11 @@ class CrossApproximation:
         self._config = config
         self._tensor_func = tensor_func
 
-    @profile
-    def _construct_matrix(self, rows, cols) -> np.ndarray:
+    def _construct_matrix(
+        self,
+        rows: Tuple[List[Index], np.ndarray],
+        cols: Tuple[List[Index], np.ndarray],
+    ) -> np.ndarray:
         """
         Constructs a matrix from the tensor function by
         evaluating it on the provided row and column indices.
@@ -201,7 +206,6 @@ class CrossApproximation:
 
         return ind, b
 
-    @profile
     def _root_to_leaves(self, node: DimTreeNode) -> None:
         """Update the indices by propagating info from root to leaves."""
         down_ranges = []
@@ -223,21 +227,15 @@ class CrossApproximation:
                     down_ranges.append(c.up_info.vals)
 
             down_vals = _cartesian_product_arrays(*down_ranges)
-            # print(
-            #     (node.up_info.indices, node.up_info.vals),
-            #     (node.down_info.indices, down_vals),
-            # )
             v = self._construct_matrix(
                 (node.up_info.indices, node.up_info.vals),
                 (node.down_info.indices, down_vals),
             )
 
-            ind, _ = self._select_indices(v)
-            # print(ind)
-            node.down_info.vals = down_vals[ind, :]
-            node.down_info.rank = len(ind)
+            selected_inds, _ = self._select_indices(v)
+            node.down_info.vals = down_vals[selected_inds, :]
+            node.down_info.rank = len(selected_inds)
 
-    @profile
     def _leaves_to_root(
         self, node: DimTreeNode, net: "pt.TensorNetwork"
     ) -> None:
@@ -258,10 +256,10 @@ class CrossApproximation:
             (node.down_info.indices, node.down_info.vals),
             (node.up_info.indices, up_vals),
         )
-        ind, b = self._select_indices(v)
+        selected_inds, b = self._select_indices(v)
         # print(ind)
-        node.up_info.vals = up_vals[ind, :]
-        node.up_info.rank = len(ind)
+        node.up_info.vals = up_vals[selected_inds, :]
+        node.up_info.rank = len(selected_inds)
         # print("====>", node.values.up_vals)
         net.node_tensor(node.node).update_val_size(
             b.reshape(*up_sizes, -1).transpose(np.argsort(node.perm))
@@ -283,11 +281,11 @@ class CrossApproximation:
             new_ranks = tree.ranks()
 
         if known is None:
-            up_vals = [
+            up_val_elems = [
                 np.random.randint(0, ind.size, [self._config.kickrank, 1])
                 for ind in tree.indices
             ]
-            up_vals = np.concatenate(up_vals, axis=-1)
+            up_vals = np.concatenate(up_val_elems, axis=-1)
         else:
             up_vals = known[
                 np.random.randint(
@@ -300,7 +298,7 @@ class CrossApproximation:
             ]
         tree.add_values(up_vals)
 
-    def _create_validation_set(self):
+    def _create_validation_set(self) -> np.ndarray:
         valid_list = []
         for ind in self._tensor_func.indices:
             valid_list.append(
@@ -312,7 +310,7 @@ class CrossApproximation:
 
     def _iterate_tree_nodes(
         self, net: pt.TensorNetwork, tree_nodes: Sequence[DimTreeNode]
-    ):
+    ) -> None:
         for n in tree_nodes:
             if len(n.up_info.nodes) == 0:
                 continue
@@ -336,7 +334,7 @@ class CrossApproximation:
 
     def _get_root_value(
         self, tree: DimTreeNode, f_sizes: Sequence[int], f_vals: np.ndarray
-    ):
+    ) -> np.ndarray:
         ordered_down_nodes = sorted(tree.down_info.nodes)
         c_indices = [
             ind for c in ordered_down_nodes for ind in c.up_info.indices
@@ -352,10 +350,9 @@ class CrossApproximation:
             np.argsort(tree.perm)
         )
 
-    @profile
     def cross(  # pylint: disable=R0913,R0917
         self,
-        net: "pt.TensorNetwork",
+        net: "pt.TreeNetwork",
         root: Optional["pt.NodeName"] = None,
         validation: Optional[np.ndarray] = None,
         eps: float = 0.1,
@@ -410,12 +407,14 @@ class CrossApproximation:
                     self._tensor_func.indices, validation
                 ).reshape(-1)
 
-                err = np.linalg.norm(real - estimate) / np.linalg.norm(real)
+                err = float(
+                    np.linalg.norm(real - estimate) / np.linalg.norm(real)
+                )
 
             else:
                 raise RuntimeError("unknown termination criteria")
 
-            ranks_and_errs[len(tree.up_info.vals)] = float(err)
+            ranks_and_errs[len(tree.up_info.vals)] = err
             logger.debug("step: %s, error: %s", trial, err)
             if err <= eps or (
                 self._config.max_iters is not None
@@ -427,8 +426,8 @@ class CrossApproximation:
             self._incr_ranks(tree, known=known)
 
         # print(net)
-        ranks_and_errs = list(sorted(list(ranks_and_errs.items())))
+        ranks_and_errs_list = list(sorted(list(ranks_and_errs.items())))
         # print(ranks_and_errs)
         return CrossResult(
-            net=net, dim_tree=tree, ranks_and_errors=ranks_and_errs
+            net=net, dim_tree=tree, ranks_and_errors=ranks_and_errs_list
         )

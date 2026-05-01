@@ -4,17 +4,22 @@ import copy
 import dataclasses
 import itertools
 import logging
-from typing import Generator, List, Optional, Self, Sequence, Tuple
+from typing import Generator, List, Optional, Self, Sequence, Tuple, Any
 
 import networkx as nx
 import numpy as np
-from line_profiler import profile
 
 from pytens.algs import Index, IndexName, NodeName, SVDConfig, TreeNetwork
 from pytens.cross.cross import TensorFunc
 from pytens.search.types import Action
 from pytens.tt import TensorTrain
-from pytens.types import AlgoParams, PartitionStatus, SVDAlgorithm, SVDParams
+from pytens.types import (
+    AlgoParams,
+    IndexMerge,
+    PartitionStatus,
+    SVDAlgorithm,
+    SVDParams,
+)
 from pytens.cross.cross import CrossApproximation, CrossConfig
 
 logger = logging.getLogger(__name__)
@@ -31,7 +36,7 @@ class OSplit(Action):
     reversible: bool = False
     reverse_edge: Optional[Tuple[NodeName, NodeName]] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.indices = sorted(self.indices)
 
     def __str__(self) -> str:
@@ -51,7 +56,10 @@ class OSplit(Action):
     def __hash__(self) -> int:
         return hash(self.__str__())
 
-    def __lt__(self, other: Self) -> bool:
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, OSplit):
+            raise NotImplementedError
+
         if len(self.indices) != len(other.indices):
             return len(self.indices) < len(other.indices)
 
@@ -130,7 +138,7 @@ class OSplit(Action):
         svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
         compute_data: bool = True,
         compute_uv: bool = True,
-    ):
+    ) -> Tuple[Tuple[NodeName, NodeName, NodeName], float]:
         """Execute the split index action on the given tensor network"""
         # find the nodes that include @indices@,
         # if there are multiple such nodes, go to the common ancestor
@@ -158,7 +166,6 @@ class OSplit(Action):
 
         return (u, s, v), d
 
-    @profile
     def svals(
         self,
         net: TreeNetwork,
@@ -201,7 +208,7 @@ class ISplit(Action):
     def __str__(self) -> str:
         return f"ISplit({self.node}, {self.left_indices})"
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, ISplit):
             return False
 
@@ -287,7 +294,7 @@ class ISplit(Action):
                 err = 0.0
         elif self.delta is not None:
             # find the first index where truncation error is less than delta
-            r_discard = np.searchsorted(trunc_error, self.delta**2)
+            r_discard = int(np.searchsorted(trunc_error, self.delta**2))
             r = max_sz - r_discard
             err = trunc_error[r_discard - 1] if r_discard > 0 else 0.0
         else:
@@ -311,7 +318,7 @@ class ISplit(Action):
         (_, s, _), _ = self.svd(net, svd, compute_data=True, compute_uv=False)
         return np.diag(net.value(s))
 
-    def to_osplit(self, st, idx):
+    def to_osplit(self, st: "SearchState", idx: int) -> OSplit:
         """Convert a split action to OSplit."""
         connect_nodes = []
         for n, d in st.network.network.nodes(data=True):
@@ -349,7 +356,7 @@ class Merge(Action):
     def __str__(self) -> str:
         return f"Merge({self.node1}, {self.node2})"
 
-    def execute(self, network: TreeNetwork):
+    def execute(self, network: TreeNetwork) -> TreeNetwork:
         """Execute a merge action."""
         network.merge(self.node1, self.node2)
         return network
@@ -366,11 +373,11 @@ class SearchState:
     ):
         self.network = net
         self.curr_delta = delta
-        self.past_actions = []  # How we reach this state
+        self.past_actions: List[Action] = []  # How we reach this state
         self.max_ops = max_ops
         self.links: List[IndexName] = []
 
-    def count_actions_of_size(self, k: int = 2):
+    def count_actions_of_size(self, k: int = 2) -> int:
         """Count the number of actions of the given size in the history."""
         cnt = 0
         for ac in self.past_actions:
@@ -380,8 +387,11 @@ class SearchState:
         return cnt
 
     def get_legal_actions(
-        self, index_actions=False, merge_ops=None, out_of_order=False
-    ):
+        self,
+        index_actions: bool = False,
+        merge_ops: Optional[Sequence[IndexMerge]] = None,
+        out_of_order: bool = False,
+    ) -> Sequence[Action]:
         """Return a list of all legal actions in this state."""
         if index_actions:
             return self.get_legal_index_actions(merge_ops, out_of_order)
@@ -406,35 +416,39 @@ class SearchState:
 
     @staticmethod
     def all_index_combs(
-        free_indices: Sequence[Index], k: Optional[int] = None
-    ) -> Generator[Sequence[Index], None, None]:
+        free_indices: List[Any], k: Optional[int] = None
+    ) -> Generator[Sequence[Any], None, None]:
         """Compute all index partitions for the given index set."""
-        free_indices = sorted(free_indices)
-        half_size = len(free_indices) // 2
+        sorted_indices = sorted(free_indices)
+        half_size = len(sorted_indices) // 2
         if k is not None:
             upper = min(k, half_size + 1)
         else:
             upper = half_size + 1
 
         for i in range(1, upper):
-            combs = list(itertools.combinations(free_indices, i))
-            if len(free_indices) % 2 == 0 and i == half_size:
+            combs = list(itertools.combinations(sorted_indices, i))
+            if len(sorted_indices) % 2 == 0 and i == half_size:
                 combs = combs[: len(combs) // 2]
 
             yield from combs
 
-    def get_legal_index_actions(self, merge_ops=None, out_of_order=False):
+    def get_legal_index_actions(
+        self,
+        merge_ops: Optional[Sequence[IndexMerge]] = None,
+        out_of_order: bool = False,
+    ) -> Sequence[OSplit]:
         """
         Produce a list of legal index splitting actions
         over the current network.
         """
         actions = []
+        free_indices: List[List[Index]] = []
         if merge_ops is None:
             free_indices = [[ind] for ind in self.network.free_indices()]
         else:
-            free_indices = []
             for merge_op in merge_ops:
-                free_indices.append(merge_op.indices)
+                free_indices.append(list(merge_op.indices))
 
             for ind in self.network.free_indices():
                 found = False
@@ -541,7 +555,7 @@ class SearchState:
 
         raise TypeError("Unrecognized action type")
 
-    def optimize(self):
+    def optimize(self) -> None:
         """Optimize the current structure."""
         free_indices = self.network.free_indices()
         root = None

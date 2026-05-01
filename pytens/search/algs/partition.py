@@ -9,13 +9,12 @@ import time
 from typing import List, Optional, Sequence
 
 import numpy as np
-from line_profiler import profile
 
 from pytens.algs import Tensor, TreeNetwork
-from pytens.search.algs.base import SearchAlgo
 from pytens.search.configuration import SearchConfig
 import pytens.search.configuration as config
 from pytens.search.constraint import ConstraintSearch
+from pytens.search.types import SearchContext
 from pytens.search.state import Action, ISplit, OSplit, SearchState
 from pytens.search.utils import (
     DataTensor,
@@ -26,23 +25,24 @@ from pytens.search.utils import (
     remove_temp_dir,
     to_splits,
 )
-from pytens.types import Index, IndexMerge, IndexOp
+from pytens.types import Index, IndexMerge
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-class PartitionSearch(SearchAlgo):
+class PartitionSearch:
     """Search by partitions free indices"""
 
     def __init__(
         self,
-        config: SearchConfig,
+        search_config: SearchConfig,
         data_tensor: TreeNetwork,
-        replay_from: Optional[List[Action]] = None,
+        replay_from: Optional[Sequence[Action]] = None,
     ):
-        self.config = config
-        self.constraint_engine = ConstraintSearch(config)
+        self.config = search_config
+
+        self.constraint_engine = ConstraintSearch(search_config)
         self.unused_delta = 0.0
         self.stats = SearchStats()
 
@@ -50,7 +50,7 @@ class PartitionSearch(SearchAlgo):
         self._data_tensor = data_tensor
         self._replay_from = replay_from
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the search states."""
         self.unused_delta = 0.0
         self.stats = SearchStats()
@@ -80,7 +80,9 @@ class PartitionSearch(SearchAlgo):
 
         raise ValueError("unknown fit mode for rank search")
 
-    def _sketch_execution(self, curr_st: SearchState, action: Action):
+    def _sketch_execution(
+        self, curr_st: SearchState, action: Action
+    ) -> SearchState:
         """Perform a split without actual data computation."""
         if isinstance(action, OSplit):
             _, split_ac = action.to_isplit(curr_st.network)
@@ -112,7 +114,6 @@ class PartitionSearch(SearchAlgo):
         curr_st = init_state(data_tensor, self._delta)
         for _ in range(1, self.config.engine.max_ops + 1):
             if random.random() < 0.1:
-                # print("skipping the action")
                 continue
 
             is_osplit = self.config.synthesizer.action_type == "osplit"
@@ -121,8 +122,6 @@ class PartitionSearch(SearchAlgo):
             )
             if actions:
                 actions = random.choices(actions)
-            # else:
-            #     print("no legal actions")
 
             for action in actions:
                 if (
@@ -131,10 +130,8 @@ class PartitionSearch(SearchAlgo):
                     and len(action.indices) == 1
                     and action.indices[0] in exclusions
                 ):
-                    # print("illegal action")
                     continue
 
-                # print("getting action", str(action))
                 curr_st = self._sketch_execution(curr_st, action)
 
         return list(sorted(curr_st.past_actions))
@@ -207,7 +204,6 @@ class PartitionSearch(SearchAlgo):
                             ac.target_size = ind.size
                             break
 
-                # print([str(ac) for ac in st.past_actions])
                 replay_res = self.replay(st.past_actions, True)
                 result = result.update_best_state(replay_res)
             else:
@@ -220,57 +216,28 @@ class PartitionSearch(SearchAlgo):
         res = SearchResult()
         best_state = st
         unused_delta = 0.0
-        # print("before rounding", st.network)
         for n in st.network.network.nodes:
             tmp_st = copy.deepcopy(st)
             _, unused_delta = tmp_st.network.round(n, st.curr_delta)
             if tmp_st.network.cost() < best_state.network.cost():
                 best_state = tmp_st
 
-        # if self.config.synthesizer.replay_from is None:
-        #     best_state.network.compress()
-
         res.best_state = best_state
         res.unused_delta = unused_delta
         return res
 
-    @profile
     def _replay_impl(
         self,
         st: SearchState,
-        actions: List[Action],
+        actions: Sequence[Action],
         first_iter: bool = False,
     ) -> SearchResult:
         if not actions:
-            # # undo everything else
-            # while True:
-            #     modified = False
-            #     for ac in to_splits(st.network):
-            #         # print("checking action", ac)
-            #         # for pac in st.past_actions:
-            #         # print("past action", pac)
-
-            #         if ac not in st.past_actions:
-            #             # print("revert", ac)
-            #             modified = True
-            #             st.network.merge(*ac.reverse_edge)
-            #             break
-            #     # print("-------")
-            #     if not modified:
-            #         break
-
-            # print(st.network)
             return self._round(st)
 
         ac = actions[0]
         assert isinstance(ac, OSplit)
-        # st = copy.deepcopy(st)
-        # if isinstance(st.network, TensorTrain):
-        #     st.network.fold(ac.indices)
-        # if isinstance(st.network, TensorTrain):
-        #     st = copy.deepcopy(st)
-        #     st.network, _ = st.network.swap(ac.indices)
-        # TODO: support ISplit later
+        # support ISplit later
         conflict_ac = get_conflicts(ac, to_splits(st.network))
         st = copy.deepcopy(st)
         while conflict_ac is not None:
@@ -305,7 +272,7 @@ class PartitionSearch(SearchAlgo):
 
     def replay(
         self,
-        actions: List[Action],
+        actions: Sequence[Action],
         first_iter: bool = False,
     ) -> SearchResult:
         """Apply the given actions around the given ranks."""
@@ -313,7 +280,7 @@ class PartitionSearch(SearchAlgo):
         self._data_tensor.replay_preprocess(actions)
         return self._replay_impl(st, actions, first_iter)
 
-    def rank_search(self, acs: List[Action]) -> Optional[SearchState]:
+    def rank_search(self, acs: Sequence[Action]) -> Optional[SearchState]:
         """Search for ranks for the given set of split actions."""
         empty_net = TreeNetwork()
         empty_net.add_node(
@@ -342,10 +309,11 @@ class PartitionSearch(SearchAlgo):
         """Precompute the pair of ranks and errors for the given data tensor"""
         logger.debug("computing singular valus for %s", self._data_tensor)
         if self._replay_from is not None:
-            ind_combs = [ac.indices for ac in self._replay_from]
+            ind_combs = (ac.indices for ac in self._replay_from)
         else:
-            indices = []
+            indices: List[Index] = []
             for mop in merge_ops:
+                assert mop.result is not None
                 indices.append(mop.result)
 
             for ind in self._data_tensor.free_indices():
@@ -369,7 +337,7 @@ class PartitionSearch(SearchAlgo):
                 continue
 
             # restore comb to the original indices
-            restored_comb = []
+            restored_comb: List[Index] = []
             for ind in comb:
                 found = False
                 for mop in merge_ops:
@@ -402,23 +370,16 @@ class PartitionSearch(SearchAlgo):
                 self.constraint_engine.temp_files,
             )
 
-    @profile
-    def search(
-        self,
-        merge_ops: Sequence[IndexMerge],
-        ind_splits: Sequence[IndexOp],
-        delta: Optional[float] = None,
-        exclusions: Optional[Sequence[Index]] = None,
-    ) -> SearchResult:
+    def search(self, context: SearchContext) -> SearchResult:
         """Start the search from a given network.
         Only support single core now.
         """
         result = SearchResult()
 
-        if delta is None:
+        if context.remaining_delta is None:
             self._delta = self._data_tensor.norm() * self.config.engine.eps
         else:
-            self._delta = delta
+            self._delta = context.remaining_delta
 
         # logger.debug(
         #     "delta: %s, data norm: %s", self._delta, self._data_tensor.norm()
@@ -431,11 +392,11 @@ class PartitionSearch(SearchAlgo):
                 "G", Tensor(np.empty(0), self._data_tensor.free_indices())
             )
             self._replay_from = self._random_actions(
-                empty_net, merge_ops, exclusions
+                empty_net, context.merge_ops, context.exclusions
             )
 
         preprocess_start = time.time()
-        self.preprocess(merge_ops, exclusions)
+        self.preprocess(context.merge_ops, context.exclusions)
         self.stats.preprocess_time = time.time() - preprocess_start
         self.stats.search_start = time.time()
 
@@ -461,7 +422,9 @@ class PartitionSearch(SearchAlgo):
             empty_net.add_node(
                 "G", Tensor(np.empty(0), self._data_tensor.free_indices())
             )
-            sts = self._enumerate(empty_net, merge_ops, exclusions)
+            sts = self._enumerate(
+                empty_net, context.merge_ops, context.exclusions
+            )
             search_res = self._top_k(sts)
 
         result = result.update_best_state(search_res)

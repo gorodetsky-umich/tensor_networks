@@ -1,17 +1,16 @@
 """Search algorithsm for tensor networks."""
 
 import copy
+import logging
 import time
 from abc import abstractmethod
-from typing import Optional, Sequence
-import logging
+from typing import List, Optional
 
 import numpy as np
 
 from pytens.algs import TreeNetwork
 from pytens.cross.func_interface import CachedFunc, TensorFunc
 from pytens.cross.runner import (
-    CrossRunner,
     HTCrossRunner,
     TTCrossRunner,
     TuckerCrossRunner,
@@ -30,10 +29,11 @@ from pytens.search.hierarchical.top_down import (
 )
 from pytens.search.hierarchical.types import (
     HSearchState,
-    ReplayTrace,
+    Replay,
     TopDownSearchResult,
 )
 from pytens.search.state import SearchState
+from pytens.search.types import SearchContext
 from pytens.search.utils import (
     SearchResult,
     approx_error,
@@ -49,14 +49,14 @@ logger.setLevel(logging.INFO)
 class SearchEngine:
     """Tensor network topology search engine."""
 
-    def __init__(self, config: SearchConfig):
+    def __init__(self, config: SearchConfig) -> None:
         self.config = config
 
-    def partition_search(self, data_tensor: TreeNetwork):
+    def partition_search(self, data_tensor: TreeNetwork) -> SearchResult:
         """Perform an search with output-directed splits + constraint solve."""
 
         engine = PartitionSearch(self.config, data_tensor)
-        result = engine.search([], [])
+        result: SearchResult = engine.search(SearchContext())
         assert result.best_state is not None
 
         free_indices = data_tensor.free_indices()
@@ -76,13 +76,6 @@ class SearchEngine:
             start_cost = data_tensor.cost()
         elif isinstance(data_tensor, TensorFunc):
             sizes = [ind.size for ind in data_tensor.indices]
-            # val_size = 10000
-            # validation = [np.random.randint(i, size=val_size) for i in sizes]
-            # validation = np.stack(validation, axis=-1)
-            # net_val = data_tensor(validation)
-            # best_val = result.best_state.network.evaluate(
-            #     result.best_state.network.free_indices(), validation
-            # )
             net_val = np.array(0)
             best_val = np.array(0)
             start_cost = np.prod(sizes)
@@ -95,10 +88,7 @@ class SearchEngine:
         result.stats.cr_start = float(start_cost / best_size)
         return result
 
-    def dfs(
-        self,
-        net: TreeNetwork,
-    ) -> SearchResult:
+    def dfs(self, net: TreeNetwork) -> SearchResult:
         """Perform an exhaustive enumeration with the DFS algorithm."""
 
         dfs_runner = DFSSearch(self.config)
@@ -114,12 +104,14 @@ class SearchEngine:
         best_cost = best_network.cost()
         result.stats.cr_core = unopt_size / best_cost
         result.stats.cr_start = net.cost() / best_cost
+
+        assert dfs_runner.target_tensor is not None
         err = approx_error(dfs_runner.target_tensor, best_network)
         result.stats.re_f = err
 
         return result
 
-    def bfs(self, net: TreeNetwork):
+    def bfs(self, net: TreeNetwork) -> SearchResult:
         """Perform an exhaustive enumeration with the BFS algorithm."""
 
         bfs_runner = BFSSearch(self.config)
@@ -132,6 +124,8 @@ class SearchEngine:
         unopt_size = np.prod([i.size for i in net.free_indices()])
         result.stats.cr_core = float(unopt_size) / best_network.cost()
         result.stats.cr_start = net.cost() / best_network.cost()
+
+        assert bfs_runner.target_tensor is not None
         err = approx_error(bfs_runner.target_tensor, best_network)
         result.stats.re_f = err
 
@@ -143,10 +137,10 @@ class TopDownSearchEngine(SearchEngine):
 
     def __init__(self, config: SearchConfig):
         super().__init__(config)
-        self._top_down_runner = TopDownSearch(config)
+        self._top_down_runner: TopDownSearch
 
     def top_down(
-        self, replay_traces: Optional[Sequence[ReplayTrace]] = None
+        self, replay_traces: Optional[List[Replay]] = None
     ) -> TopDownSearchResult:
         """Start point of a top down hierarchical search."""
         self._initialize()
@@ -174,31 +168,31 @@ class TopDownSearchEngine(SearchEngine):
         return result
 
     @abstractmethod
-    def _initialize(self):
+    def _initialize(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
     def _collect_stats(
         self, result: TopDownSearchResult, best_st: HSearchState
-    ):
+    ) -> None:
         raise NotImplementedError
 
 
 class WhiteBoxTopDownSearchEngine(TopDownSearchEngine):
     """Search engine for the white box tensors."""
 
-    def __init__(self, config, data_tensor: TreeNetwork):
+    def __init__(self, config: SearchConfig, data_tensor: TreeNetwork) -> None:
         super().__init__(config)
         self._data_tensor = data_tensor
 
-    def _initialize(self):
+    def _initialize(self) -> None:
         self._top_down_runner = WhiteBoxTopDownSearch(
             self.config, copy.deepcopy(self._data_tensor)
         )
 
     def _collect_stats(
         self, result: TopDownSearchResult, best_st: HSearchState
-    ):
+    ) -> None:
         free_indices = self._data_tensor.free_indices()
         best_network = best_st.network
         unopt_size = float(np.prod([i.size for i in free_indices]))
@@ -223,13 +217,16 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
     """Search engine for the black box functions."""
 
     def __init__(
-        self, config, data_tensor: CachedFunc, validation_set: np.ndarray
-    ):
+        self,
+        config: SearchConfig,
+        data_tensor: CachedFunc,
+        validation_set: np.ndarray,
+    ) -> None:
         super().__init__(config)
         self._data_tensor = data_tensor
         self._validation_set = validation_set
 
-    def _initialize(self):
+    def _initialize(self) -> None:
         top_down_runner = BlackBoxTopDownSearch(
             self.config, copy.deepcopy(self._data_tensor), self._validation_set
         )
@@ -238,53 +235,32 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
             InitStructType.TT: TTCrossRunner(),
             InitStructType.HT: HTCrossRunner(),
             InitStructType.TUCKER: TuckerCrossRunner(),
-        }.get(self.config.cross.init_struct, CrossRunner())
+        }.get(self.config.cross.init_struct)
+        assert cross_runner is not None, (
+            f"Unknown init struct: {self.config.cross.init_struct}"
+        )
 
         top_down_runner.set_cross_runner(cross_runner)
         self._top_down_runner = top_down_runner
 
     def _collect_stats(
         self, result: TopDownSearchResult, best_st: HSearchState
-    ):
+    ) -> None:
         best_network = best_st.network
         logger.debug("result best network %s", best_network)
         free_indices = self._data_tensor.indices
         unopt_size = float(np.prod([i.size for i in free_indices]))
         init_size = unopt_size
 
-        # valid = []
-        # for ind in free_indices:
-        #     valid.append(np.random.randint(0, ind.size, size=sample_size))
-        # valid = np.stack(valid, axis=-1)
+        data_val = self._data_tensor(self._validation_set)
 
-        if self._validation_set is None:
-            data_tensor = self._data_tensor.net.contract()
-            data_val = data_tensor.value
-            free_indices = data_tensor.indices
-            new_inds, new_valid = unravel_indices(
-                best_st.reshape_history,
-                free_indices,
-                np.array([[0] * len(free_indices)]),
-            )
-            best_indices = best_network.free_indices()
-            perm = [best_indices.index(ind) for ind in new_inds]
-            approx_val = (
-                best_network.contract()
-                .value.transpose(perm)
-                .reshape(44800, 64, 128)
-            )
-        else:
-            data_val = self._data_tensor(self._validation_set)
-
-            logger.debug("reshape history: %s", best_st.reshape_history)
-            new_inds, new_valid = unravel_indices(
-                best_st.reshape_history, free_indices, self._validation_set
-            )
-            best_indices = best_network.free_indices()
-            perm = [new_inds.index(ind) for ind in best_indices]
-            approx_val = best_network.evaluate(
-                best_indices, new_valid[:, perm]
-            )
+        logger.debug("reshape history: %s", best_st.reshape_history)
+        new_inds, new_valid = unravel_indices(
+            best_st.reshape_history, free_indices, self._validation_set
+        )
+        best_indices = best_network.free_indices()
+        perm = [new_inds.index(ind) for ind in best_indices]
+        approx_val = best_network.evaluate(best_indices, new_valid[:, perm])
 
         result.valid_set = self._validation_set
         result.valid_indices = best_indices

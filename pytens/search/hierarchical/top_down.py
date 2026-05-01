@@ -14,13 +14,11 @@ import random
 import time
 from abc import abstractmethod
 from functools import partial
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Set
 
 import networkx as nx
 import numpy as np
 import sympy
-from line_profiler import profile
 
 from pytens.algs import Tensor, TreeNetwork
 from pytens.tt import TensorTrain
@@ -36,15 +34,16 @@ from pytens.search.configuration import (
 from pytens.search.hierarchical.error_dist import BaseErrorDist
 from pytens.search.hierarchical.index_cluster import (
     CrossIndexCluster,
+    IndexCluster,
     RandomIndexCluster,
     SVDIndexCluster,
-    SVDNbrIndexCluster,
     eff_rank,
 )
 from pytens.search.hierarchical.types import (
     HSearchState,
     IndexSplitResult,
     PartitionSearchInput,
+    Replay,
     ReplaySweep,
     ReplayTrace,
     SubnetResult,
@@ -72,20 +71,12 @@ from pytens.types import (
     IndexPermute,
     IndexSplit,
     NodeName,
+    SVDParams,
 )
+from pytens.search.types import SearchContext
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-@dataclass
-class SearchContext:
-    """Context passed into a search call: delta budget, splits, and flags."""
-
-    remaining_delta: float = 0.0
-    splits: Sequence[IndexOp] = field(default_factory=list)
-    is_top: bool = False
-    exclusions: Optional[Sequence[Index]] = None
 
 
 def _permute_unique(nums: List[int]) -> Sequence[Tuple[int, ...]]:
@@ -136,7 +127,7 @@ def _select_factors(
     factors_flat = [x for x, c in factors.items() for _ in range(c)]
     # partition the list into splits_allowed groups
     seen = set()
-    results = []
+    results: List[Sequence[int]] = []
     for factors_perm in _permute_unique(factors_flat):
         for chunks in _split_into_chunks(
             factors_perm, min(budget + 1, len(factors_perm))
@@ -163,32 +154,17 @@ def _create_split_target(
     return list(selected_factors) + [remaining_size]
 
 
-def _merge_ops_from_index_groups(index_sets):
-    merge_ops, split_ops = [], []
-    for m_indices in index_sets:
-        if len(m_indices) < 2:
-            continue
-
-        m_shape = [ind.size for ind in m_indices]
-        m_ind_size = int(np.prod(m_shape, dtype=int))
-        m_ind = Index("_".join(str(ind.name) for ind in m_indices), m_ind_size)
-
-        merge_op = IndexMerge(indices=m_indices, result=m_ind)
-        merge_ops.append(merge_op)
-
-        split_op = IndexSplit(index=m_ind, shape=m_shape, result=m_indices)
-        split_ops.append(split_op)
-
-    return merge_ops, split_ops
-
-
-def _index_to_end_distance(net: TreeNetwork, end: NodeName, index: Index):
+def _index_to_end_distance(
+    net: TreeNetwork, end: NodeName, index: Index
+) -> int:
     """Compute the distance between the end node and the given index"""
     index_node = net.node_by_free_index(index.name)
     return net.distance(end, index_node)
 
 
-def _merge_op_dist(net: TreeNetwork, end: NodeName, merge_op: IndexMerge):
+def _merge_op_dist(
+    net: TreeNetwork, end: NodeName, merge_op: IndexMerge
+) -> float:
     """sort the merge ops according to their positions."""
 
     dist = 0
@@ -198,12 +174,14 @@ def _merge_op_dist(net: TreeNetwork, end: NodeName, merge_op: IndexMerge):
     return dist / len(merge_op.indices)
 
 
-def _rename_data_tensor(st: HSearchState, data_tensor: TreeNetwork):
+def _rename_data_tensor(
+    st: HSearchState, data_tensor: TreeNetwork
+) -> Tuple[Dict[IndexName, IndexName], Dict[IndexName, IndexName]]:
     # we pick the node with the smallest free index as the root
-    def split_name(ind: Index):
+    def split_name(ind: Index) -> Tuple[bool, int, str, int]:
         segments = str(ind.name).split("_")
         if len(segments) < 2:
-            return (ind not in st.free_indices, ind.size, segments[0])
+            return (ind not in st.free_indices, ind.size, segments[0], 0)
 
         return (
             ind not in st.free_indices,
@@ -256,7 +234,9 @@ def _rename_data_tensor(st: HSearchState, data_tensor: TreeNetwork):
     return ind_map, reverse_map
 
 
-def _apply_renaming(st: HSearchState, reverse_map: Dict[IndexName, IndexName]):
+def _apply_renaming(
+    st: HSearchState, reverse_map: Dict[IndexName, IndexName]
+) -> None:
     # revert the renaming
     data_tensor = st.network
     for n in data_tensor.network.nodes:
@@ -293,6 +273,7 @@ def _split_scores(st: HSearchState, index: Index) -> Dict[int, float]:
         # get indices on one side of the node
         nbrs = list(tmp_net.network.neighbors(node))
 
+        linds: List[Index]
         if not nbrs:
             linds, rinds = [], tmp_net.free_indices()
         else:
@@ -315,7 +296,9 @@ def _split_scores(st: HSearchState, index: Index) -> Dict[int, float]:
         target_inds.append(lres)
 
         max_rank = 100
-        s = tmp_net.random_svals(node, target_inds, max_rank=max_rank)
+        s = tmp_net.random_svals(
+            node, target_inds, SVDParams(max_rank=max_rank)
+        )
         split_scores[n] = eff_rank(s)  # s[0] / s[min(len(s), 1)]
         logger.debug(
             "target indices %s with size %s has score %s",
@@ -344,7 +327,7 @@ class TopDownSearch:
         self.init_splits = 0
         self._cluster = self.set_cluster()
 
-    def set_cluster(self):
+    def set_cluster(self) -> IndexCluster:
         """Set the index clustering method."""
         threshold = self.config.topdown.group_threshold
         cluster_method = {
@@ -352,7 +335,6 @@ class TopDownSearch:
             ClusterMethod.RAND: RandomIndexCluster(threshold),
             ClusterMethod.NBR: RandomIndexCluster(threshold, False),
             ClusterMethod.RAND_NBR: RandomIndexCluster(threshold, False),
-            ClusterMethod.SVD_NBR: SVDNbrIndexCluster(threshold),
             ClusterMethod.CROSS: CrossIndexCluster(
                 threshold, self.config.engine.eps * 0.1
             ),
@@ -363,12 +345,11 @@ class TopDownSearch:
         )
         return cluster_method
 
-    @profile
     def search(
         self,
         delta: Optional[float] = None,
         free_indices: Optional[List[Index]] = None,
-        replay_traces: Optional[List[ReplayTrace]] = None,
+        replay_traces: Optional[List[Replay]] = None,
     ) -> HSearchState:
         """Perform the topdown search starting from the given net"""
         net, splits = self._initialize()
@@ -388,7 +369,10 @@ class TopDownSearch:
         else:
             init_st.replay_traces = [ReplayTrace(0, [], [], [], [])]
 
-        st = self._search(init_st, SearchContext(delta, splits, True))
+        st: HSearchState = self._search(
+            init_st,
+            SearchContext(remaining_delta=delta, splits=splits, is_top=True),
+        )
 
         # best_st = init_st
         best_net = None
@@ -405,10 +389,8 @@ class TopDownSearch:
                 best_net = network
 
         logger.debug("obtained rounded network %s", best_net)
-        # st.network = best_net
+        assert best_net is not None
         st.network = best_net.compress()
-        # logger.debug("after compression the network becomes %s", st.network)
-        # print(st.replay_traces)
         logger.debug("=======")
         return st
 
@@ -425,7 +407,9 @@ class TopDownSearch:
             and ind_cnt > self.config.topdown.group_threshold
         )
 
-    def _revert_splits(self, splits: Sequence[IndexOp], bn: TreeNetwork):
+    def _revert_splits(
+        self, splits: Sequence[IndexOp], bn: TreeNetwork
+    ) -> None:
         # revert the splits
         # print(bn)
         tmp_net = TreeNetwork()
@@ -462,7 +446,7 @@ class TopDownSearch:
         merges: List[IndexMerge],
         splits: Sequence[IndexOp],
         net: TreeNetwork,
-    ):
+    ) -> None:
         for split_op in splits:
             if not isinstance(split_op, IndexSplit):
                 continue
@@ -499,9 +483,6 @@ class TopDownSearch:
         """Handle index merging during preprocessing for cross results."""
         transform_start = time.time()
 
-        # if not isinstance(data_tensor, TensorTrain):
-        #     return True, data_tensor
-
         # after we know how indices are merged, we create a permuted function
         new_indices = []
 
@@ -525,21 +506,6 @@ class TopDownSearch:
         # print("reorder the indices into", new_indices)
 
         reorder_start = time.time()
-        # if self.config.preprocess.reorder_algo == ReorderAlgo.SVD:
-        #     ok = True
-        #     tt = data_tensor.reorder_by_svd(
-        #         new_indices,
-        #         self.config.engine.eps
-        #         * self.config.preprocess.reorder_eps
-        #         * 0.01,
-        #     )
-        # else:
-        # can we use cheaper computations?
-        # ok, tt = data_tensor.reorder_by_cross(
-        #     new_indices,
-        #     self.config.engine.eps * self.config.preprocess.reorder_eps,
-        #     kickrank=5,
-        # )
         ok = True
         # random sample points and evaluate the middle effective ranks
         # sample a total of 10000 points
@@ -563,7 +529,7 @@ class TopDownSearch:
         score = eff_rank(s)
         logger.debug("score for %s is %s", merge_ops, score)
         tt = TreeNetwork()
-        tt.add_node("G", Tensor(np.empty(0), [Index("I", score)]))
+        tt.add_node("G", Tensor(np.empty(0), [Index("I", int(score))]))
 
         logger.debug("reorder time: %s", time.time() - reorder_start)
         logger.debug("after reordering")
@@ -573,13 +539,13 @@ class TopDownSearch:
         self.stats.merge_transform_time = time.time() - transform_start
         return ok, tt
 
-    @profile
     def _search(
         self,
         st: HSearchState,
         ctx: SearchContext = SearchContext(),
     ) -> HSearchState:
         remaining_delta = ctx.remaining_delta
+        assert remaining_delta is not None, "Remaining delta must be specified"
         splits = ctx.splits
         is_top = ctx.is_top
         exclusions = ctx.exclusions
@@ -617,12 +583,17 @@ class TopDownSearch:
             return self._search_via_sweep(st, delta, reverse_map)
 
         logger.debug("after sweeping, get the net %s", st.network)
-        tmp_st, merge_ops, split_ops = self._to_lower_dim(st, splits, is_top)
+        merge_ops, split_ops = self._to_lower_dim(st, splits, is_top)
         logger.debug("select merge operations: %s", merge_ops)
         tmp_st = st
         search_engine = self._build_search_engine(tmp_st, ind_map, exclusions)
         result = search_engine.search(
-            copy.deepcopy(merge_ops), splits, delta, exclusions
+            SearchContext(
+                splits=splits,
+                merge_ops=copy.deepcopy(merge_ops),
+                remaining_delta=delta,
+                exclusions=exclusions,
+            ),
         )
         if self.config.synthesizer.replay_from is not None:
             assert result.best_state is not None
@@ -675,7 +646,7 @@ class TopDownSearch:
         self,
         tmp_st: HSearchState,
         ind_map: dict,
-        exclusions,
+        exclusions: Optional[Sequence[Index]],
     ) -> "PartitionSearch":
         """Build a PartitionSearch engine, replaying actions if needed."""
         if self.config.synthesizer.replay_from is None:
@@ -683,6 +654,7 @@ class TopDownSearch:
 
         logger.debug("popping out the trace %s", tmp_st.replay_traces[0])
         trace = tmp_st.replay_traces.pop(0)
+        assert isinstance(trace, ReplayTrace)
         logger.debug("remaining traces: %s", tmp_st.replay_traces)
         acs = trace.actions
         logger.debug("replaying actions %s", [str(ac) for ac in acs])
@@ -723,6 +695,7 @@ class TopDownSearch:
         del tmp_bn
 
         if self.config.synthesizer.replay_from is None:
+            assert isinstance(tmp_st.replay_traces[0], ReplayTrace)
             tmp_st.replay_traces[0].merge_ops = inp.merge_ops
             tmp_st.replay_traces[0].split_ops = inp.split_ops
             acs = to_splits(bn)
@@ -760,7 +733,6 @@ class TopDownSearch:
         best_st.network = best_st.network.compress()
         return best_st
 
-    @profile
     def _preprocess(self, net: TreeNetwork) -> TreeNetwork:
         return net
 
@@ -774,7 +746,7 @@ class TopDownSearch:
 
         subnets = []
 
-        def _group_size(xs):
+        def _group_size(xs: List[NodeName]) -> Tuple[int, List[Index]]:
             # it is safer if we sort by free indices
             free_inds = []
             ind_size = 1
@@ -857,18 +829,19 @@ class TopDownSearch:
 
     def _to_lower_dim(
         self, st: HSearchState, splits: Sequence[IndexOp], is_top: bool
-    ):
+    ) -> Tuple[Sequence[IndexMerge], Sequence[IndexSplit]]:
         merge_start = time.time()
 
         if not self._trigger_merge(len(st.network.free_indices()), is_top):
-            return (copy.deepcopy(st), [], [])
+            return ([], [])
 
         if self.config.synthesizer.replay_from is not None:
             logger.debug("extracting the trace %s", st.replay_traces[0])
             trace = st.replay_traces[0]
+            assert isinstance(trace, ReplayTrace)
             merge_ops = trace.merge_ops
             split_ops = trace.split_ops
-            return (st, merge_ops, split_ops)
+            return (merge_ops, split_ops)
 
         tts = []
         for index_sets in self._cluster.cluster(st.network, splits):
@@ -891,22 +864,16 @@ class TopDownSearch:
                 )
                 split_ops.append(split_op)
 
-            # if len(st.network.network.nodes) == 1:
-            #     yield (copy.deepcopy(st), merge_ops, split_ops)
-            #     continue
-
             ok, tt = self._cross_to_tt(
                 copy.deepcopy(st.network), merge_ops, splits
             )
             logger.debug("after index merge, we get a tensor train %s", tt)
             if ok:
-                # tmp_st = copy.deepcopy(st)
-                # tmp_st.network = tt
                 tts.append((tt, merge_ops, split_ops))
 
         tts.sort(key=lambda x: x[0].cost())
         self.stats.merge_time += time.time() - merge_start
-        return tts[0]
+        return tts[0][1:]
 
     @abstractmethod
     def _optimize_node(
@@ -925,10 +892,11 @@ class TopDownSearch:
             return [IndexSplitResult(st, [])]
 
         if self.config.synthesizer.replay_from is not None:
+            assert isinstance(st.replay_traces[0], ReplayTrace)
             logger.debug(
                 "replaying index splits: %s", st.replay_traces[0].splits
             )
-            index_splits = [st.replay_traces[0].splits]
+            index_splits = [list(st.replay_traces[0].splits)]
         else:
             index_splits = self._split_indices_on_budget(
                 st, indices, compute_data
@@ -982,7 +950,7 @@ class TopDownSearch:
             else:
                 maxs.append(0)
 
-        all_splits = []
+        all_splits: List[List[IndexSplit]] = []
         if self.config.topdown.reshape_algo == ReshapeOption.ENUMERATE:
             budget = self.config.topdown.group_threshold - len(indices)
             budget = min(sum(maxs), budget)  # exhaust the budget as possible
@@ -996,7 +964,9 @@ class TopDownSearch:
                     if len(ind_splits) != 0:
                         splits.append(ind_splits)
 
-                all_splits.extend(list(itertools.product(*splits)))
+                all_splits.extend(
+                    list(combo) for combo in itertools.product(*splits)
+                )
 
             return all_splits
 
@@ -1010,7 +980,9 @@ class TopDownSearch:
                 if len(ind_splits) != 0:
                     splits.append(ind_splits)
 
-            all_splits.extend(list(itertools.product(*splits)))
+            all_splits.extend(
+                list(combo) for combo in itertools.product(*splits)
+            )
 
         return all_splits
 
@@ -1024,7 +996,7 @@ class TopDownSearch:
         if index not in st.free_indices or budget <= 0:
             return []
 
-        res = sympy.factorint(index.size)
+        res: Dict[int, int] = sympy.factorint(index.size)
         factors = [i for i, n in res.items() for _ in range(n)]
         if len(factors) == 1:
             return []
@@ -1032,7 +1004,7 @@ class TopDownSearch:
         if self.config.topdown.reshape_algo == ReshapeOption.RANDOM:
             k = np.random.randint(0, len(factors))
             selected = random.sample(factors, k=k)
-            shape = _create_split_target(factors, selected)
+            shape: Sequence[int] = _create_split_target(factors, selected)
             return [IndexSplit(index=index, shape=tuple(shape))]
 
         if compute_data:
@@ -1040,7 +1012,7 @@ class TopDownSearch:
             scores = _split_scores(st, index)
             # we always try our best to decompose the indices to
             # the maximum number and they subsume higher level reshapes
-            shape_with_scores = set()
+            shape_set: Set[Tuple[float, Sequence[int]]] = set()
             for shape in _select_factors(res, 3):
                 logger.debug("computing scores for shape %s", shape)
                 # Calculate cumulative product sizes and sum their scores
@@ -1049,23 +1021,10 @@ class TopDownSearch:
                 )
                 # transform the shape such that the low scores are excluded
                 cumulative_score = [scores[size] for size in cumulative_sizes]
-                # pos = 0
-                # while pos < len(shape) - 1:
-                #     if cumulative_score[pos] < 2:
-                #         shape = (
-                #             tuple(shape[:pos])
-                #             + (shape[pos] * shape[pos + 1],)
-                #             + tuple(shape[pos + 2 :])
-                #         )
-                #         cumulative_score.pop(pos)
-                #     else:
-                #         pos += 1
-
-                # print(shape)
 
                 assert len(cumulative_score) + 1 == len(shape)
                 # compute the score as a tensor train
-                score = 0
+                score = 0.0
                 for i, cs in enumerate(cumulative_score):
                     if i == 0:
                         node = st.network.node_by_free_index(index.name)
@@ -1080,11 +1039,10 @@ class TopDownSearch:
                         score += shape[i] * cs * cumulative_score[i - 1]
 
                 score += shape[-1] * cumulative_score[-1]
-                # score = sum(cumulative_score)
                 logger.debug("get score for shape %s: %s", shape, score)
-                shape_with_scores.add((score, shape))
+                shape_set.add((score, shape))
 
-            shape_with_scores = list(shape_with_scores)
+            shape_with_scores = list(shape_set)
             shape_with_scores.sort(reverse=False)
         else:
             shape_with_scores = [
@@ -1187,14 +1145,13 @@ class BlackBoxTopDownSearch(TopDownSearch):
     ):
         super().__init__(config)
         self.data_tensor = data_tensor
-        self._cross_runner = CrossRunner()
+        self._cross_runner: CrossRunner
         self._validation_set = validation_set
 
-    def set_cross_runner(self, runner: CrossRunner):
+    def set_cross_runner(self, runner: CrossRunner) -> None:
         """Modify the cross approximation algorithm."""
         self._cross_runner = runner
 
-    @profile
     def _initialize(self) -> Tuple[TreeNetwork, List[IndexOp]]:
         # we run index split to split as many as possible
         splits, f = self._gen_split_func(self.data_tensor)
@@ -1223,7 +1180,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
         self, data_tensor: CachedFunc
     ) -> Tuple[List[IndexOp], TensorFunc]:
         free_indices = data_tensor.indices
-        splits = []
+        splits: List[IndexOp] = []
 
         if not self.config.cross.init_reshape:
             return splits, data_tensor
@@ -1246,8 +1203,11 @@ class BlackBoxTopDownSearch(TopDownSearch):
         split_indices = list(st.network.free_indices())
         split_f = split_func(data_tensor, split_indices, splits)
 
+        perm_f: TensorFunc
         if self.config.topdown.cluster_method == ClusterMethod.RAND_NBR:
-            split_f = self._rand_permute_indices(splits, split_f)
+            perm_f = self._rand_permute_indices(splits, split_f)
+        else:
+            perm_f = split_f
 
         self.init_splits = len(splits)
 
@@ -1255,24 +1215,21 @@ class BlackBoxTopDownSearch(TopDownSearch):
         new_indices, self._validation_set = unravel_indices(
             splits, free_indices, self._validation_set
         )
-        perm = [new_indices.index(ind) for ind in split_f.indices]
+        perm = [new_indices.index(ind) for ind in perm_f.indices]
         self._validation_set = self._validation_set[:, perm]
-        return splits, split_f
+        return splits, perm_f
 
     def _rand_permute_indices(
         self, splits: List[IndexOp], split_f: TensorFunc
-    ) -> TensorFunc:
+    ) -> PermuteFunc:
         # randomly permute the indices of f
         perm = list(range(len(split_f.indices)))
         random.shuffle(perm)
         perm_indices = [split_f.indices[i] for i in perm]
-        unperm = np.argsort(perm)
-        splits.append(
-            IndexPermute(perm=tuple(perm), unperm=tuple(unperm.tolist()))
-        )
+        unperm = np.argsort(perm).tolist()
+        splits.append(IndexPermute(perm=tuple(perm), unperm=tuple(unperm)))
         return PermuteFunc(perm_indices, split_f, unperm)
 
-    @profile
     def _run_init_cross(
         self,
         data_tensor: CachedFunc,
@@ -1292,6 +1249,7 @@ class BlackBoxTopDownSearch(TopDownSearch):
                 assert isinstance(data_tensor.net, TreeNetwork)
                 return copy.deepcopy(data_tensor.net)
 
+        net: TreeNetwork
         if self.config.cross.use_input_net and os.path.exists(cross_res_file):
             with open(cross_res_file, "rb") as cross_reader:
                 net = pickle.load(cross_reader)
@@ -1391,16 +1349,16 @@ class StructureSweep:
         self,
         config: SearchConfig,
         data_tensor: TreeNetwork,
-        free_indices: Sequence[Index],
+        free_indices: List[Index],
     ):
         self.config = config
         self.free_indices = free_indices
-        self.reshape_history = []
+        self.reshape_history: List[IndexOp] = []
 
         self._data_tensor = data_tensor
-        self._node_visited = defaultdict(int)
+        self._node_visited: Dict[NodeName, int] = defaultdict(int)
 
-        self.traces = []
+        self.traces: List[Replay] = []
 
     @abstractmethod
     def _get_local_structure(self) -> TreeNetwork:
@@ -1467,11 +1425,12 @@ class StructureSweep:
         search_engine.set_cross_runner(TTCrossRunner())
         search_engine.set_cluster()
 
-        traces = (
-            None
-            if self.config.synthesizer.replay_from is None
-            else self.traces.pop(0).traces
-        )
+        traces: Optional[List[Replay]] = None
+        if self.config.synthesizer.replay_from is not None:
+            sweep_traces = self.traces.pop(0)
+            assert isinstance(sweep_traces, ReplaySweep)
+            traces = list(sweep_traces.traces)
+
         result = search_engine.search(
             step_delta, self.free_indices, replay_traces=traces
         )
@@ -1480,15 +1439,20 @@ class StructureSweep:
             shutil.rmtree(config.output.output_dir)
 
         total_result.stats.merge(search_engine.stats)
-        improved = (
+        if (
             self.config.synthesizer.replay_from is not None
             or result.network.cost() < local_struct.cost()
-        )
-        if improved:
+        ):
             return self._apply_sweep_result(indices, local_struct, result)
+
         return step_delta**2
 
-    def _apply_sweep_result(self, indices, local_struct, result) -> float:
+    def _apply_sweep_result(
+        self,
+        indices: Sequence[Index],
+        local_struct: TreeNetwork,
+        result: HSearchState,
+    ) -> float:
         """
         Apply an improved sweep result to the data tensor;
         return squared unused delta.
@@ -1522,7 +1486,7 @@ class StructureSweep:
         return result.unused_delta**2
 
     @property
-    def data_tensor(self):
+    def data_tensor(self) -> TreeNetwork:
         """Get the modified data tensor."""
         return self._data_tensor
 
@@ -1534,13 +1498,16 @@ class RandomStructureSweep(StructureSweep):
         """Randomly select a local structure"""
         if self.config.synthesizer.replay_from is not None:
             nodes = []
+            assert isinstance(self.traces[0], ReplaySweep)
             for ind in self.traces[0].indices:
                 node = self._data_tensor.node_by_free_index(ind.name)
                 nodes.append(node)
         else:
-            nodes = self._sample_subnet_nodes()
-            if nodes is None:
+            mb_nodes = self._sample_subnet_nodes()
+            if mb_nodes is None:
                 return copy.deepcopy(self._data_tensor)
+
+            nodes = list(mb_nodes)
 
         local_tree = TreeNetwork()
         for n in nodes:
@@ -1551,7 +1518,7 @@ class RandomStructureSweep(StructureSweep):
                     local_tree.add_edge(n, m)
         return local_tree
 
-    def _sample_subnet_nodes(self):
+    def _sample_subnet_nodes(self) -> Optional[Sequence[NodeName]]:
         """
         Sample a connected subnet;
         return None when the whole network fits.
@@ -1594,16 +1561,17 @@ class TraversalStructureSweep(StructureSweep):
         self,
         config: SearchConfig,
         data_tensor: TreeNetwork,
-        free_indices: Sequence[Index],
+        free_indices: List[Index],
     ):
         super().__init__(config, data_tensor, free_indices)
 
         # record visited index pairs
-        self._visited_edges = set()
+        self._visited_es: Set[Tuple[Sequence[Index], Sequence[Index]]] = set()
 
         icount = data_tensor.all_indices()
         inner_indices = [i for i, v in icount.items() if v == 2]
 
+        self._next_edge: Optional[Index]
         if inner_indices:
             self._next_edge = inner_indices[0]
         else:
@@ -1626,7 +1594,7 @@ class TraversalStructureSweep(StructureSweep):
 
         u, v = next_nodes[0], next_nodes[1]
         u_inds, v_inds = index_partition(self._data_tensor, u, v)
-        self._visited_edges.add((tuple(u_inds), tuple(v_inds)))
+        self._visited_es.add((tuple(u_inds), tuple(v_inds)))
 
         u_nbrs = list(self._data_tensor.network.neighbors(u))
         u_nbrs.remove(v)
@@ -1656,7 +1624,7 @@ class TraversalStructureSweep(StructureSweep):
             assert len(nodes) == 2
             l_inds, r_inds = index_partition(self._data_tensor, *nodes)
             inds_parts = (tuple(l_inds), tuple(r_inds))
-            if inds_parts not in self._visited_edges:
+            if inds_parts not in self._visited_es:
                 self._next_edge = ind
                 break
 

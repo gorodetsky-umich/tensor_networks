@@ -1,11 +1,11 @@
 """Utility functions for hierarchical search"""
 
-from typing import List, Literal, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Sequence, Tuple, Set
 from collections import defaultdict
 
 import numpy as np
 
-from pytens.types import IndexSplit, Index
+from pytens.types import IndexOp, IndexSplit, Index
 from pytens.cross.func_interface import TensorFunc
 from pytens.cross.func_impl import SplitFunc
 
@@ -13,11 +13,11 @@ from pytens.cross.func_impl import SplitFunc
 class DisjointSet:
     """A disjoint-set (union-find) data structure."""
 
-    def __init__(self):
-        self.parent = {}
-        self.elems = set()
+    def __init__(self) -> None:
+        self.parent: Dict[Any, Any] = {}
+        self.elems: Set[Any] = set()
 
-    def find(self, i):
+    def find(self, i: Any) -> Any:
         """Find the root representative of element i with path compression."""
         if i not in self.parent:
             return i
@@ -25,7 +25,7 @@ class DisjointSet:
         self.parent[i] = self.find(self.parent[i])  # Path compression
         return self.parent[i]
 
-    def union(self, i, j):
+    def union(self, i: Any, j: Any) -> bool:
         """
         Union the sets containing i and j;
         return True if they were disjoint.
@@ -41,7 +41,7 @@ class DisjointSet:
             return True
         return False  # Already in the same set
 
-    def groups(self):
+    def groups(self) -> Dict[Any, List[Any]]:
         """Return the mapping from each root to its members."""
         groups = defaultdict(list)
 
@@ -64,13 +64,13 @@ def corr(
         return float(-np.mean(np.abs(corr_res)))
 
     if agg == "det":
-        return np.linalg.det(corr_res)
+        return float(np.linalg.det(corr_res))
 
     if agg == "norm":
         return float(np.linalg.norm(corr_res))
 
     if agg == "sval":
-        return np.linalg.svdvals(corr_res)[0]
+        return float(np.linalg.svdvals(corr_res)[0])
 
     raise ValueError("unknown aggregation method")
 
@@ -78,12 +78,13 @@ def corr(
 def split_func(
     old_func: TensorFunc,
     free_indices: Sequence[Index],
-    split_ops: Sequence[IndexSplit],
+    split_ops: Sequence[IndexOp],
 ) -> SplitFunc:
     """Get the tensor function for the sequence of split operations."""
     old_free = old_func.indices
-    var_mapping = {}
+    var_mapping: Dict[int, Tuple[Sequence[int], Sequence[int]]] = {}
     for split_op in split_ops:
+        assert isinstance(split_op, IndexSplit)
         split_out = split_op.result
         if split_out is None:
             continue
@@ -96,7 +97,7 @@ def split_func(
         before_split = old_free.index(split_op.index)
         var_mapping[before_split] = (split_inds, split_sizes)
 
-    return SplitFunc(free_indices, old_func, var_mapping)
+    return SplitFunc(list(free_indices), old_func, var_mapping)
 
 
 def build_bipartite_sample(

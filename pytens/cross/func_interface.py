@@ -91,7 +91,7 @@ class TensorFunc:
         return self.indices
 
     @abstractmethod
-    def run(self, args: np.ndarray):
+    def run(self, args: np.ndarray) -> np.ndarray:
         """Evaluate the function for a batch of vectorized arguments.
 
         Implementations should accept a 2D array of shape ``(n, d)`` and return
@@ -99,7 +99,7 @@ class TensorFunc:
         """
         raise NotImplementedError
 
-    def __call__(self, indices: np.ndarray):
+    def __call__(self, indices: np.ndarray) -> np.ndarray:
         # print("recording", indices.shape[0])
         args = self.index_to_args(indices)
         return self.run(args)

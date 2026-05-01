@@ -1,8 +1,9 @@
 """Type definitions for hierarchical search"""
 
 from dataclasses import dataclass, field as dataclass_field
-from typing import List, Sequence, Self
+from typing import List, Optional, Sequence, Self, Union
 import copy
+from pytens.search.state import SearchState
 from pytens.search.types import Action
 from pytens.search.utils import SearchResult, SearchStats
 from pytens.algs import TreeNetwork
@@ -23,7 +24,7 @@ class HSearchState:
         self.reshape_history = reshape_history
         self.network = network
         self.unused_delta = unused_delta
-        self.replay_traces = []
+        self.replay_traces: List[Replay] = []
         self.level = 0
 
     # After the cross, we do the normal but the data tensor is a tensor
@@ -81,14 +82,14 @@ class TopDownSearchResult(SearchResult):
     """Result for top-down hierarchical tensor network search."""
 
     stats: SearchStats = dataclass_field(default_factory=SearchStats)
-    best_state: object = None
+    best_state: Optional[SearchState] = None
     unused_delta: float = 0.0
     init_splits: int = 0
     valid_set: object = None
     valid_indices: object = None
     reshape_history: object = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         SearchResult.__init__(
             self, self.stats, self.best_state, self.unused_delta
         )
@@ -155,4 +156,7 @@ class ReplaySweep:
     """A sweep of replay traces over a set of indices."""
 
     indices: Sequence[Index]
-    traces: Sequence[ReplayTrace]
+    traces: Sequence["Replay"]
+
+
+Replay = Union[ReplayTrace, ReplaySweep]

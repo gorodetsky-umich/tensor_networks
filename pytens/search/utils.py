@@ -2,7 +2,17 @@
 
 import os
 import random
-from typing import Dict, List, Literal, Optional, Self, Sequence, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Self,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 import pydantic
@@ -12,7 +22,10 @@ from pytens.tt import TensorTrain
 
 from pytens.cross.func_interface import CachedFunc, TensorFunc
 from pytens.search.state import OSplit, SearchState
-from pytens.types import Index, IndexMerge, IndexSplit, NodeName
+from pytens.types import Index, IndexMerge, IndexOp, IndexSplit, NodeName
+
+if TYPE_CHECKING:
+    from pytens.search.hierarchical.types import Replay
 
 DataTensor = Union[TreeNetwork, CachedFunc]
 
@@ -42,7 +55,7 @@ class SearchStats(pydantic.BaseModel):
     init_cross_size: int = 0
     search_cross_evals: int = 0
 
-    def incr_unique(self, key: int):
+    def incr_unique(self, key: int) -> None:
         """Increment the unique counter."""
         self.unique[key] = self.unique.get(key, 0) + 1
 
@@ -60,14 +73,14 @@ class SearchResult:
 
     def __init__(
         self,
-        stats=SearchStats(),
-        best_state=None,
-        unused_delta=0.0,
+        stats: SearchStats = SearchStats(),
+        best_state: Optional[SearchState] = None,
+        unused_delta: float = 0.0,
     ):
         self.stats = stats
         self.best_state = best_state
         self.unused_delta = unused_delta
-        self.replay_traces = []
+        self.replay_traces: List[Replay] = []
 
     def __lt__(self, other: Self) -> bool:
         if self.best_state is None:
@@ -117,7 +130,7 @@ def log_stats(
     ts: float,
     st: SearchState,
     bn: TreeNetwork,
-):
+) -> None:
     """Log statistics of a given state."""
     search_stats.ops.append((ts, len(st.past_actions)))
     search_stats.costs.append((ts, st.network.cost()))
@@ -151,7 +164,7 @@ def rtol(
     raise ValueError("unsupported norm type")
 
 
-def remove_temp_dir(temp_dir, temp_files):
+def remove_temp_dir(temp_dir: str, temp_files: List[str]) -> None:
     """Remove temporary npz files"""
     try:
         for temp_file in temp_files:
@@ -164,10 +177,13 @@ def remove_temp_dir(temp_dir, temp_files):
         pass
 
 
-def reshape_indices(reshape_ops, indices, data):
+def reshape_indices(
+    reshape_ops: List[IndexOp], indices: List[Index], data: np.ndarray
+) -> Tuple[List[Index], np.ndarray]:
     """Reshape the data tensor according to the operations."""
     for reshape_op in reshape_ops:
-        new_indices = []
+        new_indices: List[Index] = []
+        assert isinstance(reshape_op, (IndexSplit, IndexMerge))
         assert reshape_op.result is not None
 
         if isinstance(reshape_op, IndexSplit):
@@ -201,11 +217,13 @@ def reshape_indices(reshape_ops, indices, data):
     return indices, data
 
 
-def unravel_indices(reshape_ops, indices, data):
+def unravel_indices(
+    reshape_ops: List[IndexOp], indices: List[Index], data: np.ndarray
+) -> Tuple[List[Index], np.ndarray]:
     """Get corresponding indices after splitting"""
     for reshape_op in reshape_ops:
-        new_indices = []
-        new_data = []
+        new_indices: List[Index] = []
+        new_data: List[np.ndarray] = []
         if isinstance(reshape_op, IndexSplit):
             for ind_idx, ind in enumerate(indices):
                 if ind == reshape_op.index:
@@ -220,8 +238,8 @@ def unravel_indices(reshape_ops, indices, data):
                     new_data.append(data[:, ind_idx])
 
         elif isinstance(reshape_op, IndexMerge):
-            idxs = []
-            sizes = []
+            idxs: List[int] = []
+            sizes: List[int] = []
             for ind in reshape_op.indices:
                 idxs.append(indices.index(ind))
                 sizes.append(ind.size)
@@ -250,73 +268,7 @@ def unravel_indices(reshape_ops, indices, data):
     return indices, data
 
 
-def ravel_indices(reshape_ops, indices, data):
-    """Get corresponding indices before splitting"""
-    indices = [[ind] for ind in indices]
-    all_funcs = []
-    for reshape_op in reshape_ops:
-        new_indices = []
-        funcs = []
-        if isinstance(reshape_op, IndexSplit):
-            for group_idx, ind_group in enumerate(indices):
-                new_ind_group = []
-                for ind in ind_group:
-                    if ind == reshape_op.index:
-                        assert reshape_op.result is not None
-                        new_ind_group.extend(reshape_op.result)
-                    else:
-                        new_ind_group.append(ind)
-
-                new_indices.append(new_ind_group)
-                new_sizes = [ind.size for ind in new_ind_group]
-                funcs.append(new_sizes)
-
-        elif isinstance(reshape_op, IndexMerge):
-            for group_idx, ind_group in enumerate(indices):
-                new_ind_group = []
-                for ind in ind_group:
-                    if ind in reshape_op.indices:
-                        unchanged = [
-                            ind
-                            for ind in ind_group
-                            if ind not in reshape_op.indices
-                        ]
-                        assert reshape_op.result is not None
-                        new_ind_group = [reshape_op.result] + unchanged
-                        # we want to permute these indices before comparison
-                        cnt_before = sum(len(g) for g in indices[:group_idx])
-                        cnt_after = sum(
-                            len(g) for g in indices[group_idx + 1 :]
-                        )
-                        curr_perm = [
-                            ind_group.index(ind) + cnt_before
-                            for ind in reshape_op.indices
-                        ] + [
-                            ind_group.index(ind) + cnt_before
-                            for ind in unchanged
-                        ]
-                        prev_perm = list(range(cnt_before))
-                        next_perm = [
-                            cnt_before + len(curr_perm) + i
-                            for i in range(cnt_after)
-                        ]
-                        data = data[:, *(prev_perm + curr_perm + next_perm)]
-                        break
-
-                    new_ind_group.append(ind)
-
-                # new_sizes.extend([ind.size for ind in new_ind_group])
-                new_indices.append(new_ind_group)
-
-        indices = new_indices
-        all_funcs.append(funcs)
-
-    # print(indices)
-
-    return data[:, np.argsort([i for inds in indices for i in inds])]
-
-
-def init_state(data_tensor: DataTensor, delta) -> SearchState:
+def init_state(data_tensor: DataTensor, delta: float) -> SearchState:
     """Create initial search state for the input data tensor."""
     # print(type(data_tensor))
     if isinstance(data_tensor, TreeNetwork):
@@ -343,7 +295,7 @@ def index_partition(
 ) -> Tuple[List[Index], List[Index]]:
     """Compute the partition of the index by the given edge."""
 
-    def indices_of(start: NodeName, exclude: NodeName):
+    def indices_of(start: NodeName, exclude: NodeName) -> List[Index]:
         visited = set()
         queue = [start]
         indices = []
@@ -378,7 +330,7 @@ def to_splits(net: TreeNetwork) -> List[OSplit]:
     visited = set()
 
     # Step 2: Post-order DFS to compute subtree indices
-    def dfs(node, p):
+    def dfs(node: NodeName, p: Optional[NodeName]) -> List[Index]:
         indices = []
         visited.add(node)
         parent[node] = p

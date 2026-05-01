@@ -14,7 +14,7 @@ class BaseErrorDist:
 class AlphaErrorDist(BaseErrorDist):
     """Divide the errors by a constant factor alpha."""
 
-    def __init__(self, alpha):
+    def __init__(self, alpha: float) -> None:
         super().__init__()
         self.alpha = alpha
 
