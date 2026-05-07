@@ -3274,7 +3274,7 @@ def _tree_invalidate_changed_sketches(
             continue
 
         source_component = _tree_component_nodes(tn, source_node, target_node)
-        if len(source_component.intersection(changed_nodes)) > 0:
+        if source_component.intersection(changed_nodes):
             del all_sketches[key]
 
 
@@ -3314,6 +3314,84 @@ def _tree_edge_sketch_blocks(
     return sketches, node_mat, edge_pos, edge_index
 
 
+def _tree_postorder_edge_traversal(
+    tn: TensorNetwork,
+    start: NodeName,
+    parent: NodeName,
+) -> List[Tuple[NodeName, NodeName]]:
+    """Return subtree edges in postorder so each node is absorbed into parent."""
+    traversal: List[Tuple[NodeName, NodeName]] = []
+
+    def _visit(node: NodeName, blocked: NodeName) -> None:
+        for neighbor in tn.network.neighbors(node):
+            if neighbor == blocked:
+                continue
+            _visit(neighbor, node)
+        traversal.append((node, blocked))
+
+    _visit(start, parent)
+    return traversal
+
+
+def _tree_two_phase_edge_traversal(
+    tn: TensorNetwork,
+    root: NodeName,
+    final_leaf: NodeName,
+) -> List[Tuple[NodeName, NodeName]]:
+    """Traverse all non-final nodes while deferring one root-side half to the end."""
+    if root not in tn.network:
+        raise ValueError(f"Root node {root} is not in the tensor network.")
+    if final_leaf not in tn.network:
+        raise ValueError(f"Leaf node {final_leaf} is not in the tensor network.")
+    if tn.network.degree(final_leaf) > 1:
+        raise ValueError(f"Node {final_leaf} is not a leaf.")
+
+    if root == final_leaf:
+        traversal: List[Tuple[NodeName, NodeName]] = []
+        for neighbor in tn.network.neighbors(root):
+            traversal.extend(_tree_postorder_edge_traversal(tn, neighbor, root))
+        return traversal
+
+    path = nx.shortest_path(tn.network, root, final_leaf)
+    traversal = []
+    deferred_neighbor = path[1]
+
+    for neighbor in tn.network.neighbors(root):
+        if neighbor == deferred_neighbor:
+            continue
+        traversal.extend(_tree_postorder_edge_traversal(tn, neighbor, root))
+
+    for i, node in enumerate(path[:-1]):
+        next_node = path[i + 1]
+        prev_node = path[i - 1] if i > 0 else None
+        if i == 0:
+            traversal.append((node, next_node))
+            continue
+        for neighbor in tn.network.neighbors(node):
+            if neighbor == prev_node or neighbor == next_node:
+                continue
+            traversal.extend(_tree_postorder_edge_traversal(tn, neighbor, node))
+        traversal.append((node, next_node))
+
+    return traversal
+
+
+def _tree_leaf_to_root_edge_traversal(
+    tn: TensorNetwork, root: NodeName
+) -> List[Tuple[NodeName, NodeName]]:
+    """Traverse every non-root node upward toward a fixed root."""
+    parent, depth = _tree_parent_depth(tn, root)
+    return sorted(
+        [
+            (node, cast(NodeName, parent[node]))
+            for node in tn.network.nodes
+            if node != root and parent[node] is not None
+        ],
+        key=lambda edge: depth[edge[0]],
+        reverse=True,
+    )
+
+
 def _tree_absorb_factor(
     tn: TensorNetwork,
     node: NodeName,
@@ -3350,35 +3428,47 @@ def tree_adaptive_rand_round(
     tn: TensorNetwork,
     tol: float,
     root: NodeName,
+    final_leaf: Optional[NodeName] = None,
+    traversal_mode: str = "end_to_end",
     init_f: float = 0.1,
     incr_f: float = 0.05,
     min_samples: int = 20,
     tol_scale: float = 1.0,
     postprocess: bool = False,
 ) -> TensorNetwork:
-    """Adaptive randomized rounding for tree tensor networks."""
+    """Adaptive randomized rounding for tree tensor networks.
+
+    ``traversal_mode="leaf_to_root"`` performs the original bottom-up sweep
+    toward ``root``. ``traversal_mode="end_to_end"`` defers the root-side
+    component containing ``final_leaf`` until the end, leaving
+    ``final_leaf`` as the final unorthogonalized node.
+    """
     if not (0 < init_f < 1) or not (0 < incr_f < 1):
         raise ValueError("init_f and incr_f must satisfy 0 < f < 1.")
+    if traversal_mode not in {"leaf_to_root", "end_to_end"}:
+        raise ValueError(
+            "traversal_mode must be either 'leaf_to_root' or 'end_to_end'."
+        )
 
     if tn.network.number_of_edges() == 0:
         return copy.deepcopy(tn)
 
     res = copy.deepcopy(tn)
-    parent, depth = _tree_parent_depth(res, root)
     num_edges = res.network.number_of_edges()
     tau: Optional[float] = None
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray] = {}
+    if traversal_mode == "end_to_end" and final_leaf is None:
+        final_leaf = root
 
-    traversal = sorted(
-        [node for node in res.network.nodes if node != root],
-        key=lambda node: depth[node],
-        reverse=True,
-    )
+    if traversal_mode == "leaf_to_root":
+        traversal = _tree_leaf_to_root_edge_traversal(res, root)
+        postprocess_root = root
+    else:
+        traversal = _tree_two_phase_edge_traversal(res, root, cast(NodeName, final_leaf))
+        postprocess_root = cast(NodeName, final_leaf)
+    # print(f"Traversal order: {traversal}")
 
-    for node in traversal:
-        parent_node = parent[node]
-        if parent_node is None:
-            continue
+    for node, parent_node in traversal:
 
         node_tensor = res.node_tensor(node)
         edge_index = res.get_contraction_index(node, parent_node)[0]
@@ -3454,9 +3544,10 @@ def tree_adaptive_rand_round(
             edge_index,
         )
         _tree_invalidate_changed_sketches(res, all_sketches, {node, parent_node})
+        print(node, all_sketches.keys())
 
     if postprocess:
-        res.round(root, tol)
+        res.round(postprocess_root, tol)
 
     return res
 
@@ -3465,6 +3556,8 @@ def ttn_adaptive_rand_round(
     tn: TensorNetwork,
     tol: float,
     root: NodeName,
+    final_leaf: Optional[NodeName] = None,
+    traversal_mode: str = "end_to_end",
     init_f: float = 0.1,
     incr_f: float = 0.05,
     min_samples: int = 20,
@@ -3476,6 +3569,8 @@ def ttn_adaptive_rand_round(
         tn=tn,
         tol=tol,
         root=root,
+        final_leaf=final_leaf,
+        traversal_mode=traversal_mode,
         init_f=init_f,
         incr_f=incr_f,
         min_samples=min_samples,
