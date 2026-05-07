@@ -3544,8 +3544,7 @@ def tree_adaptive_rand_round(
             edge_index,
         )
         _tree_invalidate_changed_sketches(res, all_sketches, {node, parent_node})
-        print(node, all_sketches.keys())
-
+        
     if postprocess:
         res.round(postprocess_root, tol)
 
