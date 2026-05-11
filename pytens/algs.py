@@ -3456,6 +3456,8 @@ def tree_adaptive_rand_round(
     res = copy.deepcopy(tn)
     num_edges = res.network.number_of_edges()
     tau: Optional[float] = None
+    tau_sample_size = max(int(np.floor(np.max(res.ranks()) * init_f)), min_samples)
+    tau_sample_size = max(tau_sample_size, 1)
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray] = {}
     if traversal_mode == "end_to_end" and final_leaf is None:
         final_leaf = root
@@ -3481,30 +3483,36 @@ def tree_adaptive_rand_round(
             continue
 
         init_b = max(int(np.floor(max_cols * init_f)), 1)
-        init_samples = max(init_b, min_samples)
         b_inc = max(int(np.floor(max_cols * incr_f)), 1)
         sample_size = max(b_inc, min_samples)
+
+        block_sizes = [init_b]
+        tau_block_index = None
+        if tau is None:
+            tau_block_index = len(block_sizes)
+            block_sizes.append(tau_sample_size)
+        residual_block_index = len(block_sizes)
+        block_sizes.append(sample_size)
+
         sketch_blocks, node_mat, edge_pos, edge_index = _tree_edge_sketch_blocks(
-            res,
-            node,
-            parent_node,
-            [init_samples, sample_size],
-            all_sketches,
+            res, node, parent_node, block_sizes, all_sketches
         )
         sketch = sketch_blocks[0]
-        residual_sketch = sketch_blocks[1]
+        residual_sketch = sketch_blocks[residual_block_index]
         if tau is None:
-            norm_est = np.linalg.norm(sketch, ord="fro") / np.sqrt(sketch.shape[1])
+            tau_sketch = sketch_blocks[cast(int, tau_block_index)]
+            norm_est = np.linalg.norm(tau_sketch, ord="fro") / np.sqrt(
+                tau_sketch.shape[1]
+            )
             tau = tol * norm_est / np.sqrt(num_edges)
         q_basis, _ = np.linalg.qr(sketch)
-        sketch_columns_used = init_samples + sample_size
+        sketch_columns_used = int(np.sum(block_sizes))
 
         residual_sketch = residual_sketch - q_basis @ (q_basis.T @ residual_sketch)
 
-        while (
-            np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(residual_sketch.shape[1])
-            > cast(float, tau) / tol_scale
-        ):
+        residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(residual_sketch.shape[1])
+
+        while (residual_err > cast(float, tau) / tol_scale):
             if q_basis.shape[1] >= max_cols:
                 break
 
@@ -3549,34 +3557,6 @@ def tree_adaptive_rand_round(
         res.round(postprocess_root, tol)
 
     return res
-
-
-def ttn_adaptive_rand_round(
-    tn: TensorNetwork,
-    tol: float,
-    root: NodeName,
-    final_leaf: Optional[NodeName] = None,
-    traversal_mode: str = "end_to_end",
-    init_f: float = 0.1,
-    incr_f: float = 0.05,
-    min_samples: int = 20,
-    tol_scale: float = 1.0,
-    postprocess: bool = False,
-) -> TensorNetwork:
-    """Alias for adaptive randomized tree rounding."""
-    return tree_adaptive_rand_round(
-        tn=tn,
-        tol=tol,
-        root=root,
-        final_leaf=final_leaf,
-        traversal_mode=traversal_mode,
-        init_f=init_f,
-        incr_f=incr_f,
-        min_samples=min_samples,
-        tol_scale=tol_scale,
-        postprocess=postprocess,
-    )
-
 
 def ttop_rank1(
     indices_in: List[Index],
