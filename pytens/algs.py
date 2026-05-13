@@ -3456,8 +3456,6 @@ def tree_adaptive_rand_round(
     res = copy.deepcopy(tn)
     num_edges = res.network.number_of_edges()
     tau: Optional[float] = None
-    tau_sample_size = max(int(np.floor(np.max(res.ranks()) * init_f)), min_samples)
-    tau_sample_size = max(tau_sample_size, 1)
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray] = {}
     if traversal_mode == "end_to_end" and final_leaf is None:
         final_leaf = root
@@ -3483,16 +3481,12 @@ def tree_adaptive_rand_round(
             continue
 
         init_b = max(int(np.floor(max_cols * init_f)), 1)
+        init_samples = max(init_b, min_samples)
         b_inc = max(int(np.floor(max_cols * incr_f)), 1)
         sample_size = max(b_inc, min_samples)
 
-        block_sizes = [init_b]
-        tau_block_index = None
-        if tau is None:
-            tau_block_index = len(block_sizes)
-            block_sizes.append(tau_sample_size)
-        residual_block_index = len(block_sizes)
-        block_sizes.append(sample_size)
+        block_sizes = [init_samples, sample_size]
+        residual_block_index = 1
 
         sketch_blocks, node_mat, edge_pos, edge_index = _tree_edge_sketch_blocks(
             res, node, parent_node, block_sizes, all_sketches
@@ -3500,12 +3494,11 @@ def tree_adaptive_rand_round(
         sketch = sketch_blocks[0]
         residual_sketch = sketch_blocks[residual_block_index]
         if tau is None:
-            tau_sketch = sketch_blocks[cast(int, tau_block_index)]
-            norm_est = np.linalg.norm(tau_sketch, ord="fro") / np.sqrt(
-                tau_sketch.shape[1]
+            norm_est = np.linalg.norm(sketch, ord="fro") / np.sqrt(
+                sketch.shape[1]
             )
             tau = tol * norm_est / np.sqrt(num_edges)
-        q_basis, _ = np.linalg.qr(sketch)
+        q_basis, _ = np.linalg.qr(sketch[:, :init_b])
         sketch_columns_used = int(np.sum(block_sizes))
 
         residual_sketch = residual_sketch - q_basis @ (q_basis.T @ residual_sketch)
@@ -3541,6 +3534,7 @@ def tree_adaptive_rand_round(
             residual_sketch = residual_sketch - q_basis @ (
                 q_basis.T @ residual_sketch
             )
+            residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(residual_sketch.shape[1])
 
         _tree_absorb_factor(
             res,
