@@ -1,18 +1,19 @@
 """Cross Approximation."""
 
 from __future__ import annotations
-from enum import Enum, auto
-from typing import Optional, Sequence, Tuple, List
-import logging
+
 import copy
+import logging
+from enum import Enum, auto
+from typing import Any, Callable, List, Optional, Sequence, Tuple, cast
 
 import numpy as np
 import pydantic
-from tntorch.maxvol import py_maxvol
+from scipy.linalg import get_blas_funcs, get_lapack_funcs
 
+import pytens.algs as pt
 from pytens.cross.func_interface import TensorFunc
 from pytens.types import DimTreeNode, Index
-import pytens.algs as pt
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -76,6 +77,91 @@ class CrossResult(pydantic.BaseModel):
     ranks_and_errors: Sequence[Tuple[int, float]]
 
 
+def _py_maxvol(
+    arr: np.ndarray,
+    tol: float = 1.05,
+    max_iters: int = 100,
+    top_k_index: int = -1,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Find a r×r submatrix of maximum volume in an n×r matrix.
+
+    Implements the 1-maxvol algorithm: given an n×r tall matrix ``arr``
+    (n > r), finds r row indices whose r×r submatrix has (approximately)
+    maximum absolute determinant.  The search is restricted to the first
+    ``top_k_index`` rows; pass -1 (default) to search all rows.
+
+    The algorithm initialises with an LU-pivoted basis, then greedily swaps
+    rows using the Sherman–Morrison rank-1 update (BLAS *GER) until no swap
+    improves the volume by more than ``tol``.
+
+    Args:
+        arr: Input matrix of shape (n, r) with n > r.
+        tol: Stop when the best swap improves volume by less than this factor
+            (must be ≥ 1; values < 1 are clamped to 1.0).
+        max_iters: Maximum number of row swaps before terminating.
+        top_k_index: Restrict the row search to the first this-many rows.
+            -1 means no restriction (all n rows are candidates).
+
+    Returns:
+        index: Integer array of shape (r,) containing the selected row
+            indices into ``arr``.
+        c: Coefficient matrix of shape (n, r) such that
+            ``arr ≈ arr[index] @ c[index]``.
+    """
+    # some work on parameters
+    if tol < 1:
+        tol = 1.0
+    n, r = arr.shape
+    if n <= r:
+        return np.arange(n, dtype=np.int32), np.eye(n, dtype=arr.dtype)
+    if top_k_index == -1 or top_k_index > n:
+        top_k_index = n
+
+    top_k_index = max(top_k_index, r)
+    # set auxiliary matrices and get corresponding *GETRF function
+    # from lapack
+    b = np.copy(arr[:top_k_index], order="F")
+    c = np.copy(arr.T, order="F")
+    getrf = cast(Callable[..., Any], get_lapack_funcs("getrf", [b]))
+    h, ipiv, _ = getrf(b, overwrite_a=1)
+    # compute pivots from ipiv (result of *GETRF)
+    index = np.arange(n, dtype=np.int32)
+    for i in range(r):
+        tmp = index[i]
+        index[i] = index[ipiv[i]]
+        index[ipiv[i]] = tmp
+    # solve A = CH, H is in LU format
+    b = h[:r]
+    # It will be much faster to use *TRSM instead of *TRTRS
+    trtrs = cast(Callable[..., Any], get_lapack_funcs("trtrs", [b]))
+    trtrs(b, c, trans=1, lower=0, unitdiag=0, overwrite_b=1)
+    trtrs(b, c, trans=1, lower=1, unitdiag=1, overwrite_b=1)
+    # C has shape (r, N) -- it is stored transposed
+    # find max value in C
+    i, j = divmod(int(abs(c[:, :top_k_index]).argmax()), top_k_index)
+    # set cgeru or zgeru for complex numbers and dger or sger for
+    # float numbers
+    try:
+        ger = get_blas_funcs("geru", [c])
+    except ValueError:
+        ger = get_blas_funcs("ger", [c])
+    # set number of iters to 0
+    iters = 0
+    # check if need to swap rows
+    while abs(c[i, j]) > tol and iters < max_iters:
+        # add j to index and recompute C by SVM-formula
+        index[i] = j
+        tmp_row = c[i].copy()
+        tmp_column = c[:, j].copy()
+        tmp_column[i] -= 1.0
+        alpha = -1.0 / c[i, j]
+        ger(alpha, tmp_column, tmp_row, a=c, overwrite_a=1)
+        iters += 1
+        i, j = divmod(int(abs(c[:, :top_k_index]).argmax()), top_k_index)
+    return index[:r].copy(), c.T
+
+
 def _select_indices_maxvol(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
     Select proper indices by maxvol algorithm.
@@ -92,7 +178,7 @@ def _select_indices_maxvol(v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     q, _ = np.linalg.qr(q)
     selected_inds: np.ndarray
     b: np.ndarray
-    selected_inds, b = py_maxvol(q)
+    selected_inds, b = _py_maxvol(q)
     return selected_inds, b
 
 
