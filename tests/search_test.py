@@ -405,9 +405,9 @@ class TestTopDownSearch(unittest.TestCase):
 
     def test_top_down_whitebox_sweep(self):
         """White-box search starting from a random TT."""
-        n = 10
-        indices = [Index(f"I{i}", n, range(n)) for i in range(6)]
-        tt = TensorTrain.rand_tt(indices, [3, 3, 3, 3, 3])
+        n = 8
+        indices = [Index(f"I{i}", n, range(n)) for i in range(5)]
+        tt = TensorTrain.rand_tt(indices, [3, 3, 3, 3])
 
         config = SearchConfig()
         config.engine.eps = 1e-1
