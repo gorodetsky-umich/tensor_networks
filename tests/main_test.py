@@ -124,7 +124,7 @@ class TestTT(unittest.TestCase):
         out2 = self.TT2.contract().value
 
         self.assertTrue(
-            np.allclose(inner_val, np.sum(out1 * out2), atol=1e-12, rtol=1e-12)
+            np.allclose(inner_val, np.sum(out1 * out2), atol=1e-14, rtol=1e-14)
         )
 
     def test_integrate(self):
@@ -998,64 +998,11 @@ class TestTree(unittest.TestCase):
 class TestCross(unittest.TestCase):
     """Test suite for cross approximation"""
 
-    class FuncAckley(CachedFunc):
-        """Source: https://www.sfu.ca/~ssurjano/ackley.html"""
-
-        def __init__(self, indices: List[Index]):
-            inds = []
-            for ind in indices:
-                new_ind = ind.with_new_rng(
-                    np.linspace(-32.768, 32.768, ind.size)
-                )
-                inds.append(new_ind)
-            super().__init__(inds)
-            self.name = "Ackley"
-
-        def _run(self, args: np.ndarray):
-            y1 = np.sqrt(np.sum(args**2, axis=1) / args.shape[1])
-            y1 = -20 * np.exp(-0.2 * y1)
-
-            y2 = np.sum(np.cos(2 * np.pi * args), axis=1)
-            y2 = -np.exp(y2 / args.shape[1])
-
-            y3 = 20 + np.exp(1.0)
-
-            return y1 + y2 + y3
-
-    class FuncPathological(CachedFunc):
-        """
-        Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
-                benchmark functions for global optimization problems". Journal of
-                Mathematical Modelling and Numerical Optimisation 2013; 4:150-194
-                ("87. Pathological Function"; Continuous, Differentiable,
-                Non-separable, Non-scalable, Multimodal).
-        """
-
-        def __init__(self, indices: List[Index]):
-            inds = []
-            for ind in indices:
-                new_ind = ind.with_new_rng(np.linspace(-100, 100, ind.size))
-                inds.append(new_ind)
-
-            super().__init__(inds)
-            # self.low = -100
-            # self.range = 100 * 2
-            self.name = "Pathological"
-
-        def _run(self, args: np.ndarray):
-            x1 = args[:, :-1]
-            x2 = args[:, 1:]
-
-            y1 = (np.sin(np.sqrt(100.0 * x1**2 + x2**2))) ** 2 - 0.5
-            y2 = 1.0 + 0.001 * (x1**2 - 2.0 * x1 * x2 + x2**2) ** 2
-
-            return np.sum(0.5 + y1 / y2, axis=1)
-
     def test_cross_two_nodes(self):
         """Cross approximation for a matrix"""
 
         indices = [Index("i", 8), Index("j", 10)]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = TensorTrain.rand_tt(func.indices, [1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -1076,7 +1023,7 @@ class TestCross(unittest.TestCase):
         """Cross approximation for a three dimensional TT"""
 
         indices = [Index("i", 8), Index("j", 10), Index("k", 12)]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = TensorTrain.rand_tt(func.indices, [1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -1102,7 +1049,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = TensorTrain.rand_tt(func.indices, [1, 1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -1128,7 +1075,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = HierarchicalTucker.rand_ht(func.indices, 1)
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -1154,7 +1101,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = TreeNetwork.rand_tucker(func.indices, 1)
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
@@ -1180,7 +1127,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = TensorTrain.rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
@@ -1206,7 +1153,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = TreeNetwork.rand_tucker(func.indices, 1)
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
@@ -1239,7 +1186,7 @@ class TestCross(unittest.TestCase):
             Index("o", 8),
             Index("p", 8),
         ]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(
             kickrank=2,
@@ -1279,7 +1226,7 @@ class TestCross(unittest.TestCase):
             Index("o", 8),
             Index("p", 8),
         ]
-        func = TestCross.FuncPathological(indices)
+        func = FuncPathological(indices)
         net = rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(
             kickrank=2,
@@ -1312,7 +1259,7 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
+        func = FuncAckley(indices)
         net = rand_tt(func.indices, [1, 1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)

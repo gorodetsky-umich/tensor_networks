@@ -8,10 +8,48 @@ import numpy as np
 import json
 
 from pytens.algs import TreeNetwork, Index, Tensor
+from pytens.tt import TensorTrain
 from pytens.search.configuration import SearchAlgo, SearchConfig, InitStructType
 from pytens.search.state import ISplit, OSplit, SearchState
 from pytens.search.search import BlackBoxTopDownSearchEngine, SearchEngine, TopDownSearchEngine, WhiteBoxTopDownSearchEngine
 from pytens.cross.func_impl import FuncData
+from pytens.cross.func_interface import CachedFunc
+
+
+class FuncAckley(CachedFunc):
+    """Ackley benchmark function. Source: https://www.sfu.ca/~ssurjano/ackley.html"""
+
+    def __init__(self, indices: list[Index]):
+        inds = [ind.with_new_rng(np.linspace(-32.768, 32.768, ind.size).tolist()) for ind in indices]
+        super().__init__(inds)
+        self.name = "Ackley"
+
+    def _run(self, args: np.ndarray) -> np.ndarray:
+        y1 = np.sqrt(np.sum(args**2, axis=1) / args.shape[1])
+        y1 = -20 * np.exp(-0.2 * y1)
+        y2 = np.sum(np.cos(2 * np.pi * args), axis=1)
+        y2 = -np.exp(y2 / args.shape[1])
+        return y1 + y2 + 20 + np.exp(1.0)
+
+
+class FuncPathological(CachedFunc):
+    """
+    Pathological benchmark function.
+    Source: Jamil & Yang, "A literature survey of benchmark functions for global
+    optimization problems", JMMNO 2013; 4:150-194 (function #87).
+    """
+
+    def __init__(self, indices: list[Index]):
+        inds = [ind.with_new_rng(np.linspace(-100, 100, ind.size).tolist()) for ind in indices]
+        super().__init__(inds)
+        self.name = "Pathological"
+
+    def _run(self, args: np.ndarray) -> np.ndarray:
+        x1 = args[:, :-1]
+        x2 = args[:, 1:]
+        y1 = (np.sin(np.sqrt(100.0 * x1**2 + x2**2))) ** 2 - 0.5
+        y2 = 1.0 + 0.001 * (x1**2 - 2.0 * x1 * x2 + x2**2) ** 2
+        return np.sum(0.5 + y1 / y2, axis=1)
 
 
 class TestConfig(unittest.TestCase):
@@ -307,6 +345,61 @@ class TestTopDownSearch(unittest.TestCase):
         assert result.best_state is not None
         err = result.stats.re_f
         self.assertLessEqual(float(err), 2e-1)
+
+
+    def test_top_down_reshape_enabled(self):
+        """Black-box search with reshape enabled on composite index sizes."""
+        n = 6  # 6 = 2 * 3, so reshape can split each index
+        grid = np.meshgrid(*[np.arange(0, n) for _ in range(4)])
+        all_args = np.stack(grid, axis=0).reshape(4, -1).T
+        real_val = 1.0 / np.sum(all_args + 1, axis=1)
+        real_val = real_val.reshape(n, n, n, n)
+        indices = [Index(f"I{i}", n, range(n)) for i in range(4)]
+        tensor_func = FuncData(indices, real_val)
+
+        config = SearchConfig()
+        config.engine.eps = 1e-1
+        config.cross.init_eps = 0.1
+        config.cross.init_struct = InitStructType.TT
+        config.topdown.reshape_enabled = True
+        config.topdown.merge_mode = "all"
+        search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
+        result = search_engine.top_down()
+        assert result.best_state is not None
+        self.assertLessEqual(float(result.stats.re_f), 2e-1)
+
+    def test_top_down_ackley(self):
+        """Black-box search on the Ackley function."""
+        n = 15
+        indices = [Index(f"I{i}", n) for i in range(4)]
+        tensor_func = FuncAckley(indices)
+        all_args = np.stack(
+            np.meshgrid(*[np.arange(n) for _ in range(4)]), axis=0
+        ).reshape(4, -1).T
+
+        config = SearchConfig()
+        config.engine.eps = 1e-1
+        config.cross.init_eps = 0.1
+        config.cross.init_struct = InitStructType.TT
+        config.topdown.merge_mode = "all"
+        search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
+        result = search_engine.top_down()
+        assert result.best_state is not None
+        self.assertLessEqual(float(result.stats.re_f), 2e-1)
+
+    def test_top_down_whitebox(self):
+        """White-box search starting from a random TT."""
+        n = 10
+        indices = [Index(f"I{i}", n, range(n)) for i in range(4)]
+        tt = TensorTrain.rand_tt(indices, [3, 3, 3])
+
+        config = SearchConfig()
+        config.engine.eps = 1e-1
+        config.engine.seed = 0
+        search_engine = WhiteBoxTopDownSearchEngine(config, tt)
+        result = search_engine.top_down()
+        assert result.best_state is not None
+        self.assertLessEqual(float(result.stats.re_f), 2e-1)
 
 
 if __name__ == "__main__":

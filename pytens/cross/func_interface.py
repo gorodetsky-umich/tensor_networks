@@ -13,6 +13,16 @@ class TensorFunc:
 
     The derived classes should implement the ``run`` method,
     which evalutes the function at vectorized arguments.
+
+    Attributes:
+        d: Number of dimensions (equal to ``len(indices)``).
+        indices: One ``Index`` per dimension, each carrying the discrete grid
+            points via ``value_choices`` and the grid size via ``size``.
+        name: Human-readable identifier used for logging and file names.
+            Defaults to ``"_func_"``; subclasses should override it.
+        calls: Array of shape ``(n_calls, d)`` recording every set of integer
+            grid indices the function has been evaluated at, accumulated
+            across all calls to ``__call__``.
     """
 
     def __init__(self, indices: List[Index]):

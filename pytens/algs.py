@@ -254,13 +254,57 @@ class Tensor:
     def svd(
         self,
         lefts: Sequence[int],
-        delta: float = 1e-5,
+        *,
+        delta: Optional[float] = None,
+        rel_delta: Optional[float] = None,
         compute_uv: bool = True,
     ) -> Tuple[List["Tensor"], float]:
-        """Split a tensor into three by SVD.
+        """Split a tensor into three factors by (optionally truncated) SVD.
 
-        If delta > 0, the truncated SVD is performed.
+        The tensor is unfolded into a matrix with the ``lefts`` dimensions on
+        the left and all remaining dimensions on the right.  A truncated SVD
+        is then computed and the result is reshaped back into three tensors
+        ``[U, S, Vt]``, where ``S`` is diagonal.
+
+        At most one of ``delta`` or ``rel_delta`` may be provided.  When
+        neither is given, ``rel_delta=1e-6`` is used by default.
+
+        Args:
+            lefts: Positions of the indices that form the left (row) side of
+                the unfolding matrix.  All other index positions become the
+                right (column) side.
+            delta: Absolute truncation threshold.  Singular values are
+                discarded from the smallest upward as long as their cumulative
+                squared sum does not exceed ``delta ** 2``.  Mutually
+                exclusive with ``rel_delta``.
+            rel_delta: Relative truncation threshold.  Converted to an
+                absolute threshold by multiplying by the Frobenius norm of the
+                unfolded matrix before applying the same rule as ``delta``.
+                Defaults to ``1e-6`` when neither argument is given.  Mutually
+                exclusive with ``delta``.
+            compute_uv: When ``True`` (default), return all three factors
+                ``[U, S, Vt]``.  When ``False``, return only ``[S]``, which
+                is cheaper when the singular vectors are not needed.
+
+        Returns:
+            A tuple ``(tensors, remaining_delta)`` where ``tensors`` is
+            ``[U, S, Vt]`` (or ``[S]`` when ``compute_uv=False``), and
+            ``remaining_delta`` is the unused portion of the absolute error
+            budget after truncation.
+
+        Raises:
+            ValueError: If both ``delta`` and ``rel_delta`` are provided.
         """
+        if delta is not None and rel_delta is not None:
+            raise ValueError(
+                "specify exactly one of 'delta' (absolute) or"
+                " 'rel_delta' (relative), not both"
+            )
+        if delta is None and rel_delta is None:
+            rel_delta = 1e-6
+        with_normalizing = delta is None
+        effective_delta = delta or rel_delta or 0.0
+
         rights = [i for i in range(len(self.indices)) if i not in lefts]
         permute_indices = itertools.chain(lefts, rights)
         value = np.permute_dims(self.value, tuple(permute_indices))
@@ -268,7 +312,12 @@ class Tensor:
         right_sz = int(np.prod([self.indices[j].size for j in rights]))
         value = value.reshape(left_sz, right_sz)
 
-        result = delta_svd(value, delta, compute_uv=compute_uv)
+        result = delta_svd(
+            value,
+            effective_delta,
+            with_normalizing=with_normalizing,
+            compute_uv=compute_uv,
+        )
         u = result.u
         s = result.s
         v = result.v
@@ -766,10 +815,27 @@ class TensorNetwork:  # pylint: disable=R0904
         lefts: Sequence[int],
         config: SVDConfig = SVDConfig(),
     ) -> Tuple[Tuple[NodeName, NodeName, NodeName], float]:
-        """Perform the SVD split and returns u, s, v.
+        """Split a node in the network into three nodes by SVD.
 
-        with_orthonormal: create orthogonality centers with QR before splitting
-        compute_data: update the tensor values for the nodes created by split
+        The tensor at ``node_name`` is unfolded using ``lefts`` and subjected
+        to a (optionally truncated) SVD.  The network is updated in-place:
+        the original node becomes the left factor ``U``, and two new nodes are
+        added for the singular-value diagonal ``S`` and the right factor
+        ``Vt``.
+
+        Args:
+            node_name: The node to decompose.
+            lefts: Index positions that form the left (row) side of the
+                unfolding matrix; all other positions go to the right side.
+            config: Truncation and output settings.  See ``SVDConfig`` for the
+                ``delta``/``rel_delta`` and ``compute_data``/``compute_uv``
+                options.
+
+        Returns:
+            A tuple ``((u_name, s_name, v_name), remaining_delta)`` where the
+            three names identify the newly created network nodes and
+            ``remaining_delta`` is the unused portion of the absolute error
+            budget after truncation.
         """
         x = self.node_tensor(node_name)
         rights = [i for i in range(len(x.indices)) if i not in lefts]
@@ -780,11 +846,14 @@ class TensorNetwork:  # pylint: disable=R0904
             u = Tensor(np.empty([0 for _ in u_indices]), u_indices)
             v_indices = [rr] + [x.indices[i] for i in rights]
             v = Tensor(np.empty([0 for _ in v_indices]), v_indices)
-            d = config.delta
+            d = config.delta or 0.0
 
             if config.compute_data:
                 s_tuple, _ = x.svd(
-                    lefts, delta=config.delta, compute_uv=config.compute_uv
+                    lefts,
+                    delta=config.delta,
+                    rel_delta=config.rel_delta,
+                    compute_uv=config.compute_uv,
                 )
                 s: Tensor = s_tuple[0]
             else:
@@ -792,7 +861,9 @@ class TensorNetwork:  # pylint: disable=R0904
         else:
             x = self.node_tensor(node_name)
             # svd decompose the data into specified index partition
-            [u, s, v], d = x.svd(lefts, delta=config.delta)
+            [u, s, v], d = x.svd(
+                lefts, delta=config.delta, rel_delta=config.rel_delta
+            )
 
         v_name = self.fresh_node()
         new_index_r = self.fresh_index()
@@ -1359,7 +1430,36 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
     def round(
         self, node_name: NodeName, delta: float, visited: Optional[set] = None
     ) -> Tuple[NodeName, float]:
-        """Optimize the tree rooted at the given node."""
+        """
+        Truncate bond dimensions across the tree using a shared error budget.
+
+        Performs a depth-first sweep starting from ``node_name``.  On the
+        first call (``visited`` is ``None``) the tree is orthonormalised at
+        ``node_name`` so that truncation errors at each bond are independent
+        and additive.  At each unvisited bond a truncated SVD is performed,
+        discarding trailing singular values whose squared sum does not exceed
+        the remaining ``delta`` budget.  The budget consumed by each
+        truncation is subtracted before recursing into the neighbouring
+        sub-tree, so the total squared error across all bonds stays within
+        the original ``delta``.
+
+        Args:
+            node_name: The node at which the sweep begins (root of the current
+                sub-tree).
+            delta: Absolute squared-error budget.  Each SVD consumes part of
+                this budget; the reduced value is threaded through the
+                recursion and returned so the caller always knows how much
+                budget remains.
+            visited: Set of bond indices already processed in this sweep.
+                Pass ``None`` on the initial call; the method populates it
+                internally during the recursion to avoid revisiting bonds.
+
+        Returns:
+            A tuple ``(root_node, remaining_delta)`` where ``root_node`` is
+            the name of the node representing the root of the processed
+            sub-tree, and ``remaining_delta`` is the unused portion of the
+            error budget after all truncations.
+        """
         # print("optimize", node_name)
         # import matplotlib.pyplot as plt
         if visited is None:

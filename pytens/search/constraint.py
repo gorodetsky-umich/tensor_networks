@@ -234,7 +234,9 @@ class ConstraintSearch:
             s = ac.svals(
                 net,
                 algo_params=AlgoParams(
-                    algo=SVDAlgorithm.SVD if not cross else SVDAlgorithm.CROSS,
+                    algo=SVDAlgorithm.MERGE
+                    if not cross
+                    else SVDAlgorithm.CROSS,
                     eps=self.config.engine.eps,
                 ),
                 svd_params=SVDParams(

@@ -20,7 +20,19 @@ NodeName = IntOrStr
 
 @dataclass(frozen=True, eq=True)
 class Index:
-    """Class for denoting an index."""
+    """An index labelling one dimension of a tensor.
+
+    Attributes:
+        name: Unique identifier for the index, used as the key when looking
+            up nodes in a tensor network.
+        size: Number of discrete grid points along this dimension.
+        value_choices: The actual coordinate values corresponding to each
+            integer position ``0 .. size-1``. Empty by default, meaning the
+            index is purely symbolic with no associated coordinates.
+            Equality and hashing intentionally ignore this field — two
+            ``Index`` objects with the same ``name`` and ``size`` are
+            considered equal regardless of their ``value_choices``.
+    """
 
     name: Union[str, int]
     size: int
@@ -64,15 +76,62 @@ class Index:
 
 @dataclass
 class SVDConfig:
-    """Configuration fields for SVD in tensor networks."""
+    """Configuration fields for SVD in tensor networks.
 
-    delta: float = 1e-6
+    At most one of ``delta`` or ``rel_delta`` may be set.  When neither is
+    given the dataclass defaults to ``rel_delta=1e-6``.
+
+    Attributes:
+        delta: Absolute truncation threshold.  Singular values are discarded
+            from the smallest upward as long as their cumulative squared sum
+            does not exceed ``delta ** 2``.  Mutually exclusive with
+            ``rel_delta``.
+        rel_delta: Relative truncation threshold.  Converted to an absolute
+            threshold by multiplying by the Frobenius norm of the unfolded
+            matrix.  Defaults to ``1e-6`` when neither argument is given.
+            Mutually exclusive with ``delta``.
+        compute_data: When ``True``, the truncated data tensor is
+            reconstructed (``U @ S @ Vt``) after the SVD. Set to ``False``
+            to skip the reconstruction and keep only the factored form.
+        compute_uv: When ``True``, the left/right singular vectors (``U``
+            and ``Vt``) are computed. Set to ``False`` to return only the
+            singular values, which is cheaper when the vectors are not needed.
+    """
+
+    delta: Optional[float] = None
+    rel_delta: Optional[float] = None
     compute_data: bool = True
     compute_uv: bool = True
 
+    def __post_init__(self) -> None:
+        if self.delta is not None and self.rel_delta is not None:
+            raise ValueError(
+                "specify exactly one of 'delta' (absolute) or"
+                " 'rel_delta' (relative), not both"
+            )
+        if self.delta is None and self.rel_delta is None:
+            self.rel_delta = 1e-6
+
 
 class NodeInfo:
-    """Information at each dim tree node."""
+    """Cross-approximation bookkeeping attached to one side of a dim-tree edge.
+
+    Each ``DimTreeNode`` owns two ``NodeInfo`` objects: one for the *up*
+    direction (toward the root) and one for the *down* direction (toward the
+    leaves).  Together they record the current cross-approximation rows/columns
+    and the target rank for that edge.
+
+    Attributes:
+        nodes: Adjacent ``DimTreeNode`` objects on this side of the edge
+            (typically the parent for ``up_info`` or the children for
+            ``down_info``).
+        indices: The tensor indices that belong to this side of the partition.
+        vals: Integer sample matrix of shape ``(rank, len(indices))``.
+            Each row is a set of discrete index positions selected by the
+            cross algorithm as a representative row or column.
+        rank: Target rank for this edge, updated incrementally by the cross
+            sweeps.
+    """
 
     def __init__(
         self,
@@ -87,7 +146,26 @@ class NodeInfo:
 
 
 class DimTreeNode:
-    """Class for a dimension tree node"""
+    """A node in the hierarchical dimension tree used by cross approximation.
+
+    The dimension tree mirrors the tensor-network graph: each ``DimTreeNode``
+    corresponds to one network node, and its two ``NodeInfo`` sides record
+    the cross-approximation state for the edges connecting it to its parent
+    (``up_info``) and its children (``down_info``).
+
+    Attributes:
+        node: The name of the corresponding tensor-network node.
+        indices: All tensor indices (free and bond) attached to this node.
+        free_indices: The physical/free indices carried by this node — the
+            subset of ``indices`` that are not shared with other nodes.
+        up_info: Cross-approximation state for the edge toward the tree root
+            (parent side).
+        down_info: Cross-approximation state for the edges toward the tree
+            leaves (children side).
+        perm: Permutation applied to align the tensor values with the
+            canonical ordering ``[free_indices, down children, up parent]``
+            during cross-approximation sweeps.
+    """
 
     def __init__(  # pylint: disable=R0913,R0917
         self,
@@ -327,7 +405,16 @@ class DimTreeNode:
 
 
 class IndexMerge(pydantic.BaseModel):
-    """An index merge request and response."""
+    """An index merge request and response.
+
+    Represents the operation of fusing several indices into a single combined
+    index whose size is the product of the originals.
+
+    Attributes:
+        indices: The indices to be merged, in the order they will be combined.
+        result: The single merged index produced by the operation. ``None``
+            before the merge has been executed.
+    """
 
     indices: Sequence[Index]
     result: Optional[Index] = None
@@ -349,7 +436,18 @@ class IndexMerge(pydantic.BaseModel):
 
 
 class IndexSplit(pydantic.BaseModel):
-    """An index split request and response."""
+    """An index split request and response.
+
+    Represents the operation of reshaping a single index into several smaller
+    indices whose sizes multiply to the original size.
+
+    Attributes:
+        index: The index to be split.
+        shape: Target sizes for the new sub-indices, whose product must equal
+            ``index.size``.
+        result: The sequence of new indices produced by the split. ``None``
+            before the split has been executed.
+    """
 
     index: Index
     shape: Sequence[int]
@@ -366,7 +464,14 @@ class IndexSplit(pydantic.BaseModel):
 
 
 class IndexPermute(pydantic.BaseModel):
-    """Permute all indices in a function"""
+    """A permutation applied to the index ordering of a function.
+
+    Attributes:
+        perm: Permutation to apply — ``perm[i]`` is the original position of
+            the index that should appear at position ``i`` after reordering.
+        unperm: Inverse permutation of ``perm``, used to undo the reordering
+            when mapping results back to the original index order.
+    """
 
     perm: Sequence[int]
     unperm: Sequence[int]
@@ -376,7 +481,13 @@ class IndexPermute(pydantic.BaseModel):
 
 
 class IndexSwap(pydantic.BaseModel):
-    """Swap the indices on two neighbor nodes."""
+    """Swap free indices between two neighbouring nodes in a tensor network.
+
+    Attributes:
+        node: The name of the network node whose index assignment changes.
+        left_indices: The indices that should be placed on the *left* node
+            after the swap (the complement goes to the right node).
+    """
 
     node: NodeName
     left_indices: Sequence[Index]
@@ -416,7 +527,15 @@ class PartitionStatus(Enum):
 
 
 class PartitionResult:
-    """Result object for partition check."""
+    """Result of checking whether a set of indices forms a valid partition.
+
+    Attributes:
+        code: Outcome of the check (``OK``, ``FAIL``, or ``EXIST``).
+        lca_node: Name of the lowest common ancestor node in the tensor
+            network that subsumes all queried indices.
+        lca_indices: The indices held by ``lca_node`` that correspond to the
+            queried partition.
+    """
 
     code: PartitionStatus
     lca_node: NodeName
@@ -424,17 +543,29 @@ class PartitionResult:
 
 
 class SVDAlgorithm(Enum):
-    """Different way to compute singular values."""
+    """Strategy for computing singular values of a tensor partition.
 
-    SVD = auto()
+    Attributes:
+        MERGE: Merge the nodes that contain the target indices into a single
+            node first, then perform SVD on the merged tensor.
+        CROSS: Estimate singular values via cross approximation, which avoids
+            explicit contraction and is cheaper for large networks.
+    """
+
     MERGE = auto()
     CROSS = auto()
-    FOLD = auto()
 
 
 @dataclass
 class NodeIndexPair:
-    """A node together with an optional associated index."""
+    """A network node paired with an optional index it carries.
+
+    Attributes:
+        node: Name of the tensor-network node.
+        ind: An index associated with ``node``, or ``None`` if the pairing
+            is node-only (e.g. when referring to the node without specifying
+            which of its indices is of interest).
+    """
 
     node: NodeName
     ind: Optional[Index] = None
@@ -442,19 +573,36 @@ class NodeIndexPair:
 
 @dataclass
 class AlgoParams:
-    """Algorithm selection parameters for singular value computation."""
+    """Algorithm selection and tolerance for singular value computation.
 
-    algo: "SVDAlgorithm" = None  # type: ignore[assignment]
+    Attributes:
+        algo: Which ``SVDAlgorithm`` strategy to use. Defaults to
+            ``SVDAlgorithm.MERGE`` when not specified.
+        eps: Error tolerance passed to the chosen algorithm (e.g. used as the
+            cross-approximation accuracy when ``algo`` is ``CROSS``).
+    """
+
+    algo: "SVDAlgorithm" = SVDAlgorithm.MERGE
     eps: float = 0.0
 
     def __post_init__(self) -> None:
         if self.algo is None:
-            self.algo = SVDAlgorithm.SVD
+            self.algo = SVDAlgorithm.MERGE
 
 
 @dataclass
 class SVDParams:
-    """Parameters controlling the SVD truncation and randomisation."""
+    """Parameters controlling the SVD truncation and randomisation.
+
+    Attributes:
+        max_rank: Maximum number of singular values/vectors to retain.
+        orthonormal: Name of the network node that is already orthonormalised
+            before the SVD is performed. ``None`` means no orthonormalisation
+            is assumed.
+        random_seed: Seed for the randomised SVD. ``None`` selects a fixed
+            default seed; pass an integer to make results reproducible or to
+            vary the random draw.
+    """
 
     max_rank: int = 100
     orthonormal: Optional[NodeName] = None
