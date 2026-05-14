@@ -305,7 +305,7 @@ class TestSearch(unittest.TestCase):
 
 class TestTopDownSearch(unittest.TestCase):
     def test_top_down_cross(self):
-        n = 15
+        n = 12
         grid = np.meshgrid(*[np.arange(0, n) for _ in range(4)])
         all_args = np.stack(grid, axis=0).reshape(4, -1).T
         real_val = 1.0 / np.sum(all_args + 1, axis=1)
@@ -318,12 +318,11 @@ class TestTopDownSearch(unittest.TestCase):
         config.engine.verbose = True
         config.cross.init_eps = 0.1
         config.cross.init_struct = InitStructType.TT
-        config.topdown.merge_mode = "all"
         search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
         result = search_engine.top_down()
         assert result.best_state is not None
         err = result.stats.re_f
-        self.assertLessEqual(float(err), 2e-1)
+        self.assertLessEqual(float(err), 1e-1)
 
     def test_top_down_cross_init_reshape(self):
         n = 25
@@ -339,12 +338,11 @@ class TestTopDownSearch(unittest.TestCase):
         config.engine.verbose = True
         config.cross.init_eps = 0.1
         config.cross.init_struct = InitStructType.TT
-        config.topdown.merge_mode = "all"
         search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
         result = search_engine.top_down()
         assert result.best_state is not None
         err = result.stats.re_f
-        self.assertLessEqual(float(err), 2e-1)
+        self.assertLessEqual(float(err), 1e-1)
 
 
     def test_top_down_reshape_enabled(self):
@@ -362,11 +360,10 @@ class TestTopDownSearch(unittest.TestCase):
         config.cross.init_eps = 0.1
         config.cross.init_struct = InitStructType.TT
         config.topdown.reshape_enabled = True
-        config.topdown.merge_mode = "all"
         search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
         result = search_engine.top_down()
         assert result.best_state is not None
-        self.assertLessEqual(float(result.stats.re_f), 2e-1)
+        self.assertLessEqual(float(result.stats.re_f), 1e-1)
 
     def test_top_down_ackley(self):
         """Black-box search on the Ackley function."""
@@ -381,11 +378,10 @@ class TestTopDownSearch(unittest.TestCase):
         config.engine.eps = 1e-1
         config.cross.init_eps = 0.1
         config.cross.init_struct = InitStructType.TT
-        config.topdown.merge_mode = "all"
         search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
         result = search_engine.top_down()
         assert result.best_state is not None
-        self.assertLessEqual(float(result.stats.re_f), 2e-1)
+        self.assertLessEqual(float(result.stats.re_f), 1e-1)
 
     def test_top_down_whitebox(self):
         """White-box search starting from a random TT."""
@@ -399,7 +395,7 @@ class TestTopDownSearch(unittest.TestCase):
         search_engine = WhiteBoxTopDownSearchEngine(config, tt)
         result = search_engine.top_down()
         assert result.best_state is not None
-        self.assertLessEqual(float(result.stats.re_f), 2e-1)
+        self.assertLessEqual(float(result.stats.re_f), 1e-1)
 
 
 if __name__ == "__main__":
