@@ -17,7 +17,7 @@ class TensorFunc:
     Attributes:
         d: Number of dimensions (equal to ``len(indices)``).
         indices: One ``Index`` per dimension, each carrying the discrete grid
-            points via ``value_choices`` and the grid size via ``size``.
+            points via ``space`` and the grid size via ``size``.
         name: Human-readable identifier used for logging and file names.
             Defaults to ``"_func_"``; subclasses should override it.
         calls: Array of shape ``(n_calls, d)`` recording every set of integer
@@ -35,7 +35,7 @@ class TensorFunc:
         """Convert vectorized integer indices to vectorized function arguments.
 
         This maps each discrete index (i_k) to its associated argument value
-        using ``self.indices[k].value_choices``.
+        using ``self.indices[k].space``.
 
         Parameters
         ----------
@@ -51,7 +51,7 @@ class TensorFunc:
         indices = indices.astype(int)
         args = np.empty_like(indices, dtype=float)
         for i, ind in enumerate(self.indices):
-            args[:, i] = np.array(ind.value_choices)[indices[:, i]]
+            args[:, i] = np.array(ind.space)[indices[:, i]]
 
         return args
 

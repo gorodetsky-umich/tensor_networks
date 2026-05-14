@@ -41,7 +41,7 @@ from pytens.types import (
     NodeIndexPair,
     PartitionStatus,
     PartitionResult,
-    SVDParams,
+    SValsParams,
 )
 from pytens.search.types import Action
 from pytens.cross.func_impl import FuncTensorNetwork
@@ -255,8 +255,8 @@ class Tensor:
         self,
         lefts: Sequence[int],
         *,
-        delta: Optional[float] = None,
-        rel_delta: Optional[float] = None,
+        atol: Optional[float] = None,
+        rtol: Optional[float] = None,
         compute_uv: bool = True,
     ) -> Tuple[List["Tensor"], float]:
         """Split a tensor into three factors by (optionally truncated) SVD.
@@ -266,44 +266,44 @@ class Tensor:
         is then computed and the result is reshaped back into three tensors
         ``[U, S, Vt]``, where ``S`` is diagonal.
 
-        At most one of ``delta`` or ``rel_delta`` may be provided.  When
-        neither is given, ``rel_delta=1e-6`` is used by default.
+        At most one of ``atol`` or ``rtol`` may be provided.  When
+        neither is given, ``rtol=1e-6`` is used by default.
 
         Args:
             lefts: Positions of the indices that form the left (row) side of
                 the unfolding matrix.  All other index positions become the
                 right (column) side.
-            delta: Absolute truncation threshold.  Singular values are
+            atol: Absolute truncation threshold.  Singular values are
                 discarded from the smallest upward as long as their cumulative
-                squared sum does not exceed ``delta ** 2``.  Mutually
-                exclusive with ``rel_delta``.
-            rel_delta: Relative truncation threshold.  Converted to an
+                squared sum does not exceed ``atol ** 2``.  Mutually
+                exclusive with ``rtol``.
+            rtol: Relative truncation threshold.  Converted to an
                 absolute threshold by multiplying by the Frobenius norm of the
-                unfolded matrix before applying the same rule as ``delta``.
+                unfolded matrix before applying the same rule as ``atol``.
                 Defaults to ``1e-6`` when neither argument is given.  Mutually
-                exclusive with ``delta``.
+                exclusive with ``atol``.
             compute_uv: When ``True`` (default), return all three factors
                 ``[U, S, Vt]``.  When ``False``, return only ``[S]``, which
                 is cheaper when the singular vectors are not needed.
 
         Returns:
-            A tuple ``(tensors, remaining_delta)`` where ``tensors`` is
+            A tuple ``(tensors, remaining_atol)`` where ``tensors`` is
             ``[U, S, Vt]`` (or ``[S]`` when ``compute_uv=False``), and
-            ``remaining_delta`` is the unused portion of the absolute error
+            ``remaining_atol`` is the unused portion of the absolute error
             budget after truncation.
 
         Raises:
-            ValueError: If both ``delta`` and ``rel_delta`` are provided.
+            ValueError: If both ``atol`` and ``rtol`` are provided.
         """
-        if delta is not None and rel_delta is not None:
+        if atol is not None and rtol is not None:
             raise ValueError(
-                "specify exactly one of 'delta' (absolute) or"
-                " 'rel_delta' (relative), not both"
+                "specify exactly one of 'atol' (absolute) or"
+                " 'rtol' (relative), not both"
             )
-        if delta is None and rel_delta is None:
-            rel_delta = 1e-6
-        with_normalizing = delta is None
-        effective_delta = delta or rel_delta or 0.0
+        if atol is None and rtol is None:
+            rtol = 1e-6
+        with_normalizing = atol is None
+        effective_delta = atol or rtol or 0.0
 
         rights = [i for i in range(len(self.indices)) if i not in lefts]
         permute_indices = itertools.chain(lefts, rights)
@@ -828,7 +828,7 @@ class TensorNetwork:  # pylint: disable=R0904
             lefts: Index positions that form the left (row) side of the
                 unfolding matrix; all other positions go to the right side.
             config: Truncation and output settings.  See ``SVDConfig`` for the
-                ``delta``/``rel_delta`` and ``compute_data``/``compute_uv``
+                ``atol``/``rtol`` and ``compute_data``/``compute_uv``
                 options.
 
         Returns:
@@ -846,13 +846,13 @@ class TensorNetwork:  # pylint: disable=R0904
             u = Tensor(np.empty([0 for _ in u_indices]), u_indices)
             v_indices = [rr] + [x.indices[i] for i in rights]
             v = Tensor(np.empty([0 for _ in v_indices]), v_indices)
-            d = config.delta or 0.0
+            d = config.atol or 0.0
 
             if config.compute_data:
                 s_tuple, _ = x.svd(
                     lefts,
-                    delta=config.delta,
-                    rel_delta=config.rel_delta,
+                    atol=config.atol,
+                    rtol=config.rtol,
                     compute_uv=config.compute_uv,
                 )
                 s: Tensor = s_tuple[0]
@@ -861,9 +861,7 @@ class TensorNetwork:  # pylint: disable=R0904
         else:
             x = self.node_tensor(node_name)
             # svd decompose the data into specified index partition
-            [u, s, v], d = x.svd(
-                lefts, delta=config.delta, rel_delta=config.rel_delta
-            )
+            [u, s, v], d = x.svd(lefts, atol=config.atol, rtol=config.rtol)
 
         v_name = self.fresh_node()
         new_index_r = self.fresh_index()
@@ -1428,47 +1426,55 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
     """Class for arbitrary tree-structured networks"""
 
     def round(
-        self, node_name: NodeName, delta: float, visited: Optional[set] = None
+        self,
+        node_name: NodeName,
+        *,
+        atol: Optional[float] = None,
+        rtol: Optional[float] = None,
     ) -> Tuple[NodeName, float]:
         """
         Truncate bond dimensions across the tree using a shared error budget.
 
-        Performs a depth-first sweep starting from ``node_name``.  On the
-        first call (``visited`` is ``None``) the tree is orthonormalised at
-        ``node_name`` so that truncation errors at each bond are independent
-        and additive.  At each unvisited bond a truncated SVD is performed,
-        discarding trailing singular values whose squared sum does not exceed
-        the remaining ``delta`` budget.  The budget consumed by each
-        truncation is subtracted before recursing into the neighbouring
-        sub-tree, so the total squared error across all bonds stays within
-        the original ``delta``.
+        Orthonormalises the tree at ``node_name``, then performs a depth-first
+        sweep discarding singular values whose cumulative squared sum fits
+        within the budget.  Because the tree is orthonormal, errors at each
+        bond are independent and additive, so the total squared error stays
+        within the original tolerance.
 
         Args:
-            node_name: The node at which the sweep begins (root of the current
-                sub-tree).
-            delta: Absolute squared-error budget.  Each SVD consumes part of
-                this budget; the reduced value is threaded through the
-                recursion and returned so the caller always knows how much
-                budget remains.
-            visited: Set of bond indices already processed in this sweep.
-                Pass ``None`` on the initial call; the method populates it
-                internally during the recursion to avoid revisiting bonds.
+            node_name: The node at which the sweep begins.
+            atol: Absolute error budget.  Mutually exclusive with ``rtol``.
+            rtol: Relative error tolerance.  Converted to an absolute budget
+                by multiplying by the network's Frobenius norm before the
+                sweep begins.  Mutually exclusive with ``atol``.
 
         Returns:
             A tuple ``(root_node, remaining_delta)`` where ``root_node`` is
             the name of the node representing the root of the processed
             sub-tree, and ``remaining_delta`` is the unused portion of the
-            error budget after all truncations.
-        """
-        # print("optimize", node_name)
-        # import matplotlib.pyplot as plt
-        if visited is None:
-            initial_optimize = True
-            visited = set()
-            self.orthonormalize(node_name)
-        else:
-            initial_optimize = False
+            absolute error budget after all truncations.
 
+        Raises:
+            ValueError: If both or neither of ``atol`` and ``rtol`` are given.
+        """
+        if atol is not None and rtol is not None:
+            raise ValueError(
+                "specify exactly one of 'atol' or 'rtol', not both"
+            )
+        if atol is None and rtol is None:
+            raise ValueError("specify one of 'atol' or 'rtol'")
+        delta = atol if atol is not None else (rtol or 0.0) * self.norm()
+        self.orthonormalize(node_name)
+        return self._round_impl(node_name, delta, set(), initial=True)
+
+    def _round_impl(
+        self,
+        node_name: NodeName,
+        delta: float,
+        visited: set,
+        initial: bool,
+    ) -> Tuple[NodeName, float]:
+        """Recursive depth-first truncation sweep with an absolute budget."""
         node_indices = self.node_tensor(node_name).indices
         kept_indices = []
         free_indices = []
@@ -1494,11 +1500,10 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
             left_indices = [
                 curr_indices.index(i) for i in curr_indices if i != idx
             ]
-            right_indices = [curr_indices.index(idx)]
             [node_name, s, v], delta = self.svd(
                 node_name,
                 left_indices,
-                SVDConfig(delta=delta),
+                SVDConfig(atol=delta),
             )
             self.merge(v, s)
             self.merge(nbr, v)
@@ -1506,10 +1511,10 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
             for idx in visited_index:
                 visited.add(idx)
 
-            r, delta = self.round(nbr, delta, visited)
+            r, delta = self._round_impl(nbr, delta, visited, initial=False)
             self.merge(node_name, r)
 
-        if not initial_optimize:
+        if not initial:
             node_indices = self.node_tensor(node_name).indices
             left_indices, right_indices = [], []
             for i, idx in enumerate(node_indices):
@@ -2502,7 +2507,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         self,
         node: NodeName,
         indices: Sequence[Index],
-        params: SVDParams,
+        params: SValsParams,
     ) -> np.ndarray:
         """Compute singular values at a specific node using randomized SVD."""
         tensor = self.node_tensor(node)
@@ -2607,18 +2612,6 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         tree = TreeNetwork()
         tree.network = self.network
         return tree
-
-    def _longest_path(self) -> List[NodeName]:
-        """Get the longest path in the current tree."""
-        u = list(self.network.nodes())[0]
-        dist = nx.single_source_shortest_path_length(self.network, u)
-        a = max(dist, key=dist.get)
-
-        dist = nx.single_source_shortest_path_length(self.network, a)
-        b = max(dist, key=dist.get)
-
-        path: List[NodeName] = nx.shortest_path(self.network, a, b)
-        return path
 
     def replay_preprocess(self, actions: Sequence[Action]) -> None:
         """Apply the given actions around the given ranks."""

@@ -14,7 +14,7 @@ from pytens.algs import Index, Tensor, TreeNetwork
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import ISplit, OSplit, SearchState
 from pytens.search.types import Action
-from pytens.types import AlgoParams, IndexName, SVDAlgorithm, SVDParams
+from pytens.types import AlgoParams, IndexName, SVDAlgorithm, SValsParams
 
 BAD_SCORE = 9999999999999
 
@@ -39,7 +39,7 @@ class ILPSolver:
     def add_var(self, ind: Index) -> None:
         """Add variables for a given rank i"""
         # for a given edge, we add binary variables i0, i1, .., in
-        indices = [(ind.name, j) for j in ind.value_choices]
+        indices = [(ind.name, j) for j in ind.space]
         # print(indices)
         # print(ind, len(indices), ind.size[1] - ind.size[0])
         self.vars.update(self.model.addVars(indices, vtype=GRB.BINARY))
@@ -66,8 +66,8 @@ class ILPSolver:
 
             # print(ind)
             # print(ind, len(pfsums[ind.name]))
-            assert len(pfsums[ind.name]) == len(ind.value_choices)
-            for sz, p in zip(ind.value_choices, pfsums[ind.name]):
+            assert len(pfsums[ind.name]) == len(ind.space)
+            for sz, p in zip(ind.space, pfsums[ind.name]):
                 coeff[(ind.name, sz)] = p
 
         logger.debug("adding coeffs: %s", coeff)
@@ -108,7 +108,7 @@ class ILPSolver:
 
             all_var_cost = gp.LinExpr()
             if len(var_inds) > 1:
-                var_sizes = [ind.value_choices for ind in var_inds]
+                var_sizes = [ind.space for ind in var_inds]
                 for v_sizes in itertools.product(*var_sizes):
                     # we need to add a temporary variable to
                     # turn this term into a linear term
@@ -126,7 +126,7 @@ class ILPSolver:
             elif len(var_inds) == 1:
                 ind = var_inds[0]
                 var_cost = gp.LinExpr()
-                for v in ind.value_choices:
+                for v in ind.space:
                     var_cost += v * self.vars[(ind.name, v)]
 
                 all_var_cost += var_cost
@@ -239,7 +239,7 @@ class ConstraintSearch:
                     else SVDAlgorithm.CROSS,
                     eps=self.config.engine.eps,
                 ),
-                svd_params=SVDParams(
+                svd_params=SValsParams(
                     max_rank=self.config.preprocess.max_rank,
                     orthonormal=None,
                     random_seed=rand_seed,
@@ -302,7 +302,7 @@ class ConstraintSearch:
         var_indices = []
         rerange_map = {}
         for ind in indices:
-            rerange_map[ind.name] = ind.value_choices
+            rerange_map[ind.name] = ind.space
             if ind not in free_indices:
                 var_indices.append(ind)
                 solver.add_var(ind)
@@ -325,7 +325,7 @@ class ConstraintSearch:
 
         relabel_map: Dict[IndexName, int] = {}
         for ind in var_indices:
-            for j in ind.value_choices:
+            for j in ind.space:
                 if solver.vars[(ind.name, j)].x == 1:
                     relabel_map[ind.name] = int(j)
 

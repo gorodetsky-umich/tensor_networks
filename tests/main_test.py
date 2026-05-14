@@ -22,7 +22,7 @@ from pytens.cross.func_interface import CachedFunc
 from pytens.ht import *
 from pytens.search.utils import IndexMerge, IndexSplit
 from pytens.tt import *
-from pytens.types import Index
+from pytens.types import Index, SVDConfig
 from tests.search_test import *
 
 np.random.seed(4)
@@ -467,7 +467,7 @@ class TestTT(unittest.TestCase):
         # print(TTadd)
         indices = TTadd.free_indices()
         ttadd = TTadd.contract().value
-        TTadd.round(0, 1e-5)
+        TTadd.round(0, atol=1e-5)
         # # exit(1)
         new_ranks = TTadd.ranks()
 
@@ -670,7 +670,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value + t2.value
         t12_net = net1 + net2
-        t12_net.round("x", t12_net.norm() * 1e-10)
+        t12_net.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = t12_net.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -728,7 +728,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value + t2.value
         net12 = net1 + net2
-        net12.round("x", net12.norm() * 1e-10)
+        net12.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = net12.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -790,7 +790,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value + t2.value
         net12 = net1 + net2
-        net12.round("x", net12.norm() * 1e-10)
+        net12.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = net12.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -826,7 +826,7 @@ class TestTree(unittest.TestCase):
 
         t11 = t1.value + t1.value
         net11 = net1 + net1
-        net11.round("x", net11.norm() * 1e-10)
+        net11.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor11 = net11.contract()
         perm = [tensor11.indices.index(ind) for ind in net1.free_indices()]
@@ -862,7 +862,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value * t2.value
         t12_net = net1 * net2
-        t12_net.round("x", t12_net.norm() * 1e-10)
+        t12_net.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = t12_net.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -922,7 +922,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value * t2.value
         net12 = net1 * net2
-        net12.round("x", net12.norm() * 1e-10)
+        net12.round("x", rtol=1e-10)
         # print(net12)
         # network free inds are changed after rounding
         tensor12 = net12.contract()
@@ -985,7 +985,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value * t2.value
         net12 = net1 * net2
-        net12.round("u0", net12.norm() * 1e-10)
+        net12.round("u0", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = net12.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -993,6 +993,99 @@ class TestTree(unittest.TestCase):
         self.assertTrue(
             np.allclose(t12, tensor12.value, rtol=1e-10, atol=1e-10)
         )
+
+
+    # ── Tensor.svd atol / rtol ────────────────────────────────────────────────
+
+    def test_tensor_svd_atol_error_bounded(self):
+        """Absolute error of reconstruction must be <= atol."""
+        data = np.diag([10.0, 1.0, 0.01])
+        t = Tensor(data, [Index("i", 3), Index("j", 3)])
+        atol = 0.1
+        (u, s, v), _ = t.svd([0], atol=atol)
+        reconstructed = u.value @ s.value @ v.value
+        error = np.linalg.norm(data - reconstructed)
+        self.assertLessEqual(error, atol)
+
+    def test_tensor_svd_rtol_error_bounded(self):
+        """Relative error of reconstruction must be <= rtol."""
+        data = np.diag([10.0, 0.001])
+        t = Tensor(data, [Index("i", 2), Index("j", 2)])
+        rtol = 1e-3
+        (u, s, v), _ = t.svd([0], rtol=rtol)
+        reconstructed = u.value @ s.value @ v.value
+        error = np.linalg.norm(data - reconstructed) / np.linalg.norm(data)
+        self.assertLessEqual(error, rtol)
+
+    def test_tensor_svd_both_raises(self):
+        t = Tensor(np.eye(3), [Index("i", 3), Index("j", 3)])
+        with self.assertRaises(ValueError):
+            t.svd([0], atol=1e-5, rtol=1e-5)
+
+    # ── TensorNetwork.svd atol / rtol (via SVDConfig) ─────────────────────────
+
+    def test_net_svd_atol_error_bounded(self):
+        """Absolute reconstruction error after SVDConfig(atol=X) must be <= X."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = net.free_indices()
+        atol = 0.5
+        net.svd(4, [0, 2], SVDConfig(atol=atol))
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        error = np.linalg.norm(original - result.permute(perm).value)
+        self.assertLessEqual(error, atol)
+
+    def test_net_svd_rtol_error_bounded(self):
+        """Relative reconstruction error after SVDConfig(rtol=X) must be <= X."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = net.free_indices()
+        rtol = 0.1
+        net.svd(4, [0, 2], SVDConfig(rtol=rtol))
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        error = np.linalg.norm(original - result.permute(perm).value)
+        self.assertLessEqual(error, rtol * np.linalg.norm(original))
+
+    def test_net_svd_config_both_raises(self):
+        """Constructing SVDConfig with both atol and rtol must raise ValueError."""
+        with self.assertRaises(ValueError):
+            SVDConfig(atol=1e-5, rtol=1e-5)
+
+    # ── TreeNetwork.round atol / rtol ─────────────────────────────────────────
+
+    def test_round_atol_error_bounded(self):
+        """Absolute error after round(atol=X) must be <= X."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = self.tree.free_indices()
+        atol = 0.5
+        net.round(0, atol=atol)
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        error = np.linalg.norm(original - result.permute(perm).value)
+        self.assertLessEqual(error, atol)
+
+    def test_round_rtol_error_bounded(self):
+        """Relative error after round(rtol=X) must be <= X."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = self.tree.free_indices()
+        rtol = 1e-2
+        net.round(0, rtol=rtol)
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        error = np.linalg.norm(original - result.permute(perm).value)
+        self.assertLessEqual(error, rtol * np.linalg.norm(original))
+
+    def test_round_both_raises(self):
+        with self.assertRaises(ValueError):
+            self.tree.round(0, atol=1e-5, rtol=1e-5)
+
+    def test_round_neither_raises(self):
+        with self.assertRaises(ValueError):
+            self.tree.round(0)
 
 
 class TestCross(unittest.TestCase):

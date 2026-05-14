@@ -71,7 +71,7 @@ from pytens.types import (
     IndexPermute,
     IndexSplit,
     NodeName,
-    SVDParams,
+    SValsParams,
 )
 from pytens.search.types import SearchContext
 
@@ -297,7 +297,7 @@ def _split_scores(st: HSearchState, index: Index) -> Dict[int, float]:
 
         max_rank = 100
         s = tmp_net.random_svals(
-            node, target_inds, SVDParams(max_rank=max_rank)
+            node, target_inds, SValsParams(max_rank=max_rank)
         )
         split_scores[n] = eff_rank(s)  # s[0] / s[min(len(s), 1)]
         logger.debug(
@@ -381,7 +381,7 @@ class TopDownSearch:
             network = copy.deepcopy(st.network)
             try:
                 logger.debug("unused delta: %s", delta)
-                network.round(n, delta=math.sqrt(delta))
+                network.round(n, atol=math.sqrt(delta))
             except np.linalg.LinAlgError:
                 continue
 

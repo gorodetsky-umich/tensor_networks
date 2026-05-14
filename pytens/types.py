@@ -26,17 +26,17 @@ class Index:
         name: Unique identifier for the index, used as the key when looking
             up nodes in a tensor network.
         size: Number of discrete grid points along this dimension.
-        value_choices: The actual coordinate values corresponding to each
+        space: The actual coordinate values corresponding to each
             integer position ``0 .. size-1``. Empty by default, meaning the
             index is purely symbolic with no associated coordinates.
             Equality and hashing intentionally ignore this field — two
             ``Index`` objects with the same ``name`` and ``size`` are
-            considered equal regardless of their ``value_choices``.
+            considered equal regardless of their ``space``.
     """
 
     name: Union[str, int]
     size: int
-    value_choices: Sequence[float] = tuple([])
+    space: Sequence[float] = tuple([])
 
     def with_new_size(self, new_size: int) -> "Index":
         """Create a new index with same name but new size"""
@@ -78,18 +78,18 @@ class Index:
 class SVDConfig:
     """Configuration fields for SVD in tensor networks.
 
-    At most one of ``delta`` or ``rel_delta`` may be set.  When neither is
-    given the dataclass defaults to ``rel_delta=1e-6``.
+    At most one of ``atol`` or ``rtol`` may be set.  When neither is
+    given the dataclass defaults to ``rtol=1e-6``.
 
     Attributes:
-        delta: Absolute truncation threshold.  Singular values are discarded
+        atol: Absolute truncation threshold.  Singular values are discarded
             from the smallest upward as long as their cumulative squared sum
-            does not exceed ``delta ** 2``.  Mutually exclusive with
-            ``rel_delta``.
-        rel_delta: Relative truncation threshold.  Converted to an absolute
+            does not exceed ``atol ** 2``.  Mutually exclusive with
+            ``rtol``.
+        rtol: Relative truncation threshold.  Converted to an absolute
             threshold by multiplying by the Frobenius norm of the unfolded
             matrix.  Defaults to ``1e-6`` when neither argument is given.
-            Mutually exclusive with ``delta``.
+            Mutually exclusive with ``atol``.
         compute_data: When ``True``, the truncated data tensor is
             reconstructed (``U @ S @ Vt``) after the SVD. Set to ``False``
             to skip the reconstruction and keep only the factored form.
@@ -98,19 +98,19 @@ class SVDConfig:
             singular values, which is cheaper when the vectors are not needed.
     """
 
-    delta: Optional[float] = None
-    rel_delta: Optional[float] = None
+    atol: Optional[float] = None
+    rtol: Optional[float] = None
     compute_data: bool = True
     compute_uv: bool = True
 
     def __post_init__(self) -> None:
-        if self.delta is not None and self.rel_delta is not None:
+        if self.atol is not None and self.rtol is not None:
             raise ValueError(
-                "specify exactly one of 'delta' (absolute) or"
-                " 'rel_delta' (relative), not both"
+                "specify exactly one of 'atol' (absolute) or"
+                " 'rtol' (relative), not both"
             )
-        if self.delta is None and self.rel_delta is None:
-            self.rel_delta = 1e-6
+        if self.atol is None and self.rtol is None:
+            self.rtol = 1e-6
 
 
 class NodeInfo:
@@ -591,7 +591,7 @@ class AlgoParams:
 
 
 @dataclass
-class SVDParams:
+class SValsParams:
     """Parameters controlling the SVD truncation and randomisation.
 
     Attributes:

@@ -22,7 +22,7 @@ from pytens.types import (
     IndexSplit,
     NodeIndexPair,
     NodeName,
-    SVDParams,
+    SValsParams,
 )
 
 if TYPE_CHECKING:
@@ -385,7 +385,7 @@ class SVDIndexCluster(IndexCluster):
                 ac = OSplit([ind_i, ind_j])
                 svals = ac.svals(
                     net,
-                    svd_params=SVDParams(
+                    svd_params=SValsParams(
                         max_rank=100, orthonormal=True, random_seed=42
                     ),
                 )

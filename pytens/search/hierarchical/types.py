@@ -7,7 +7,7 @@ from pytens.search.state import SearchState
 from pytens.search.types import Action
 from pytens.search.utils import SearchResult, SearchStats
 from pytens.algs import TreeNetwork
-from pytens.types import Index, IndexOp, IndexMerge, IndexSplit, IndexName
+from pytens.types import Index, IndexOp, IndexMerge, IndexSplit
 
 
 class HSearchState:
@@ -112,20 +112,6 @@ class IndexSplitResult:
     def __init__(self, state: HSearchState, splits: Sequence[IndexSplit]):
         self.state = state
         self.splits = splits
-
-
-class SuperIndex(Index):
-    """A symbolic grouping of indices."""
-
-    def __init__(
-        self,
-        name: IndexName,
-        size: int,
-        constituents: Sequence[Index],
-        values: Sequence[float] = tuple([]),
-    ):
-        super().__init__(name, size, values)
-        self.constituents = constituents
 
 
 @dataclass

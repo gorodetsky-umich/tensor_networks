@@ -18,7 +18,7 @@ from pytens.types import (
     IndexMerge,
     PartitionStatus,
     SVDAlgorithm,
-    SVDParams,
+    SValsParams,
 )
 from pytens.cross.cross import CrossApproximation, CrossConfig
 
@@ -170,7 +170,7 @@ class OSplit(Action):
         self,
         net: TreeNetwork,
         algo_params: AlgoParams = AlgoParams(),
-        svd_params: SVDParams = SVDParams(),
+        svd_params: SValsParams = SValsParams(),
     ) -> np.ndarray:
         """Compute the singular values of the split action."""
         logger.debug("performing actions: %s", self)
@@ -260,9 +260,7 @@ class ISplit(Action):
             (u, s, v), _ = net.svd(
                 self.node,
                 linds,
-                SVDConfig(
-                    delta=0, compute_data=compute_data, compute_uv=compute_uv
-                ),
+                SVDConfig(compute_data=compute_data, compute_uv=compute_uv),
             )
         else:
             node_indices = net.node_tensor(self.node).indices
@@ -275,7 +273,7 @@ class ISplit(Action):
             (u, s, v), _ = net.svd(
                 self.node,
                 linds,
-                SVDConfig(delta=0, compute_data=False, compute_uv=compute_uv),
+                SVDConfig(atol=0, compute_data=False, compute_uv=compute_uv),
             )
             net.node_tensor(u).update_val_size(svd[0].reshape(*lszs, -1))
             net.node_tensor(s).update_val_size(np.diag(svd[1]))
@@ -566,7 +564,7 @@ class SearchState:
 
         assert root is not None
         root = self.network.orthonormalize(root)
-        _, self.curr_delta = self.network.round(root, self.curr_delta)
+        _, self.curr_delta = self.network.round(root, atol=self.curr_delta)
 
     def __lt__(self, other: Self) -> bool:
         # return (self.curr_delta**2 / self.network.cost()) < (

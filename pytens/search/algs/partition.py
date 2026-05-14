@@ -218,7 +218,7 @@ class PartitionSearch:
         unused_delta = 0.0
         for n in st.network.network.nodes:
             tmp_st = copy.deepcopy(st)
-            _, unused_delta = tmp_st.network.round(n, st.curr_delta)
+            _, unused_delta = tmp_st.network.round(n, atol=st.curr_delta)
             if tmp_st.network.cost() < best_state.network.cost():
                 best_state = tmp_st
 

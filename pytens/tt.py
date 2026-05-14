@@ -220,7 +220,7 @@ class TensorTrain(TreeNetwork):
             [left_node, s, right_node], _ = tt.svd(
                 right_node,
                 lefts,
-                SVDConfig(delta=norm * eps / ((len(indices) - 1) ** 0.5)),
+                SVDConfig(atol=norm * eps / ((len(indices) - 1) ** 0.5)),
             )
             tt.merge(right_node, s)
 
