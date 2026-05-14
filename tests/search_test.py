@@ -304,13 +304,33 @@ class TestSearch(unittest.TestCase):
         self.assertLessEqual(bn.cost(), self.net.cost())
 
 class TestTopDownSearch(unittest.TestCase):
-    def test_top_down_cross(self):
+    def test_top_down_search(self):
         n = 12
         grid = np.meshgrid(*[np.arange(0, n) for _ in range(4)])
         all_args = np.stack(grid, axis=0).reshape(4, -1).T
         real_val = 1.0 / np.sum(all_args + 1, axis=1)
         real_val = real_val.reshape(n, n, n, n)
         indices = [Index(f"I{i}", n, range(n)) for i in range(4)]
+        tensor_func = FuncData(indices, real_val)
+
+        config = SearchConfig()
+        config.engine.eps = 1e-1
+        config.engine.verbose = True
+        config.cross.init_eps = 0.1
+        config.cross.init_struct = InitStructType.TT
+        search_engine = BlackBoxTopDownSearchEngine(config, tensor_func, all_args)
+        result = search_engine.top_down()
+        assert result.best_state is not None
+        err = result.stats.re_f
+        self.assertLessEqual(float(err), 1e-1)
+
+    def test_top_down_sweep(self):
+        n = 12
+        grid = np.meshgrid(*[np.arange(0, n) for _ in range(5)])
+        all_args = np.stack(grid, axis=0).reshape(5, -1).T
+        real_val = 1.0 / np.sum(all_args + 1, axis=1)
+        real_val = real_val.reshape(n, n, n, n, n)
+        indices = [Index(f"I{i}", n, range(n)) for i in range(5)]
         tensor_func = FuncData(indices, real_val)
 
         config = SearchConfig()
@@ -383,11 +403,11 @@ class TestTopDownSearch(unittest.TestCase):
         assert result.best_state is not None
         self.assertLessEqual(float(result.stats.re_f), 1e-1)
 
-    def test_top_down_whitebox(self):
+    def test_top_down_whitebox_sweep(self):
         """White-box search starting from a random TT."""
         n = 10
-        indices = [Index(f"I{i}", n, range(n)) for i in range(4)]
-        tt = TensorTrain.rand_tt(indices, [3, 3, 3])
+        indices = [Index(f"I{i}", n, range(n)) for i in range(6)]
+        tt = TensorTrain.rand_tt(indices, [3, 3, 3, 3, 3])
 
         config = SearchConfig()
         config.engine.eps = 1e-1
