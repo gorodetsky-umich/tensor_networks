@@ -84,15 +84,15 @@ def _py_maxvol(
     top_k_index: int = -1,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Find a r×r submatrix of maximum volume in an n×r matrix.
+    Find a rxr submatrix of maximum volume in an nxr matrix.
 
-    Implements the 1-maxvol algorithm: given an n×r tall matrix ``arr``
-    (n > r), finds r row indices whose r×r submatrix has (approximately)
+    Implements the 1-maxvol algorithm: given an nxr tall matrix ``arr``
+    (n > r), finds r row indices whose rxr submatrix has (approximately)
     maximum absolute determinant.  The search is restricted to the first
     ``top_k_index`` rows; pass -1 (default) to search all rows.
 
     The algorithm initialises with an LU-pivoted basis, then greedily swaps
-    rows using the Sherman–Morrison rank-1 update (BLAS *GER) until no swap
+    rows using the Sherman-Morrison rank-1 update (BLAS *GER) until no swap
     improves the volume by more than ``tol``.
 
     Args:
