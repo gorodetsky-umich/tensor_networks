@@ -5,11 +5,11 @@ from __future__ import annotations
 import copy
 import logging
 from enum import Enum, auto
-from typing import Any, Callable, List, Optional, Sequence, Tuple, cast
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import pydantic
-from scipy.linalg import get_blas_funcs, get_lapack_funcs
+from scipy.linalg import qr as sp_qr
 
 import pytens.algs as pt
 from pytens.cross.func_interface import TensorFunc
@@ -108,6 +108,9 @@ def _py_maxvol(
             indices into ``arr``.
         c: Coefficient matrix of shape (n, r) such that
             ``arr ≈ arr[index] @ c[index]``.
+
+    This implementation is adapted from the
+    tntorch library (https://github.com/rballester/tntorch).
     """
     # some work on parameters
     if tol < 1:
@@ -119,44 +122,28 @@ def _py_maxvol(
         top_k_index = n
 
     top_k_index = max(top_k_index, r)
-    # set auxiliary matrices and get corresponding *GETRF function
-    # from lapack
-    b = np.copy(arr[:top_k_index], order="F")
-    c = np.copy(arr.T, order="F")
-    getrf = cast(Callable[..., Any], get_lapack_funcs("getrf", [b]))
-    h, ipiv, _ = getrf(b, overwrite_a=1)
-    # compute pivots from ipiv (result of *GETRF)
+
+    # Select r initial pivot rows via QR with
+    # column pivoting on arr[:top_k_index].T,
+    # then compute the coefficient matrix C = inv(arr[index[:r]]).T @ arr.T.
+    _, _, piv = sp_qr(arr[:top_k_index].T, pivoting=True)
     index = np.arange(n, dtype=np.int32)
-    for i in range(r):
-        tmp = index[i]
-        index[i] = index[ipiv[i]]
-        index[ipiv[i]] = tmp
-    # solve A = CH, H is in LU format
-    b = h[:r]
-    # It will be much faster to use *TRSM instead of *TRTRS
-    trtrs = cast(Callable[..., Any], get_lapack_funcs("trtrs", [b]))
-    trtrs(b, c, trans=1, lower=0, unitdiag=0, overwrite_b=1)
-    trtrs(b, c, trans=1, lower=1, unitdiag=1, overwrite_b=1)
-    # C has shape (r, N) -- it is stored transposed
+    index[:r] = piv[:r]
+    # C has shape (r, N): C = arr_sub^{-T} @ arr.T so that arr ≈ C.T @ arr_sub
+    c: np.ndarray = np.linalg.solve(arr[index[:r]].T, arr.T)
     # find max value in C
     i, j = divmod(int(abs(c[:, :top_k_index]).argmax()), top_k_index)
-    # set cgeru or zgeru for complex numbers and dger or sger for
-    # float numbers
-    try:
-        ger = get_blas_funcs("geru", [c])
-    except ValueError:
-        ger = get_blas_funcs("ger", [c])
     # set number of iters to 0
     iters = 0
     # check if need to swap rows
     while abs(c[i, j]) > tol and iters < max_iters:
-        # add j to index and recompute C by SVM-formula
+        # add j to index and recompute C by rank-1 (Sherman-Morrison) update
         index[i] = j
         tmp_row = c[i].copy()
         tmp_column = c[:, j].copy()
         tmp_column[i] -= 1.0
         alpha = -1.0 / c[i, j]
-        ger(alpha, tmp_column, tmp_row, a=c, overwrite_a=1)
+        c += alpha * np.outer(tmp_column, tmp_row)
         iters += 1
         i, j = divmod(int(abs(c[:, :top_k_index]).argmax()), top_k_index)
     return index[:r].copy(), c.T
