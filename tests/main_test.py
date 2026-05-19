@@ -1718,10 +1718,10 @@ class TestGeneralOps(unittest.TestCase):
         """scale(k) multiplies the contracted value by k."""
         net = TreeNetwork()
         data = np.random.randn(3, 4)
-        net.add_node("a", Tensor(data, [Index("i", 3), Index("j", 4)]))
+        net.add_node("a", Tensor(np.copy(data), [Index("i", 3), Index("j", 4)]))
         scaled = net.scale(2.0)
         self.assertTrue(
-            np.allclose(scaled.contract().value, 2.0 * data, atol=1e-10)
+            np.allclose(scaled.contract().value, 2.0 * data, atol=1e-8, rtol=1e-8)
         )
 
 
