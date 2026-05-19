@@ -247,10 +247,6 @@ class TensorTrain(TreeNetwork):
         )
         return cast(np.ndarray, s)
 
-    def flatten(self) -> "TensorTrain":
-        """Return self (tensor train is already flat)."""
-        return self
-
     def ends(self) -> List[NodeName]:
         """Compute the end nodes for the current tensor train."""
         res = []

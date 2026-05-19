@@ -482,6 +482,60 @@ class TestTT(unittest.TestCase):
             np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12)
         )
 
+    # ── TensorTrain-specific methods ──────────────────────────────────────────
+
+    def test_tt_ends(self):
+        """ends returns exactly two leaf nodes."""
+        ends = self.TT.ends()
+        self.assertEqual(len(ends), 2)
+        for n in ends:
+            self.assertEqual(len(list(self.TT.network.neighbors(n))), 1)
+
+    def test_tt_linear_nodes(self):
+        """linear_nodes returns all nodes in a single ordered chain."""
+        nodes = self.TT.linear_nodes()
+        self.assertEqual(len(nodes), len(self.TT.network.nodes))
+        for n1, n2 in zip(nodes[:-1], nodes[1:]):
+            self.assertIn(n2, self.TT.network.neighbors(n1))
+
+    def test_tt_are_adjacent_single(self):
+        """A single free index is always adjacent."""
+        self.assertTrue(self.TT.are_adjacent([self.x]))
+
+    def test_tt_are_adjacent_neighbours(self):
+        """Indices on neighbouring nodes are adjacent in the TT chain."""
+        nodes = self.TT.linear_nodes()
+        i0 = [ind for ind in self.TT.node_tensor(nodes[0]).indices
+              if ind in self.TT.free_indices()][0]
+        i1 = [ind for ind in self.TT.node_tensor(nodes[1]).indices
+              if ind in self.TT.free_indices()][0]
+        self.assertTrue(self.TT.are_adjacent([i0, i1]))
+
+    def test_tt_is_valid(self):
+        """rand_tt produces a valid tensor train."""
+        self.assertTrue(TensorTrain.is_valid_tt(self.TT))
+
+
+class TestHT(unittest.TestCase):
+    """Tests for HierarchicalTucker-specific methods."""
+
+    def setUp(self):
+        np.random.seed(100)
+        self.indices = [Index(f"I{i}", 4, range(4)) for i in range(4)]
+        self.ht = HierarchicalTucker.rand_ht(self.indices, 2)
+
+    def test_ht_root_in_network(self):
+        """root returns a node that exists in the network."""
+        root = self.ht.root()
+        self.assertIn(root, self.ht.network.nodes)
+
+    def test_ht_contract_preserves_shape(self):
+        """Contracting the HT gives a tensor with the correct free index sizes."""
+        result = self.ht.contract()
+        sizes = sorted(ind.size for ind in result.indices)
+        expected = sorted(ind.size for ind in self.indices)
+        self.assertEqual(sizes, expected)
+
 
 class TestTree(unittest.TestCase):
     def setUp(self):
@@ -1087,6 +1141,59 @@ class TestTree(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.tree.round(0)
 
+    # ── TreeNetwork methods ───────────────────────────────────────────────────
+
+    def test_tree_qr(self):
+        """TensorNetwork.qr split preserves the contracted value."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = net.free_indices()
+        net.qr(4, [0, 2])
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        self.assertTrue(np.allclose(original, result.permute(perm).value, atol=1e-5))
+
+    def test_tree_compress(self):
+        """TreeNetwork.compress returns a network with the same contracted value."""
+        original = self.tree.contract().value
+        original_free = self.tree.free_indices()
+        compressed = self.tree.compress()
+        result = compressed.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        self.assertTrue(np.allclose(original, result.permute(perm).value, atol=1e-10))
+
+    def test_tree_end_nodes(self):
+        """TreeNetwork.end_nodes returns nodes that have at most one neighbour."""
+        ends = self.tree.end_nodes()
+        self.assertGreater(len(ends), 0)
+        for n in ends:
+            self.assertLessEqual(len(list(self.tree.network.neighbors(n))), 1)
+
+    def test_tree_distance(self):
+        """TreeNetwork.distance returns the path length between nodes."""
+        ends = self.tree.end_nodes()
+        self.assertGreaterEqual(len(ends), 2)
+        d = self.tree.distance(ends[0], ends[1])
+        self.assertGreater(d, 0)
+        self.assertEqual(self.tree.distance(ends[0], ends[0]), 0)
+
+    def test_tree_svals_at(self):
+        """TreeNetwork.svals_at returns non-negative values in descending order."""
+        ind = self.tree.free_indices()[0]
+        node = self.tree.node_by_free_index(ind.name)
+        s = self.tree.svals_at(node, [ind])
+        self.assertTrue(np.all(s >= 0))
+        self.assertTrue(np.all(np.diff(s) <= 1e-10))  # descending
+
+    def test_tree_are_adjacent_single(self):
+        """A single free index is always adjacent."""
+        self.assertTrue(self.tree.are_adjacent([self.x]))
+
+    def test_tree_are_adjacent_pair(self):
+        """are_adjacent returns a bool for a pair of free indices."""
+        result = self.tree.are_adjacent([self.x, self.u])
+        self.assertIsInstance(result, bool)
+
 
 class TestCross(unittest.TestCase):
     """Test suite for cross approximation"""
@@ -1592,6 +1699,29 @@ class TestGeneralOps(unittest.TestCase):
         value_after_swap = tt.contract().permute_by_name(data_indices).value
         self.assertTrue(
             np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8)
+        )
+
+
+    # ── TensorNetwork.cost / scale ────────────────────────────────────────────
+
+    def test_cost(self):
+        """cost equals the sum of each node's element count."""
+        net = TreeNetwork()
+        a = Tensor(np.random.randn(3, 4), [Index("i", 3), Index("s", 4)])
+        b = Tensor(np.random.randn(4, 5), [Index("s", 4), Index("j", 5)])
+        net.add_node("a", a)
+        net.add_node("b", b)
+        net.add_edge("a", "b")
+        self.assertEqual(net.cost(), 3 * 4 + 4 * 5)
+
+    def test_scale(self):
+        """scale(k) multiplies the contracted value by k."""
+        net = TreeNetwork()
+        data = np.random.randn(3, 4)
+        net.add_node("a", Tensor(data, [Index("i", 3), Index("j", 4)]))
+        scaled = net.scale(2.0)
+        self.assertTrue(
+            np.allclose(scaled.contract().value, 2.0 * data, atol=1e-10)
         )
 
 
