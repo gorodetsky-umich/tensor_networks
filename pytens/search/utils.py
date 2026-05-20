@@ -1,25 +1,113 @@
 """Utility function for structure search."""
 
 import os
+import random
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Self,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import numpy as np
+import pydantic
 
-from pytens.search.state import SearchState
-from pytens.algs import TensorNetwork, Tensor
+from pytens.algs import Tensor, TreeNetwork
+from pytens.tt import TensorTrain
 
-EMPTY_SEARCH_STATS = {
-    "networks": [],
-    "best_networks": [],
-    "best_cost": [],
-    "costs": [],
-    "errors": [],
-    "ops": [],
-    "unique": {},
-    "count": 0,
-}
+from pytens.cross.func_interface import CachedFunc, TensorFunc
+from pytens.search.state import OSplit, SearchState
+from pytens.types import Index, IndexMerge, IndexOp, IndexSplit, NodeName
+
+if TYPE_CHECKING:
+    from pytens.search.hierarchical.types import Replay
+
+DataTensor = Union[TreeNetwork, CachedFunc]
 
 
-def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
+class SearchStats(pydantic.BaseModel):
+    """Statistics collected during the search process"""
+
+    best_cost: List[Tuple[float, float]] = []
+    costs: List[Tuple[float, float]] = []
+    errors: List[Tuple[float, float]] = []
+    ops: List[Tuple[float, int]] = []
+    unique: Dict[int, int] = {}
+
+    # results
+    count: int = 0
+    preprocess_time: float = 0.0
+    merge_time: float = 0.0
+    merge_transform_time: float = 0.0
+    cross_time: float = 0.0
+    search_start: float = 0.0
+    search_end: float = 0.0
+    cr_core: float = 0.0
+    cr_start: float = 0.0
+    re_f: float = 0.0
+    re_max: float = 0.0
+    init_cross_evals: int = 0
+    init_cross_size: int = 0
+    search_cross_evals: int = 0
+
+    def incr_unique(self, key: int) -> None:
+        """Increment the unique counter."""
+        self.unique[key] = self.unique.get(key, 0) + 1
+
+    def merge(self, other: "SearchStats") -> None:
+        """Merge the other search stats into the current one."""
+        self.search_cross_evals += other.search_cross_evals
+        self.preprocess_time += other.preprocess_time
+        self.merge_time += other.merge_time
+        self.merge_transform_time += other.merge_transform_time
+        self.cross_time += other.cross_time
+
+
+class SearchResult:
+    """Result returned by the search process"""
+
+    def __init__(
+        self,
+        stats: SearchStats = SearchStats(),
+        best_state: Optional[SearchState] = None,
+        unused_delta: float = 0.0,
+    ):
+        self.stats = stats
+        self.best_state = best_state
+        self.unused_delta = unused_delta
+        self.replay_traces: List[Replay] = []
+
+    def __lt__(self, other: Self) -> bool:
+        if self.best_state is None:
+            return False
+
+        if other.best_state is None:
+            return True
+
+        if self.best_state < other.best_state:
+            return True
+
+        if self.best_state == other.best_state:
+            return self.unused_delta > other.unused_delta
+
+        return False
+
+    def update_best_state(self, other: Self) -> Self:
+        """Update the field of best_state if other is better"""
+        assert other.best_state is not None
+        if other < self:
+            self.best_state = other.best_state
+            self.unused_delta = other.unused_delta
+
+        return self
+
+
+def approx_error(tensor: Tensor, net: TreeNetwork) -> float:
     """Compute the reconstruction error.
 
     Given a tensor network TN and the target tensor X,
@@ -37,23 +125,46 @@ def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
 
 
 def log_stats(
-    search_stats: dict,
-    target_tensor: np.ndarray,
+    search_stats: SearchStats,
+    target_tensor: Tensor,
     ts: float,
     st: SearchState,
-    bn: TensorNetwork,
-):
+    bn: TreeNetwork,
+) -> None:
     """Log statistics of a given state."""
-    search_stats["ops"].append((ts, len(st.past_actions)))
-    search_stats["costs"].append((ts, st.network.cost()))
+    search_stats.ops.append((ts, len(st.past_actions)))
+    search_stats.costs.append((ts, st.network.cost()))
     err = approx_error(target_tensor, st.network)
-    search_stats["errors"].append((ts, err))
-    search_stats["best_cost"].append((ts, bn.cost()))
+    search_stats.errors.append((ts, err))
+    search_stats.best_cost.append((ts, bn.cost()))
     ukey = st.network.canonical_structure()
-    search_stats["unique"][ukey] = search_stats["unique"].get(ukey, 0) + 1
+    search_stats.unique[ukey] = search_stats.unique.get(ukey, 0) + 1
 
 
-def remove_temp_dir(temp_dir, temp_files):
+def rtol(
+    base_tensor: np.ndarray,
+    approx_tensor: np.ndarray,
+    norm: Literal["F", "M"] = "F",
+) -> float:
+    """
+    Compute the relative error between two given tensors
+    on the specified norms.
+    """
+    if norm == "F":
+        return float(
+            np.linalg.norm(base_tensor - approx_tensor)
+            / np.linalg.norm(base_tensor)
+        )
+
+    if norm == "M":
+        return float(
+            np.max(abs(base_tensor - approx_tensor)) / np.max(abs(base_tensor))
+        )
+
+    raise ValueError("unsupported norm type")
+
+
+def remove_temp_dir(temp_dir: str, temp_files: List[str]) -> None:
     """Remove temporary npz files"""
     try:
         for temp_file in temp_files:
@@ -64,3 +175,266 @@ def remove_temp_dir(temp_dir, temp_files):
 
     except FileNotFoundError:
         pass
+
+
+def reshape_indices(
+    reshape_ops: List[IndexOp], indices: List[Index], data: np.ndarray
+) -> Tuple[List[Index], np.ndarray]:
+    """Reshape the data tensor according to the operations."""
+    for reshape_op in reshape_ops:
+        new_indices: List[Index] = []
+        assert isinstance(reshape_op, (IndexSplit, IndexMerge))
+        assert reshape_op.result is not None
+
+        if isinstance(reshape_op, IndexSplit):
+            for ind in indices:
+                if ind == reshape_op.index:
+                    new_indices.extend(reshape_op.result)
+                else:
+                    new_indices.append(ind)
+
+        elif isinstance(reshape_op, IndexMerge):
+            # find all indices and swap them to the front
+            swap_pos = []
+            other_pos = []
+            for ind in reshape_op.indices:
+                swap_pos.append(indices.index(ind))
+
+            for i, ind in enumerate(indices):
+                if ind not in reshape_op.indices:
+                    new_indices.append(ind)
+                    other_pos.append(i)
+
+            new_indices = [reshape_op.result] + new_indices
+            data = data.transpose(swap_pos + other_pos)
+
+        else:
+            raise TypeError("unknown reshape operation")
+
+        data = data.reshape([ind.size for ind in new_indices])
+        indices = new_indices
+
+    return indices, data
+
+
+def unravel_indices(
+    reshape_ops: List[IndexOp], indices: List[Index], data: np.ndarray
+) -> Tuple[List[Index], np.ndarray]:
+    """Get corresponding indices after splitting"""
+    for reshape_op in reshape_ops:
+        new_indices: List[Index] = []
+        new_data: List[np.ndarray] = []
+        if isinstance(reshape_op, IndexSplit):
+            for ind_idx, ind in enumerate(indices):
+                if ind == reshape_op.index:
+                    assert reshape_op.result is not None
+                    new_indices.extend(reshape_op.result)
+                    new_sizes = [i.size for i in reshape_op.result]
+                    new_data.extend(
+                        np.unravel_index(data[:, ind_idx], new_sizes)
+                    )
+                else:
+                    new_indices.append(ind)
+                    new_data.append(data[:, ind_idx])
+
+        elif isinstance(reshape_op, IndexMerge):
+            idxs: List[int] = []
+            sizes: List[int] = []
+            for ind in reshape_op.indices:
+                idxs.append(indices.index(ind))
+                sizes.append(ind.size)
+
+            assert reshape_op.result is not None
+            new_indices.append(reshape_op.result)
+            merged_data = [data[:, idx] for idx in idxs]
+            new_data.append(np.ravel_multi_index(merged_data, sizes))
+
+            for ind in indices:
+                if ind in reshape_op.indices:
+                    continue
+
+                new_indices.append(ind)
+                new_data.append(data[:, indices.index(ind)])
+
+        else:
+            continue
+
+        data = np.stack(new_data, axis=-1)
+        indices = new_indices
+
+    # print(indices)
+    # data = np.hstack([np.stack(g, axis=-1) for g in data])
+    # return data[:, np.argsort([i for inds in indices for i in inds])]
+    return indices, data
+
+
+def init_state(data_tensor: DataTensor, delta: float) -> SearchState:
+    """Create initial search state for the input data tensor."""
+    # print(type(data_tensor))
+    if isinstance(data_tensor, TreeNetwork):
+        return SearchState(data_tensor, delta)
+
+    if isinstance(data_tensor, TensorFunc):
+        net = TreeNetwork()
+        net.add_node(
+            "G0",
+            Tensor(
+                np.empty([0 for _ in data_tensor.indices]), data_tensor.indices
+            ),
+        )
+        return SearchState(net, delta)
+
+    raise TypeError(
+        f"Expect data tensors to have types TreeNetwork or TensorFunc, "
+        f"but get {type(data_tensor)}"
+    )
+
+
+def index_partition(
+    net: TreeNetwork, node1: NodeName, node2: NodeName
+) -> Tuple[List[Index], List[Index]]:
+    """Compute the partition of the index by the given edge."""
+
+    def indices_of(start: NodeName, exclude: NodeName) -> List[Index]:
+        visited = set()
+        queue = [start]
+        indices = []
+        while len(queue) > 0:
+            n = queue.pop(0)
+            if n == exclude:
+                continue
+
+            visited.add(n)
+            for ind in net.node_tensor(n).indices:
+                if ind in net.free_indices():
+                    indices.append(ind)
+
+            for nbr in net.network.neighbors(n):
+                if nbr not in visited:
+                    queue.append(nbr)
+
+        return indices
+
+    return indices_of(node1, node2), indices_of(node2, node1)
+
+
+def to_splits(net: TreeNetwork) -> List[OSplit]:
+    """Convert a tree network into a list of OSplits."""
+    free_indices = net.free_indices()
+    tree = net.network
+    nodelist = list(tree.nodes)
+
+    # Step 1: Prepare data structures
+    subtree_indices = {}
+    parent = {}
+    visited = set()
+
+    # Step 2: Post-order DFS to compute subtree indices
+    def dfs(node: NodeName, p: Optional[NodeName]) -> List[Index]:
+        indices = []
+        visited.add(node)
+        parent[node] = p
+        # Add this node's indices
+        for ind in net.node_tensor(node).indices:
+            if ind in free_indices:
+                indices.append(ind)
+        # Visit children
+        for nbr in tree.neighbors(node):
+            if nbr == p:
+                continue
+            indices.extend(dfs(nbr, node))
+        subtree_indices[node] = indices
+        return indices
+
+    root = nodelist[0]
+    dfs(root, None)
+
+    # All free indices are now the indices of the whole tree
+    all_indices = subtree_indices[root]
+
+    actions = []
+    # Step 3: For each edge, produce splits
+    for n1, n2 in tree.edges:
+        # Ensure n1 is the parent and n2 is the child in rooted tree
+        if parent[n2] == n1:
+            child = n2
+        elif parent[n1] == n2:
+            child = n1
+        else:
+            raise ValueError("The tree structure is invalid.")
+
+        inds1 = subtree_indices[child]
+        inds2 = [
+            ind for ind in all_indices if ind not in inds1
+        ]  # The complement
+
+        ac1 = OSplit(inds1, reversible=True, reverse_edge=(n1, n2))
+        ac2 = OSplit(inds2, reversible=True, reverse_edge=(n1, n2))
+        actions.append(min(ac1, ac2))
+
+    return actions
+
+
+def get_conflicts(ac: OSplit, past_acs: List[OSplit]) -> Optional[OSplit]:
+    """Get the list of conflict actions."""
+    ac_indices = set(ac.indices)
+    for past_ac in past_acs:
+        past_indices = set(past_ac.indices)
+        if (
+            len(ac_indices.intersection(past_indices)) > 0
+            and not ac_indices.issubset(past_indices)
+            and not ac_indices.issuperset(past_indices)
+        ):
+            if past_ac.reversible:
+                return past_ac
+            print(
+                "Warning: the action",
+                past_ac,
+                "conflicts with",
+                ac,
+                "but it is not reversible",
+            )
+
+    return None
+
+
+def seed_all(seed_value: int) -> None:
+    """
+    Sets the random seed for reproducibility across Python's random module,
+    NumPy, and PyTorch (both CPU and CUDA).
+    Also sets the PYTHONHASHSEED environment variable.
+    """
+
+    # Set Python's built-in random seed
+    random.seed(seed_value)
+
+    # Set NumPy's random seed
+    np.random.seed(seed_value)
+
+    # # Set PyTorch's random seed for all devices (CPU and CUDA)
+    # torch.manual_seed(seed_value)
+    # if torch.cuda.is_available():
+    #     torch.cuda.manual_seed(seed_value)
+    #     torch.cuda.manual_seed_all(seed_value)  # For multi-GPU setups
+
+    # Set PYTHONHASHSEED environment variable for hash-based operations
+    os.environ["PYTHONHASHSEED"] = str(seed_value)
+
+    # # Ensure deterministic behavior for cuDNN
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
+
+
+def reorder_by_svd(
+    net: TreeNetwork, indices: Sequence[Index], eps: float = 0
+) -> "TensorTrain":
+    """Reorder the indices into the target indices through SVD"""
+    assert all(ind in net.free_indices() for ind in indices), (
+        "all indices should be free"
+    )
+    data = net.contract()
+    indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
+
+    perm = [data.indices.index(ind) for ind in indices]
+
+    return TensorTrain.tt_svd(data.permute(perm).value, indices, eps)

@@ -1,8 +1,64 @@
 """Configuration fields for the structure search process."""
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Sequence
+from enum import Enum, auto
 
 import pydantic
+
+
+class InputFormat(Enum):
+    """Types for different input formats"""
+
+    WHITE_BOX = auto()
+    BLACK_BOX = auto()
+
+
+class ClusterMethod(Enum):
+    """Different merge algorithms"""
+
+    RAND = auto()
+    CROSS = auto()
+    SVD = auto()
+    NBR = auto()
+    SVD_NBR = auto()
+    RAND_NBR = auto()
+
+
+class InitStructType(Enum):
+    """Different initial structures"""
+
+    TUCKER = auto()
+    HT = auto()
+    TT = auto()
+
+
+class ReshapeOption(Enum):
+    """Different options to merge indices to produce a lower-dim data."""
+
+    RANDOM = auto()
+    ENUMERATE = auto()
+    CLUSTER = auto()
+
+
+class ReorderAlgo(Enum):
+    """Different algorithms to reorder the indices in a TT."""
+
+    CROSS = auto()
+    SVD = auto()
+
+
+class SweepAlgo(Enum):
+    """Different traversal algorithms for local structure sweeps."""
+
+    RANDOM = auto()
+    TRAVERSAL = auto()
+
+
+class SearchAlgo(Enum):
+    """Different search algorithms"""
+
+    RANDOM = auto()
+    ENUM = auto()
 
 
 class HeuristicConfig(pydantic.BaseModel):
@@ -32,7 +88,7 @@ class RankSearchConfig(pydantic.BaseModel):
         default=1,
         description="The number of different ranks considered for each split",
     )
-    fit_mode: Literal["topk", "all"] = pydantic.Field(
+    search_mode: Literal["topk", "all"] = pydantic.Field(
         default="topk",
         description=(
             "The choice of rank search algorithm"
@@ -44,7 +100,7 @@ class RankSearchConfig(pydantic.BaseModel):
         default=1,
         description=(
             "The number of optimality selected from constraint solving"
-            "(Used together with fit_mode==topk)"
+            "(Used together with search_mode==topk)"
         ),
     )
 
@@ -71,6 +127,10 @@ class ProgramSearchConfig(pydantic.BaseModel):
         default=None,
         description="Config to replay a series of splits from a pickle file",
     )
+    algo: SearchAlgo = pydantic.Field(
+        default=SearchAlgo.ENUM,
+        description="Configure how to search for the sketch programs",
+    )
 
 
 class SearchEngineConfig(pydantic.BaseModel):
@@ -92,6 +152,10 @@ class SearchEngineConfig(pydantic.BaseModel):
         default=False,
         description="Enable verbose logging for intermediate search steps",
     )
+    seed: int = pydantic.Field(
+        default=0,
+        description="Random seed used in random algorithms",
+    )
 
 
 class OutputConfig(pydantic.BaseModel):
@@ -105,14 +169,145 @@ class OutputConfig(pydantic.BaseModel):
         default=True,
         description="Configuration for removing temp data before termination",
     )
+    collect_stats: bool = pydantic.Field(
+        default=True,
+        description="Whether to compute the detailed stats for the run",
+    )
 
 
 class PreprocessConfig(pydantic.BaseModel):
     """Configuration for the preprocess phase"""
 
     force_recompute: bool = pydantic.Field(
-        default=False,
+        default=True,
         description="Enable recomputation and ignore the stored SVD results",
+    )
+    max_rank: int = pydantic.Field(
+        default=100,
+        description="Config the maximum number of singular values in "
+        "randomized SVD",
+    )
+    rand_svd: bool = pydantic.Field(
+        default=True,
+        description="Whether to use random SVD in the computation of "
+        "preprocessing singular values",
+    )
+    reorder_algo: ReorderAlgo = pydantic.Field(
+        default=ReorderAlgo.CROSS,
+        description="Config the algorithm used to reorder the indices "
+        "before preprocessing",
+    )
+    reorder_eps: float = pydantic.Field(
+        default=0.5,
+        description="Configure the error tolerance for cross during "
+        "reordering",
+    )
+
+
+class CrossConfig(pydantic.BaseModel):
+    """Configuration for cross approximation"""
+
+    init_eps: float = pydantic.Field(
+        default=0.1,
+        description="Initial error setting for cross approximation",
+    )
+    init_struct: InitStructType = pydantic.Field(
+        default=InitStructType.TT,
+        description="Choice of the initial network structure before cross",
+    )
+    init_dim: int = pydantic.Field(
+        default=100,
+        description="Configure the number of initial cross dimensions",
+    )
+    init_kickrank: int = pydantic.Field(
+        default=2,
+        description="Number of rank steps for initial cross approximation",
+    )
+    init_reshape: bool = pydantic.Field(
+        default=False,
+        description="Reshape the data into smaller factors before "
+        "running cross",
+    )
+    init_cross: bool = pydantic.Field(
+        default=True,
+        description="Whether to convert the input network into a tensor train",
+    )
+    use_input_net: bool = pydantic.Field(
+        default=False,
+        description="Skip cross approximation and use the network wrapped in "
+        "FuncTensorNetwork as the initial tensor network",
+    )
+
+
+class TopDownConfig(pydantic.BaseModel):
+    """Configuration for the top down structure search"""
+
+    reshape_enabled: bool = pydantic.Field(
+        default=False,
+        description="Configure for enabling index reshaping during "
+        "top down search",
+    )
+    merge_mode: Literal["all", "not_first"] = pydantic.Field(
+        default="not_first",
+        description="Configure whether to merge indices at the first level",
+    )
+    reshape_algo: ReshapeOption = pydantic.Field(
+        default=ReshapeOption.CLUSTER,
+        description="Configure whether to use random algorithms",
+    )
+    cluster_method: ClusterMethod = pydantic.Field(
+        default=ClusterMethod.RAND,
+        description="Configure what heuristic to use during index merge",
+    )
+    aggregation: Literal["mean", "det", "norm", "sval"] = pydantic.Field(
+        default="mean",
+        description="Configure the aggregation method for correlations",
+    )
+    random_algorithm: Literal["random"] = pydantic.Field(
+        default="random",
+        description="Configure to use which random search algorithm",
+    )
+    group_threshold: int = pydantic.Field(
+        default=4,
+        description="Configure the number of indices allowed in one search",
+    )
+    alpha: float = pydantic.Field(
+        default=10,
+        description="Configure the error distribution between steps",
+    )
+    reshape_restriction: Sequence[str] = pydantic.Field(
+        default=tuple([]),
+        description="Disable reshaping for certain indices",
+    )
+    reshape_opts: int = pydantic.Field(
+        default=5,
+        description="Number of index reshape selections during search",
+    )
+
+
+class InputConfig(pydantic.BaseModel):
+    """Configuration for input-related fields"""
+
+    input_format: InputFormat = pydantic.Field(
+        default=InputFormat.WHITE_BOX,
+        description="Choose the input data format",
+    )
+
+
+class SweepConfig(pydantic.BaseModel):
+    """Configuration for sweeping operations"""
+
+    sweep_algo: SweepAlgo = pydantic.Field(
+        default=SweepAlgo.TRAVERSAL,
+        description="How to sweep the local structures during refinement",
+    )
+    max_iters: int = pydantic.Field(
+        default=5,
+        description="Choose the number of sweep operations",
+    )
+    subnet_size: int = pydantic.Field(
+        default=4,
+        description="Configure the maximum horizon during sweeping",
     )
 
 
@@ -139,18 +334,34 @@ class SearchConfig(pydantic.BaseModel):
         default_factory=OutputConfig,
         description="Configurations for search outputs",
     )
+    input: InputConfig = pydantic.Field(
+        default_factory=InputConfig,
+        description="Configuration for input formats",
+    )
     preprocess: PreprocessConfig = pydantic.Field(
         default_factory=PreprocessConfig,
         description="Configurations for the preprocessing phase",
     )
+    topdown: TopDownConfig = pydantic.Field(
+        default_factory=TopDownConfig,
+        description="Configurations for top down hierarchical search",
+    )
+    cross: CrossConfig = pydantic.Field(
+        default_factory=CrossConfig,
+        description="Configurations for cross approximation",
+    )
+    sweep: SweepConfig = pydantic.Field(
+        default_factory=SweepConfig,
+        description="Configurations for structure refinements",
+    )
 
     @staticmethod
     def load(json_str: str) -> "SearchConfig":
-        """Load configurations from JSON files"""
+        """Load configurations from JSON strings"""
         return SearchConfig.model_validate_json(json_str)
 
     @staticmethod
     def load_file(json_file: str) -> "SearchConfig":
-        """Load configurations from JSON files"""
+        """Load configuration from JSON files"""
         with open(json_file, "r", encoding="utf-8") as f:
-            return SearchConfig.model_validate_json(f.read())
+            return SearchConfig.load(f.read())

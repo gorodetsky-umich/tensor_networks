@@ -6,7 +6,6 @@ from typing import List
 import numpy as np
 
 from pytens.types import Index
-import pytens.algs as pt
 
 
 class TensorFunc:
@@ -14,18 +13,29 @@ class TensorFunc:
 
     The derived classes should implement the ``run`` method,
     which evalutes the function at vectorized arguments.
+
+    Attributes:
+        d: Number of dimensions (equal to ``len(indices)``).
+        indices: One ``Index`` per dimension, each carrying the discrete grid
+            points via ``space`` and the grid size via ``size``.
+        name: Human-readable identifier used for logging and file names.
+            Defaults to ``"_func_"``; subclasses should override it.
+        calls: Array of shape ``(n_calls, d)`` recording every set of integer
+            grid indices the function has been evaluated at, accumulated
+            across all calls to ``__call__``.
     """
 
     def __init__(self, indices: List[Index]):
         self.d = len(indices)
         self.indices = indices
         self.name = "_func_"
+        self.calls = np.empty((0, self.d))
 
     def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized integer indices to vectorized function arguments.
 
         This maps each discrete index (i_k) to its associated argument value
-        using ``self.indices[k].value_choices``.
+        using ``self.indices[k].space``.
 
         Parameters
         ----------
@@ -41,7 +51,7 @@ class TensorFunc:
         indices = indices.astype(int)
         args = np.empty_like(indices, dtype=float)
         for i, ind in enumerate(self.indices):
-            args[:, i] = np.array(ind.value_choices)[indices[:, i]]
+            args[:, i] = np.array(ind.space)[indices[:, i]]
 
         return args
 
@@ -91,7 +101,7 @@ class TensorFunc:
         return self.indices
 
     @abstractmethod
-    def run(self, args: np.ndarray):
+    def run(self, args: np.ndarray) -> np.ndarray:
         """Evaluate the function for a batch of vectorized arguments.
 
         Implementations should accept a 2D array of shape ``(n, d)`` and return
@@ -99,7 +109,8 @@ class TensorFunc:
         """
         raise NotImplementedError
 
-    def __call__(self, indices: np.ndarray):
+    def __call__(self, indices: np.ndarray) -> np.ndarray:
+        # print("recording", indices.shape[0])
         args = self.index_to_args(indices)
         return self.run(args)
 
@@ -131,29 +142,3 @@ class CachedFunc(TensorFunc):
     def run(self, args: np.ndarray) -> np.ndarray:
         self.calls = np.concatenate([args, self.calls])
         return self._run(args)
-
-
-class FuncData(CachedFunc):
-    """Numpy arrays as cross approximation input."""
-
-    def __init__(self, indices: List[Index], data: np.ndarray):
-        super().__init__(indices)
-        self.data = data
-
-    def _run(self, args: np.ndarray) -> np.ndarray:
-        return self.data[*args.astype(int).T]
-
-
-class FuncTensorNetwork(CachedFunc):
-    """Tensor networks as cross approximation input."""
-
-    def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
-        super().__init__(indices)
-        self.net = net
-
-    def _run(self, args: np.ndarray) -> np.ndarray:
-        return self.net.evaluate(self.indices, args.astype(int))
-
-    def cost(self) -> int:
-        """Return the evaluation cost of the underlying tensor network."""
-        return self.net.cost()

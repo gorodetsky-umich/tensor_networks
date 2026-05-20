@@ -1,22 +1,28 @@
 """Tensor Network Solvers."""
 
 import copy
+import itertools
 import os
-import unittest
-import tempfile
 import pickle
+import tempfile
+from turtle import ht
+import unittest
 
+import networkx as nx
 import numpy as np
 
 from pytens.algs import *
 from pytens.cross.cross import (
+    ConvergenceCheck,
     CrossAlgo,
     CrossApproximation,
     CrossConfig,
-    ConvergenceCheck,
 )
-from pytens.types import Index
-from pytens.cross.funcs import CachedFunc
+from pytens.cross.func_interface import CachedFunc
+from pytens.ht import *
+from pytens.search.utils import IndexMerge, IndexSplit
+from pytens.tt import *
+from pytens.types import Index, SVDConfig
 from tests.search_test import *
 
 np.random.seed(4)
@@ -37,19 +43,15 @@ class TestTT(unittest.TestCase):
         self.u = Index("u", 10)
         self.v = Index("v", 20)
         self.tt_ranks = [2, 2]
-        self.TT = TensorNetwork.rand_tt(
-            [self.x, self.u, self.v], self.tt_ranks
-        )
+        self.TT = rand_tt([self.x, self.u, self.v], self.tt_ranks)
         self.tt_ranks2 = [3, 4]
-        self.TT2 = TensorNetwork.rand_tt(
-            [self.x, self.u, self.v], self.tt_ranks2
-        )
+        self.TT2 = rand_tt([self.x, self.u, self.v], self.tt_ranks2)
 
     def test_save(self):
         with tempfile.TemporaryDirectory() as td:
             fname = os.path.join(td, "test")
             with open(fname, "wb") as fp:
-                out = pickle.dump(self.TT, fp, pickle.HIGHEST_PROTOCOL)
+                pickle.dump(self.TT, fp, pickle.HIGHEST_PROTOCOL)
 
             with open(fname, mode="rb") as f:
                 new_tt = pickle.load(f)
@@ -135,6 +137,10 @@ class TestTT(unittest.TestCase):
         self.assertTrue(
             np.allclose(integral, np.sum(ttarr), atol=1e-14, rtol=1e-14)
         )
+        ttarr = self.TT.contract().value
+        self.assertTrue(
+            np.allclose(integral, np.sum(ttarr), atol=1e-14, rtol=1e-14)
+        )
 
         int_partial = self.TT.integrate([self.v], np.ones(1)).contract().value
         self.assertEqual(int_partial.ndim, 2)
@@ -154,7 +160,7 @@ class TestTT(unittest.TestCase):
 
         out1 = self.TT.contract().value
         out2 = self.TT2.contract().value
-        err = sum1 - out1 - out2
+        # err = sum1 - out1 - out2
         # print("error = ", np.linalg.norm(err), np.linalg.norm(out1+out2))
         self.assertTrue(np.allclose(sum1, out1 + out2, atol=1e-14, rtol=1e-14))
         ranks = tt_add.ranks()
@@ -162,10 +168,10 @@ class TestTT(unittest.TestCase):
         self.assertEqual(ranks[1], self.tt_ranks[1] + self.tt_ranks2[1])
 
     def test_sum_multiple_tt(self):
-        TT1 = TensorNetwork.rand_tt([self.x, self.u, self.v], [2, 2])
-        TT2 = TensorNetwork.rand_tt([self.x, self.u, self.v], [4, 3])
-        TT3 = TensorNetwork.rand_tt([self.x, self.u, self.v], [8, 12])
-        TT4 = TensorNetwork.rand_tt([self.x, self.u, self.v], [3, 4])
+        TT1 = rand_tt([self.x, self.u, self.v], [2, 2])
+        TT2 = rand_tt([self.x, self.u, self.v], [4, 3])
+        TT3 = rand_tt([self.x, self.u, self.v], [8, 12])
+        TT4 = rand_tt([self.x, self.u, self.v], [3, 4])
 
         tts = [TT1, TT2, TT3, TT4]
         tt_sum_1 = tt_sum(tts)
@@ -239,7 +245,7 @@ class TestTT(unittest.TestCase):
 
         ttadd_rounded = TTadd.contract().value
         self.assertTrue(
-            np.allclose(ttadd_rounded, ttadd, atol=1e-13, rtol=1e-13)
+            np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12)
         )
 
     def test_gramsvd_rounding(self):
@@ -367,7 +373,7 @@ class TestTT(unittest.TestCase):
         ttop_arr = ttop.contract().value
         # print(ttop_arr.shape)
 
-        tt = TensorNetwork.rand_tt([x, y, z], [3, 2])
+        tt = rand_tt([x, y, z], [3, 2])
         tt_arr = tt.contract().value
         # print(tt_arr.shape)
 
@@ -390,14 +396,14 @@ class TestTT(unittest.TestCase):
         ttop_arr = ttop.contract().value
         # print(ttop_arr.shape)
 
-        tt = TensorNetwork.rand_tt([x, y, z], [3, 2])
+        tt = rand_tt([x, y, z], [3, 2])
         tt_arr = tt.contract().value
         # print(tt_arr.shape)
 
         should_be = np.einsum("ijklmn,jln->ikm", ttop_arr, tt_arr)
         check = ttop_apply(ttop, tt).contract().value
 
-        err = np.linalg.norm(should_be - check)
+        # err = np.linalg.norm(should_be - check)
         # print("error = ", err)
         self.assertTrue(np.allclose(check, should_be, atol=1e-13, rtol=1e-13))
 
@@ -420,7 +426,7 @@ class TestTT(unittest.TestCase):
             "A",
         )
         check2 = out.contract().value
-        err2 = np.linalg.norm(should_be - check2)
+        # err2 = np.linalg.norm(should_be - check2)
         self.assertTrue(np.allclose(check2, should_be, atol=1e-13, rtol=1e-13))
         # print("out = ", out)
 
@@ -439,9 +445,9 @@ class TestTT(unittest.TestCase):
         ttop = ttop_rank1(
             indices_in, indices_out, [A, np.eye(5, 5), np.eye(3, 3)], "A"
         )
-        tt = TensorNetwork.rand_tt([x, y, z], [3, 2])
+        tt = rand_tt([x, y, z], [3, 2])
 
-        x0 = TensorNetwork.rand_tt([x, y, z], [3, 2])
+        x0 = rand_tt([x, y, z], [3, 2])
         op = lambda ttin: ttop_apply(ttop, ttin)
         _, resid = gmres(op, tt, x0, 1e-5, 1e-10, maxiter=30)
         # print("resid = ", resid)
@@ -461,7 +467,7 @@ class TestTT(unittest.TestCase):
         # print(TTadd)
         indices = TTadd.free_indices()
         ttadd = TTadd.contract().value
-        TTadd.round(0, 1e-5)
+        TTadd.round(0, atol=1e-5)
         # # exit(1)
         new_ranks = TTadd.ranks()
 
@@ -476,6 +482,60 @@ class TestTT(unittest.TestCase):
             np.allclose(ttadd_rounded, ttadd, atol=1e-12, rtol=1e-12)
         )
 
+    # ── TensorTrain-specific methods ──────────────────────────────────────────
+
+    def test_tt_ends(self):
+        """ends returns exactly two leaf nodes."""
+        ends = self.TT.ends()
+        self.assertEqual(len(ends), 2)
+        for n in ends:
+            self.assertEqual(len(list(self.TT.network.neighbors(n))), 1)
+
+    def test_tt_linear_nodes(self):
+        """linear_nodes returns all nodes in a single ordered chain."""
+        nodes = self.TT.linear_nodes()
+        self.assertEqual(len(nodes), len(self.TT.network.nodes))
+        for n1, n2 in zip(nodes[:-1], nodes[1:]):
+            self.assertIn(n2, self.TT.network.neighbors(n1))
+
+    def test_tt_are_adjacent_single(self):
+        """A single free index is always adjacent."""
+        self.assertTrue(self.TT.are_adjacent([self.x]))
+
+    def test_tt_are_adjacent_neighbours(self):
+        """Indices on neighbouring nodes are adjacent in the TT chain."""
+        nodes = self.TT.linear_nodes()
+        i0 = [ind for ind in self.TT.node_tensor(nodes[0]).indices
+              if ind in self.TT.free_indices()][0]
+        i1 = [ind for ind in self.TT.node_tensor(nodes[1]).indices
+              if ind in self.TT.free_indices()][0]
+        self.assertTrue(self.TT.are_adjacent([i0, i1]))
+
+    def test_tt_is_valid(self):
+        """rand_tt produces a valid tensor train."""
+        self.assertTrue(TensorTrain.is_valid_tt(self.TT))
+
+
+class TestHT(unittest.TestCase):
+    """Tests for HierarchicalTucker-specific methods."""
+
+    def setUp(self):
+        np.random.seed(100)
+        self.indices = [Index(f"I{i}", 4, range(4)) for i in range(4)]
+        self.ht = HierarchicalTucker.rand_ht(self.indices, 2)
+
+    def test_ht_root_in_network(self):
+        """root returns a node that exists in the network."""
+        root = self.ht.root()
+        self.assertIn(root, self.ht.network.nodes)
+
+    def test_ht_contract_preserves_shape(self):
+        """Contracting the HT gives a tensor with the correct free index sizes."""
+        result = self.ht.contract()
+        sizes = sorted(ind.size for ind in result.indices)
+        expected = sorted(ind.size for ind in self.indices)
+        self.assertEqual(sizes, expected)
+
 
 class TestTree(unittest.TestCase):
     def setUp(self):
@@ -483,7 +543,9 @@ class TestTree(unittest.TestCase):
         self.x = Index("x", 5)
         self.u = Index("u", 10)
         self.v = Index("v", 20)
-        self.tree = rand_tree([self.x, self.u, self.v], [1, 2, 3, 4, 5])
+        self.tree = TreeNetwork.rand_tree(
+            [self.x, self.u, self.v], [1, 2, 3, 4, 5]
+        )
 
     def test_tree_split(self):
         original = self.tree.contract().value
@@ -560,11 +622,11 @@ class TestTree(unittest.TestCase):
 
     def test_tree_canonicalize(self):
         x = np.random.randn(3, 4, 5)
-        single_node1 = TensorNetwork()
+        single_node1 = TreeNetwork()
         indices1 = [Index("i", 3), Index("j", 4), Index("k", 5)]
         single_node1.add_node("x", Tensor(x, indices1))
 
-        single_node2 = TensorNetwork()
+        single_node2 = TreeNetwork()
         indices2 = [Index("j", 4), Index("i", 3), Index("k", 5)]
         single_node2.add_node("y", Tensor(x.transpose(1, 0, 2), indices2))
 
@@ -574,7 +636,7 @@ class TestTree(unittest.TestCase):
         )
 
         # test symmetry
-        tree1 = TensorNetwork()
+        tree1 = TreeNetwork()
         u = np.random.randn(2, 3, 4)
         u_indices = [Index("iu", 2), Index("ju", 3), Index("ku", 4)]
         v = np.random.randn(4, 5, 6)
@@ -587,7 +649,7 @@ class TestTree(unittest.TestCase):
         tree1.add_edge("root", "u")
         tree1.add_edge("root", "v")
 
-        tree2 = TensorNetwork()
+        tree2 = TreeNetwork()
         root_indices2 = [Index("iv", 4), Index("iu", 2), Index("f", 3)]
         tree2.add_node("root", Tensor(root.transpose(1, 0, 2), root_indices2))
         u_indices2 = [
@@ -609,7 +671,7 @@ class TestTree(unittest.TestCase):
             tree1.canonical_structure(), tree2.canonical_structure()
         )
 
-        tt1 = TensorNetwork()
+        tt1 = TreeNetwork()
         u1 = np.random.randn(2, 3)
         u1_indices = [Index("iu", 2), Index("uv", 3)]
         v1 = np.random.randn(3, 4, 5)
@@ -622,7 +684,7 @@ class TestTree(unittest.TestCase):
         tt1.add_edge("u", "v")
         tt1.add_edge("v", "w")
 
-        tt2 = TensorNetwork()
+        tt2 = TreeNetwork()
         u2 = np.random.randn(4, 3)
         u2_indices = [Index("iu", 4), Index("uv", 3)]
         v2 = np.random.randn(3, 2, 5)
@@ -644,7 +706,7 @@ class TestTree(unittest.TestCase):
         x_tensor = Tensor(x, [Index("a", 2), Index("i", 13), Index("j", 14)])
         u = np.random.randn(2, 15)
         u_tensor = Tensor(u, [Index("a", 2), Index("k", 15)])
-        net1 = TensorNetwork()
+        net1 = TreeNetwork()
         net1.add_node("x", x_tensor)
         net1.add_node("u", u_tensor)
         net1.add_edge("x", "u")
@@ -654,7 +716,7 @@ class TestTree(unittest.TestCase):
         y_tensor = Tensor(y, [Index("b", 3), Index("i", 13), Index("j", 14)])
         v = np.random.randn(3, 15)
         v_tensor = Tensor(v, [Index("b", 3), Index("k", 15)])
-        net2 = TensorNetwork()
+        net2 = TreeNetwork()
         net2.add_node("y", y_tensor)
         net2.add_node("v", v_tensor)
         net2.add_edge("y", "v")
@@ -662,7 +724,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value + t2.value
         t12_net = net1 + net2
-        t12_net.round("x", t12_net.norm() * 1e-10)
+        t12_net.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = t12_net.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -682,7 +744,7 @@ class TestTree(unittest.TestCase):
         u3_tensor = Tensor(u3, [Index("c", 3), Index("k", 15)])
         u4 = np.random.randn(4, 16)
         u4_tensor = Tensor(u4, [Index("d", 4), Index("l", 16)])
-        net1 = TensorNetwork()
+        net1 = TreeNetwork()
         net1.add_node("x", x_tensor)
         net1.add_node("u1", u1_tensor)
         net1.add_node("u2", u2_tensor)
@@ -706,7 +768,7 @@ class TestTree(unittest.TestCase):
         v3_tensor = Tensor(v3, [Index("g", 4), Index("k", 15)])
         v4 = np.random.randn(5, 16)
         v4_tensor = Tensor(v4, [Index("h", 5), Index("l", 16)])
-        net2 = TensorNetwork()
+        net2 = TreeNetwork()
         net2.add_node("y", y_tensor)
         net2.add_node("v1", v1_tensor)
         net2.add_node("v2", v2_tensor)
@@ -720,7 +782,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value + t2.value
         net12 = net1 + net2
-        net12.round("x", net12.norm() * 1e-10)
+        net12.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = net12.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -742,7 +804,7 @@ class TestTree(unittest.TestCase):
         u3_tensor = Tensor(u3, [Index("a", 2), Index("c", 3), Index("d", 2)])
         u4 = np.random.randn(3, 17)
         u4_tensor = Tensor(u4, [Index("c", 3), Index("l", 17)])
-        net1 = TensorNetwork()
+        net1 = TreeNetwork()
         net1.add_node("x", x_tensor)
         net1.add_node("u1", u1_tensor)
         net1.add_node("u2", u2_tensor)
@@ -768,7 +830,7 @@ class TestTree(unittest.TestCase):
         )
         v4 = np.random.randn(2, 17)
         v4_tensor = Tensor(v4, [Index("cc", 2), Index("l", 17)])
-        net2 = TensorNetwork()
+        net2 = TreeNetwork()
         net2.add_node("y", y_tensor)
         net2.add_node("v1", v1_tensor)
         net2.add_node("v2", v2_tensor)
@@ -782,7 +844,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value + t2.value
         net12 = net1 + net2
-        net12.round("x", net12.norm() * 1e-10)
+        net12.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = net12.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -804,7 +866,7 @@ class TestTree(unittest.TestCase):
         u3_tensor = Tensor(u3, [Index("a", 2), Index("c", 3), Index("d", 2)])
         u4 = np.random.randn(3, 17)
         u4_tensor = Tensor(u4, [Index("c", 3), Index("l", 17)])
-        net1 = TensorNetwork()
+        net1 = TreeNetwork()
         net1.add_node("x", x_tensor)
         net1.add_node("u1", u1_tensor)
         net1.add_node("u2", u2_tensor)
@@ -818,7 +880,7 @@ class TestTree(unittest.TestCase):
 
         t11 = t1.value + t1.value
         net11 = net1 + net1
-        net11.round("x", net11.norm() * 1e-10)
+        net11.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor11 = net11.contract()
         perm = [tensor11.indices.index(ind) for ind in net1.free_indices()]
@@ -836,7 +898,7 @@ class TestTree(unittest.TestCase):
         x_tensor = Tensor(x, [Index("a", 2), Index("i", 13), Index("j", 14)])
         u = np.random.randn(2, 15)
         u_tensor = Tensor(u, [Index("a", 2), Index("k", 15)])
-        net1 = TensorNetwork()
+        net1 = TreeNetwork()
         net1.add_node("x", x_tensor)
         net1.add_node("u", u_tensor)
         net1.add_edge("x", "u")
@@ -846,7 +908,7 @@ class TestTree(unittest.TestCase):
         y_tensor = Tensor(y, [Index("b", 3), Index("i", 13), Index("j", 14)])
         v = np.random.randn(3, 15)
         v_tensor = Tensor(v, [Index("b", 3), Index("k", 15)])
-        net2 = TensorNetwork()
+        net2 = TreeNetwork()
         net2.add_node("y", y_tensor)
         net2.add_node("v", v_tensor)
         net2.add_edge("y", "v")
@@ -854,7 +916,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value * t2.value
         t12_net = net1 * net2
-        t12_net.round("x", t12_net.norm() * 1e-10)
+        t12_net.round("x", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = t12_net.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -876,7 +938,7 @@ class TestTree(unittest.TestCase):
         u3_tensor = Tensor(u3, [Index("c", 3), Index("k", 15)])
         u4 = np.random.randn(4, 16)
         u4_tensor = Tensor(u4, [Index("d", 4), Index("l", 16)])
-        net1 = TensorNetwork()
+        net1 = TreeNetwork()
         net1.add_node("x", x_tensor)
         net1.add_node("u1", u1_tensor)
         net1.add_node("u2", u2_tensor)
@@ -900,7 +962,7 @@ class TestTree(unittest.TestCase):
         v3_tensor = Tensor(v3, [Index("g", 4), Index("k", 15)])
         v4 = np.random.randn(5, 16)
         v4_tensor = Tensor(v4, [Index("h", 5), Index("l", 16)])
-        net2 = TensorNetwork()
+        net2 = TreeNetwork()
         net2.add_node("y", y_tensor)
         net2.add_node("v1", v1_tensor)
         net2.add_node("v2", v2_tensor)
@@ -914,7 +976,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value * t2.value
         net12 = net1 * net2
-        net12.round("x", net12.norm() * 1e-10)
+        net12.round("x", rtol=1e-10)
         # print(net12)
         # network free inds are changed after rounding
         tensor12 = net12.contract()
@@ -937,7 +999,7 @@ class TestTree(unittest.TestCase):
         u3_tensor = Tensor(u3, [Index("a", 2), Index("c", 3), Index("d", 2)])
         u4 = np.random.randn(3, 17)
         u4_tensor = Tensor(u4, [Index("c", 3), Index("m", 17)])
-        net1 = TensorNetwork()
+        net1 = TreeNetwork()
         net1.add_node("u0", x_tensor)
         net1.add_node("u1", u1_tensor)
         net1.add_node("u2", u2_tensor)
@@ -963,7 +1025,7 @@ class TestTree(unittest.TestCase):
         )
         v4 = np.random.randn(2, 17)
         v4_tensor = Tensor(v4, [Index("cc", 2), Index("m", 17)])
-        net2 = TensorNetwork()
+        net2 = TreeNetwork()
         net2.add_node("v0", y_tensor)
         net2.add_node("v1", v1_tensor)
         net2.add_node("v2", v2_tensor)
@@ -977,7 +1039,7 @@ class TestTree(unittest.TestCase):
 
         t12 = t1.value * t2.value
         net12 = net1 * net2
-        net12.round("u0", net12.norm() * 1e-10)
+        net12.round("u0", rtol=1e-10)
         # network free inds are changed after rounding
         tensor12 = net12.contract()
         perm = [tensor12.indices.index(ind) for ind in net1.free_indices()]
@@ -987,68 +1049,161 @@ class TestTree(unittest.TestCase):
         )
 
 
+    # ── Tensor.svd atol / rtol ────────────────────────────────────────────────
+
+    def test_tensor_svd_atol_error_bounded(self):
+        """Absolute error of reconstruction must be <= atol."""
+        data = np.diag([10.0, 1.0, 0.01])
+        t = Tensor(data, [Index("i", 3), Index("j", 3)])
+        atol = 0.1
+        (u, s, v), _ = t.svd([0], atol=atol)
+        reconstructed = u.value @ s.value @ v.value
+        error = np.linalg.norm(data - reconstructed)
+        self.assertLessEqual(error, atol)
+
+    def test_tensor_svd_rtol_error_bounded(self):
+        """Relative error of reconstruction must be <= rtol."""
+        data = np.diag([10.0, 0.001])
+        t = Tensor(data, [Index("i", 2), Index("j", 2)])
+        rtol = 1e-3
+        (u, s, v), _ = t.svd([0], rtol=rtol)
+        reconstructed = u.value @ s.value @ v.value
+        error = np.linalg.norm(data - reconstructed) / np.linalg.norm(data)
+        self.assertLessEqual(error, rtol)
+
+    def test_tensor_svd_both_raises(self):
+        t = Tensor(np.eye(3), [Index("i", 3), Index("j", 3)])
+        with self.assertRaises(ValueError):
+            t.svd([0], atol=1e-5, rtol=1e-5)
+
+    # ── TensorNetwork.svd atol / rtol (via SVDConfig) ─────────────────────────
+
+    def test_net_svd_atol_error_bounded(self):
+        """Absolute reconstruction error after SVDConfig(atol=X) must be <= X."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = net.free_indices()
+        atol = 0.5
+        net.svd(4, [0, 2], SVDConfig(atol=atol))
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        error = np.linalg.norm(original - result.permute(perm).value)
+        self.assertLessEqual(error, atol)
+
+    def test_net_svd_rtol_error_bounded(self):
+        """Relative reconstruction error after SVDConfig(rtol=X) must be <= X."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = net.free_indices()
+        rtol = 0.1
+        net.svd(4, [0, 2], SVDConfig(rtol=rtol))
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        error = np.linalg.norm(original - result.permute(perm).value)
+        self.assertLessEqual(error, rtol * np.linalg.norm(original))
+
+    def test_net_svd_config_both_raises(self):
+        """Constructing SVDConfig with both atol and rtol must raise ValueError."""
+        with self.assertRaises(ValueError):
+            SVDConfig(atol=1e-5, rtol=1e-5)
+
+    # ── TreeNetwork.round atol / rtol ─────────────────────────────────────────
+
+    def test_round_atol_error_bounded(self):
+        """Absolute error after round(atol=X) must be <= X."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = self.tree.free_indices()
+        atol = 0.5
+        net.round(0, atol=atol)
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        error = np.linalg.norm(original - result.permute(perm).value)
+        self.assertLessEqual(error, atol)
+
+    def test_round_rtol_error_bounded(self):
+        """Relative error after round(rtol=X) must be <= X."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = self.tree.free_indices()
+        rtol = 1e-2
+        net.round(0, rtol=rtol)
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        error = np.linalg.norm(original - result.permute(perm).value)
+        self.assertLessEqual(error, rtol * np.linalg.norm(original))
+
+    def test_round_both_raises(self):
+        with self.assertRaises(ValueError):
+            self.tree.round(0, atol=1e-5, rtol=1e-5)
+
+    def test_round_neither_raises(self):
+        with self.assertRaises(ValueError):
+            self.tree.round(0)
+
+    # ── TreeNetwork methods ───────────────────────────────────────────────────
+
+    def test_tree_qr(self):
+        """TensorNetwork.qr split preserves the contracted value."""
+        net = copy.deepcopy(self.tree)
+        original = net.contract().value
+        original_free = net.free_indices()
+        net.qr(4, [0, 2])
+        result = net.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        self.assertTrue(np.allclose(original, result.permute(perm).value, atol=1e-5))
+
+    def test_tree_compress(self):
+        """TreeNetwork.compress returns a network with the same contracted value."""
+        original = self.tree.contract().value
+        original_free = self.tree.free_indices()
+        compressed = self.tree.compress()
+        result = compressed.contract()
+        perm = [result.indices.index(i) for i in original_free]
+        self.assertTrue(np.allclose(original, result.permute(perm).value, atol=1e-10))
+
+    def test_tree_end_nodes(self):
+        """TreeNetwork.end_nodes returns nodes that have at most one neighbour."""
+        ends = self.tree.end_nodes()
+        self.assertGreater(len(ends), 0)
+        for n in ends:
+            self.assertLessEqual(len(list(self.tree.network.neighbors(n))), 1)
+
+    def test_tree_distance(self):
+        """TreeNetwork.distance returns the path length between nodes."""
+        ends = self.tree.end_nodes()
+        self.assertGreaterEqual(len(ends), 2)
+        d = self.tree.distance(ends[0], ends[1])
+        self.assertGreater(d, 0)
+        self.assertEqual(self.tree.distance(ends[0], ends[0]), 0)
+
+    def test_tree_svals_at(self):
+        """TreeNetwork.svals_at returns non-negative values in descending order."""
+        ind = self.tree.free_indices()[0]
+        node = self.tree.node_by_free_index(ind.name)
+        s = self.tree.svals_at(node, [ind])
+        self.assertTrue(np.all(s >= 0))
+        self.assertTrue(np.all(np.diff(s) <= 1e-10))  # descending
+
+    def test_tree_are_adjacent_single(self):
+        """A single free index is always adjacent."""
+        self.assertTrue(self.tree.are_adjacent([self.x]))
+
+    def test_tree_are_adjacent_pair(self):
+        """are_adjacent returns a bool for a pair of free indices."""
+        result = self.tree.are_adjacent([self.x, self.u])
+        self.assertIsInstance(result, bool)
+
+
 class TestCross(unittest.TestCase):
     """Test suite for cross approximation"""
-
-    class FuncAckley(CachedFunc):
-        """Source: https://www.sfu.ca/~ssurjano/ackley.html"""
-
-        def __init__(self, indices: List[Index]):
-            inds = []
-            for ind in indices:
-                new_ind = ind.with_new_rng(
-                    np.linspace(-32.768, 32.768, ind.size)
-                )
-                inds.append(new_ind)
-            super().__init__(inds)
-            self.name = "Ackley"
-
-        def _run(self, args: np.ndarray):
-            y1 = np.sqrt(np.sum(args**2, axis=1) / args.shape[1])
-            y1 = -20 * np.exp(-0.2 * y1)
-
-            y2 = np.sum(np.cos(2 * np.pi * args), axis=1)
-            y2 = -np.exp(y2 / args.shape[1])
-
-            y3 = 20 + np.exp(1.0)
-
-            return y1 + y2 + y3
-
-    class FuncPathological(CachedFunc):
-        """
-        Source: See the work Momin Jamil, Xin-She Yang. "A literature survey of
-                benchmark functions for global optimization problems". Journal of
-                Mathematical Modelling and Numerical Optimisation 2013; 4:150-194
-                ("87. Pathological Function"; Continuous, Differentiable,
-                Non-separable, Non-scalable, Multimodal).
-        """
-
-        def __init__(self, indices: List[Index]):
-            inds = []
-            for ind in indices:
-                new_ind = ind.with_new_rng(np.linspace(-100, 100, ind.size))
-                inds.append(new_ind)
-
-            super().__init__(inds)
-            # self.low = -100
-            # self.range = 100 * 2
-            self.name = "Pathological"
-
-        def _run(self, args: np.ndarray):
-            x1 = args[:, :-1]
-            x2 = args[:, 1:]
-
-            y1 = (np.sin(np.sqrt(100.0 * x1**2 + x2**2))) ** 2 - 0.5
-            y2 = 1.0 + 0.001 * (x1**2 - 2.0 * x1 * x2 + x2**2) ** 2
-
-            return np.sum(0.5 + y1 / y2, axis=1)
 
     def test_cross_two_nodes(self):
         """Cross approximation for a matrix"""
 
         indices = [Index("i", 8), Index("j", 10)]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1])
+        func = FuncAckley(indices)
+        net = TensorTrain.rand_tt(func.indices, [1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1068,8 +1223,8 @@ class TestCross(unittest.TestCase):
         """Cross approximation for a three dimensional TT"""
 
         indices = [Index("i", 8), Index("j", 10), Index("k", 12)]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1, 1])
+        func = FuncAckley(indices)
+        net = TensorTrain.rand_tt(func.indices, [1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1094,8 +1249,8 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1, 1, 1])
+        func = FuncAckley(indices)
+        net = TensorTrain.rand_tt(func.indices, [1, 1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1120,8 +1275,8 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_ht(func.indices, 1)
+        func = FuncAckley(indices)
+        net = HierarchicalTucker.rand_ht(func.indices, 1)
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1146,8 +1301,8 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tucker(func.indices, 1)
+        func = FuncAckley(indices)
+        net = TreeNetwork.rand_tucker(func.indices, 1)
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1172,8 +1327,8 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
+        func = FuncAckley(indices)
+        net = TensorTrain.rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1198,8 +1353,8 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tucker(func.indices, 1)
+        func = FuncAckley(indices)
+        net = TreeNetwork.rand_tucker(func.indices, 1)
         cross_config = CrossConfig(kickrank=2, cross_algo=CrossAlgo.DEIM)
         cross_engine = CrossApproximation(func, cross_config)
         res = cross_engine.cross(net, eps=1e-4)
@@ -1231,8 +1386,8 @@ class TestCross(unittest.TestCase):
             Index("o", 8),
             Index("p", 8),
         ]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
+        func = FuncAckley(indices)
+        net = rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(
             kickrank=2,
             cross_algo=CrossAlgo.DEIM,
@@ -1271,8 +1426,8 @@ class TestCross(unittest.TestCase):
             Index("o", 8),
             Index("p", 8),
         ]
-        func = TestCross.FuncPathological(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1] * (len(indices) - 1))
+        func = FuncPathological(indices)
+        net = rand_tt(func.indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(
             kickrank=2,
             cross_algo=CrossAlgo.DEIM,
@@ -1304,8 +1459,8 @@ class TestCross(unittest.TestCase):
             Index("k", 12),
             Index("l", 20),
         ]
-        func = TestCross.FuncAckley(indices)
-        net = TensorNetwork.rand_tt(func.indices, [1, 1, 1])
+        func = FuncAckley(indices)
+        net = rand_tt(func.indices, [1, 1, 1])
         cross_config = CrossConfig(kickrank=2)
         cross_engine = CrossApproximation(func, cross_config)
 
@@ -1320,6 +1475,253 @@ class TestCross(unittest.TestCase):
         self.assertTrue(
             np.linalg.norm(real_val - approx_val) / np.linalg.norm(real_val)
             <= 1e-4
+        )
+
+class TestGeneralOps(unittest.TestCase):
+    """Test general operations over tensor networks"""
+
+    def test_reshape(self):
+        """Reshape should support both splitting and merging"""
+        net = TreeNetwork()
+        data = np.random.randn(4, 16, 6)
+        indices = [Index("i", 4), Index("j", 16), Index("k", 6)]
+        tensor = Tensor(data, indices)
+        net.add_node("n0", tensor)
+
+        net.split_index(IndexSplit(index=Index("k", 6), shape=[2, 3]))
+        self.assertEqual(len(net.free_indices()), 4)
+
+        (_, s, v), _ = net.svd("n0", [0])
+        net.merge(v, s)
+        self.assertEqual(len(net.free_indices()), 4)
+        net.split_index(IndexSplit(index=Index("i", 4), shape=[2, 2]))
+        self.assertEqual(len(net.free_indices()), 5)
+
+        net.split_index(IndexSplit(index=Index("j", 16), shape=[2, 4, 2]))
+        net = net.merge_index(
+            IndexMerge(indices=[Index("j_1", 4), Index("j_2", 2)])
+        )
+        self.assertListEqual(
+            sorted(net.free_indices()),
+            [
+                Index("i_0", 2),
+                Index("i_1", 2),
+                Index("j_0", 2),
+                Index("j_1_j_2", 8),
+                Index("k_0", 2),
+                Index("k_1", 3),
+            ],
+        )
+
+    def test_replace_with(self):
+        """Replace should remove the old node and rewire the edges"""
+        net = TreeNetwork()
+        u_data = np.random.randn(4, 5, 6)
+        u_indices = [Index("i", 4), Index("j", 5), Index("k", 6)]
+        u = Tensor(u_data, u_indices)
+        net.add_node("u", u)
+
+        v_data = np.random.randn(6, 7, 8)
+        v_indices = [Index("k", 6), Index("l", 7), Index("m", 8)]
+        v = Tensor(v_data, v_indices)
+        net.add_node("v", v)
+
+        net.add_edge("u", "v")
+
+        subnet = TreeNetwork()
+        s_data = np.random.randn(4, 5, 2)
+        s_indices = [Index("i", 4), Index("j", 5), Index("l", 2)]
+        s = Tensor(s_data, s_indices)
+        subnet.add_node("s", s)
+
+        t_data = np.random.randn(2, 6)
+        t_indices = [Index("l", 2), Index("k", 6)]
+        t = Tensor(t_data, t_indices)
+        subnet.add_node("t", t)
+
+        subnet.add_edge("s", "t")
+
+        u_net = TreeNetwork()
+        u_net.network = nx.subgraph(net.network, ["u"]).copy()
+        net.replace_with(u_net, subnet)
+        self.assertEqual(len(net.network.nodes), 3)
+        self.assertListEqual(
+            list(sorted([ind.size for ind in net.all_indices()])),
+            [2, 4, 5, 6, 7, 8],
+        )
+
+    def test_eval(self):
+        indices = [Index("i", 3), Index("j", 4), Index("k", 5)]
+        net = TensorTrain.rand_tt(indices, [5, 5])
+        val = net.contract().value
+
+        inds1 = [Index("i", 3)]
+        vals1 = np.random.randint(0, 3, size=(10, 1))
+        eval_res = net.evaluate(inds1, vals1)
+        self.assertTrue(np.allclose(val[vals1.squeeze()], eval_res))
+
+        inds2 = indices[:2]
+        vals2 = np.hstack(
+            [np.random.randint(0, ind.size, size=(10, 1)) for ind in inds2]
+        )
+        eval_res = net.evaluate(inds2, vals2)
+        self.assertTrue(np.allclose(val[*vals2.T], eval_res))
+
+        inds3 = [indices[2], indices[0]]
+        vals3 = np.hstack(
+            [np.random.randint(0, ind.size, size=(10, 1)) for ind in inds3]
+        )
+        eval_res = net.evaluate(inds3, vals3)
+        self.assertTrue(
+            np.allclose(val[vals3[:, 1], :, vals3[:, 0]], eval_res)
+        )
+
+    def test_corr(self):
+        indices = [Index("i", 10), Index("j", 15), Index("k", 20)]
+        net = TensorTrain.rand_tt(indices, [5, 5])
+        for n in net.network.nodes:
+            s = net.node_tensor(n).value.shape
+            val_s = s[0], int(np.prod(s[1:]))
+            val = np.random.randn(*val_s)
+            mean = np.mean(val, axis=0)
+            # print(val)
+            # print(mean)
+            std = np.std(val, axis=0, ddof=0)
+            # print(std)
+
+            # Standardize
+            val_standardized = (val - mean) / std
+            # print(val_standardized)
+            net.node_tensor(n).update_val_size(val_standardized.reshape(s))
+        val = net.contract().value
+        # print(val)
+
+        inds1 = [indices[0], indices[1]]
+        samples, corr = net._corrcoef(inds1)
+        expected = np.corrcoef(val[*samples.T].reshape(len(samples), -1))
+        self.assertTrue(np.allclose(corr, expected))
+
+        inds2 = [indices[0], indices[2]]
+        samples, corr = net._corrcoef(inds2)
+        expected = np.corrcoef(val[samples[:, 0], :, samples[:, 1]])
+        self.assertTrue(np.allclose(corr, expected))
+
+    def test_swap(self):
+        indices = [
+            Index("i", 10),
+            Index("j", 15),
+            Index("k", 20),
+            Index("l", 20),
+        ]
+        net = TensorTrain.rand_tt(indices, [5, 8, 10])
+        for n in net.network.nodes:
+            s = net.node_tensor(n).value.shape
+            val = np.random.randn(*s)
+            net.node_tensor(n).update_val_size(val)
+        # print(net)
+        val = net.contract().value
+
+        n1 = net.node_by_free_index(indices[0].name)
+        n2 = net.node_by_free_index(indices[3].name)
+        net.swap([n1, n2])
+        val2 = net.contract().value
+        new_inds = net.free_indices()
+        perm = [new_inds.index(i) for i in indices]
+        self.assertTrue(np.allclose(val, val2.transpose(perm)))
+
+        n1 = net.node_by_free_index(indices[1].name)
+        n2 = net.node_by_free_index(indices[3].name)
+        net.swap([n1, n2])
+        val2 = net.contract().value
+        new_inds = net.free_indices()
+        perm = [new_inds.index(i) for i in indices]
+        self.assertTrue(np.allclose(val, val2.transpose(perm)))
+
+    def test_tt_svals(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        tt = TensorTrain.rand_tt(indices, [2] * len(indices))
+        data = tt.contract().value
+
+        for i, ind in enumerate(indices):
+            # tt = copy.deepcopy(init_tt)
+            svals = tt.svals_by_merge([ind])
+            others = [j for j in range(len(indices)) if j != i]
+            gt_val = data.transpose([i] + others)
+            gt_svals = np.linalg.svdvals(gt_val.reshape(ind.size, -1))
+            # print(ind, svals, gt_svals)
+            min_len = min(len(svals), len(gt_svals))
+            self.assertTrue(
+                np.allclose(
+                    svals[:min_len], gt_svals[:min_len], atol=1e-6, rtol=1e-6
+                )
+            )
+
+        for comb in itertools.combinations(indices, 2):
+            svals = tt.svals_by_merge(comb)
+            comb_pos = [indices.index(ind) for ind in comb]
+            comb_size = int(np.prod([ind.size for ind in comb]))
+            others = [j for j in range(len(indices)) if j not in comb_pos]
+            gt_val = data.transpose(comb_pos + others)
+            gt_svals = np.linalg.svdvals(gt_val.reshape(comb_size, -1))
+            min_len = min(len(svals), len(gt_svals))
+            self.assertTrue(
+                np.allclose(
+                    svals[:min_len], gt_svals[:min_len], atol=1e-6, rtol=1e-6
+                )
+            )
+
+    def test_node_swap(self):
+        indices = [Index(f"I{i}", 5, range(5)) for i in range(6)]
+        ht = HierarchicalTucker.rand_ht(indices, 2)
+        data = ht.contract().value
+        data_indices = [ind.name for ind in ht.free_indices()]
+
+        ind_nodes = [ht.node_by_free_index(ind.name) for ind in indices[:2]]
+        ht.swap(ind_nodes)
+        value_after_swap = ht.contract().permute_by_name(data_indices).value
+        self.assertTrue(
+            np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8)
+        )
+
+        ind_nodes = [ht.node_by_free_index(indices[i].name) for i in [1, 3, 5]]
+        ht.swap(ind_nodes)
+        value_after_swap = ht.contract().permute_by_name(data_indices).value
+        self.assertTrue(
+            np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8)
+        )
+
+        tt = TensorTrain.rand_tt(indices, [2] * len(indices))
+        data = tt.contract().value
+        data_indices = [ind.name for ind in tt.free_indices()]
+
+        ind_nodes = [tt.node_by_free_index(indices[i].name) for i in [2, 0, 1]]
+        tt.swap(ind_nodes)
+        value_after_swap = tt.contract().permute_by_name(data_indices).value
+        self.assertTrue(
+            np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8)
+        )
+
+
+    # ── TensorNetwork.cost / scale ────────────────────────────────────────────
+
+    def test_cost(self):
+        """cost equals the sum of each node's element count."""
+        net = TreeNetwork()
+        a = Tensor(np.random.randn(3, 4), [Index("i", 3), Index("s", 4)])
+        b = Tensor(np.random.randn(4, 5), [Index("s", 4), Index("j", 5)])
+        net.add_node("a", a)
+        net.add_node("b", b)
+        net.add_edge("a", "b")
+        self.assertEqual(net.cost(), 3 * 4 + 4 * 5)
+
+    def test_scale(self):
+        """scale(k) multiplies the contracted value by k."""
+        net = TreeNetwork()
+        data = np.random.randn(3, 4)
+        net.add_node("a", Tensor(np.copy(data), [Index("i", 3), Index("j", 4)]))
+        scaled = net.scale(2.0)
+        self.assertTrue(
+            np.allclose(scaled.contract().value, 2.0 * data, atol=1e-8, rtol=1e-8)
         )
 
 

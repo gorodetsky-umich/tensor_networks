@@ -1,0 +1,481 @@
+"""Various index clustering algorithms."""
+
+from __future__ import annotations
+
+import copy
+import itertools
+import logging
+import random
+from abc import abstractmethod
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
+
+import networkx as nx
+import numpy as np
+
+from pytens.cross.cross import CrossApproximation, CrossConfig
+from pytens.search.hierarchical.utils import build_bipartite_sample
+from pytens.search.state import OSplit
+from pytens.tt import TensorTrain
+from pytens.types import (
+    Index,
+    IndexOp,
+    IndexSplit,
+    NodeIndexPair,
+    NodeName,
+    SValsParams,
+)
+
+if TYPE_CHECKING:
+    import pytens.algs as pt
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+def eff_rank(svals: np.ndarray) -> float:
+    """Compute the effective rank of a spectrum via entropy."""
+    s = svals  # ** 2
+    s = s[s > 1e-8]
+    p = s / s.sum()
+    return float(np.exp(-np.sum(p * np.log(p))))
+
+
+def spectrum_similarity(s1: np.ndarray, s2: np.ndarray) -> float:
+    """Compute the dot-product similarity between two normalised spectra."""
+    p1 = s1**2 / np.sum(s1**2)
+    p2 = s2**2 / np.sum(s2**2)
+    return float(np.dot(p1, p2))
+
+
+class IndexCluster:
+    """Base class for index clustering algorithms."""
+
+    def __init__(self, threshold: int):
+        self._threshold = threshold
+
+    @abstractmethod
+    def cluster(
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
+    ) -> Sequence[Sequence[Sequence[Index]]]:
+        """Cluster the given indices into groups."""
+        raise NotImplementedError
+
+
+class RandomIndexCluster(IndexCluster):
+    """Randomly cluster indices into groups."""
+
+    def __init__(self, threshold: int, rand: bool = True):
+        super().__init__(threshold)
+        self._rand = rand
+
+    def cluster(
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
+    ) -> Sequence[Sequence[Sequence[Index]]]:
+        # randomly partition the indices into @threshold@ sets
+        threshold = self._threshold
+        indices = net.free_indices()
+        ind_groups = []
+        for split_op in ind_splits:
+            if not isinstance(split_op, IndexSplit):
+                continue
+
+            assert split_op.result is not None
+            ind_groups.append(split_op.result)
+
+        for ind in indices:
+            if not any(ind in g for g in ind_groups):
+                ind_groups.append([ind])
+
+        # seed_all(0)
+        if self._rand:
+            random.shuffle(ind_groups)
+
+        q, r = divmod(len(ind_groups), threshold)
+        group_sizes = [q + 1] * r + [q] * (threshold - r)
+        sublists = []
+        used_len = 0
+        for gsize in group_sizes:
+            if gsize == 0:
+                continue
+
+            ind_set = ind_groups[used_len : used_len + gsize]
+            sublists.append([ind for inds in ind_set for ind in inds])
+            used_len += gsize
+
+        assert used_len == len(ind_groups)
+        return [sublists]
+
+
+class SVDIndexCluster(IndexCluster):
+    """Cluster indices based on singular values."""
+
+    def cluster(
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
+    ) -> Sequence[Sequence[Sequence[Index]]]:
+        """Consider all possible combinations of indices.
+
+        For each combination, we calculate the correlation matrix of
+        the reshaped tensor. If the correlation is high enough,
+        we merge the indices.
+        """
+        indices = net.free_indices()
+        threshold = self._threshold
+        if len(indices) <= threshold:
+            return [], []
+
+        comb_corr = {}
+        if len(net.network.nodes) == 1:
+            comb_corr = self._single_node_corr(net, indices)
+        elif isinstance(net, TensorTrain):
+            comb_corr = self._tt_corr(net, indices)
+
+        else:
+            comb_corr = self._tree_score(net, indices)
+
+        sorted_comb_corr = sorted(
+            comb_corr.items(), key=lambda x: x[1], reverse=False
+        )
+        logger.debug("sorted combs: %s", list(sorted_comb_corr))
+
+        # start from the largest group and expand until the threshold
+        group_size = len(indices) // threshold
+        num_groups = min(threshold, len(indices) - threshold)
+
+        # Idea 2: randomly sample a few clusters and pick the top k
+        # Idea 1: start from the topmost, second topmost, etc..
+        k_ind_sets = []
+        for _ in range(5):
+            index_sets = self._sample_index_sets(
+                sorted_comb_corr, num_groups, group_size, threshold
+            )
+            k_ind_sets.append(index_sets)
+
+        for index_sets in k_ind_sets:
+            logger.debug("getting index clusters: %s", index_sets)
+
+        return k_ind_sets
+
+    @staticmethod
+    def _sample_index_sets(
+        comb_corr: List[Tuple[Sequence[Index], float]],
+        num_groups: int,
+        group_size: int,
+        threshold: int,
+    ) -> List[List[Index]]:
+        """One random sample of index groupings from correlation pairs."""
+        index_sets = []
+        visited: Set[Index] = set()
+        for i in range(num_groups):
+            group: Set[Index] = set()
+            for xs, _ in comb_corr:
+                if random.random() < 0.1:
+                    continue
+                if xs[0] in visited and xs[0] not in group:
+                    continue
+                if xs[1] in visited and xs[1] not in group:
+                    continue
+                logger.debug("adding %s to group %s", xs, group)
+                group.update(xs)
+                visited.update(xs)
+                if len(group) >= group_size and i != threshold - 1:
+                    break
+            if group:
+                index_sets.append(list(group))
+        return index_sets
+
+    def _tt_corr(
+        self, net: TensorTrain, indices: Sequence[Index]
+    ) -> Dict[Sequence[Index], float]:
+        comb_corr: Dict[Sequence[Index], float] = {}
+        # remove duplicate node swapping
+        ends = net.end_nodes()
+        nodes = nx.shortest_path(net.network, ends[0], ends[1])
+
+        for i, ni in enumerate(nodes):
+            tmp_net = copy.deepcopy(net)
+            tmp_net.orthonormalize(ni)
+            i_inds = tmp_net.node_tensor(ni).indices
+            i_free = [ind for ind in i_inds if ind in indices]
+            for j, nj in enumerate(nodes[i + 1 :]):
+                # swap n[i] and n[i+j-1]
+                if j > 0:
+                    tmp_net.swap_nbr(
+                        [ni, nodes[i + j], nj],
+                        NodeIndexPair(ni),
+                        NodeIndexPair(nodes[i + j]),
+                    )
+
+                logger.debug("after swapping nbrs: %s", tmp_net)
+
+                j_inds = tmp_net.node_tensor(nj).indices
+                j_free = [ind for ind in j_inds if ind in indices]
+                ac = OSplit(i_free + j_free)
+
+                # we don't need to repeat the orthonormalization either
+                merged_net = copy.deepcopy(tmp_net)
+                merged_net.merge(ni, nj)
+                logger.debug("after merge %s and %s: %s", ni, nj, merged_net)
+                # print(ni)
+                svals = merged_net.svals_at(
+                    ni, ac.indices, max_rank=100, with_orthonormal=False
+                )
+
+                if len(svals) >= 2:
+                    comb_corr[tuple(ac.indices)] = eff_rank(
+                        svals
+                    )  # svals[0] / svals[1]
+                else:
+                    comb_corr[tuple(ac.indices)] = 1
+                logger.debug(
+                    "indices: %s, eff rank: %s, norm: %s, svals: %s,"
+                    " score: %s",
+                    ac.indices,
+                    eff_rank(svals),
+                    sum(svals**2),
+                    svals,
+                    comb_corr[tuple(ac.indices)],
+                )
+
+        return comb_corr
+
+    def _collect_inds(
+        self, net: pt.TreeNetwork, visited: Set[NodeName], curr_node: NodeName
+    ) -> List[Index]:
+        visited.add(curr_node)
+        all_inds = []
+        free_inds = net.free_indices()
+        for ind in net.node_tensor(curr_node).indices:
+            if ind in free_inds:
+                all_inds.append(ind)
+
+        for nbr in net.network.neighbors(curr_node):
+            if nbr not in visited:
+                nbr_inds = self._collect_inds(net, visited, nbr)
+                all_inds.extend(nbr_inds)
+
+        return all_inds
+
+    def _tree_subsample_score(
+        self, net: pt.TreeNetwork, indices: Sequence[Index]
+    ) -> Dict[Sequence[Index], float]:
+        """Sample some entries from the tree and compute the scores"""
+        comb_corr: Dict[Sequence[Index], float] = {}
+        for i, indi in enumerate(indices):
+            for indj in indices[i + 1 :]:
+                selected_inds = []
+                free_inds = indices
+                sample_size = 100
+                for ind in free_inds:
+                    selected_inds.append(
+                        np.random.randint(0, ind.size, size=(sample_size,))
+                    )
+
+                # reorganize the values according to reordered indices
+                left_inds = [indi, indj]
+                right_inds = [ind for ind in indices if ind not in left_inds]
+                full_indices, eval_inds = build_bipartite_sample(
+                    left_inds, right_inds, list(free_inds), selected_inds
+                )
+
+                vals = net.evaluate(eval_inds, full_indices)
+                s = np.linalg.svdvals(vals.reshape(sample_size, sample_size))
+                comb_corr[tuple([indi, indj])] = eff_rank(s)
+
+        return comb_corr
+
+    def _tree_score(
+        self, net: pt.TreeNetwork, indices: Sequence[Index]
+    ) -> Dict[Sequence[Index], float]:
+        comb_corr: Dict[Sequence[Index], float] = {}
+
+        # we have to pick one of the leaves as the end node
+        ends = net.end_nodes()
+        visited_node_pairs: Set[Tuple[NodeName, NodeName]] = set()
+
+        # traverse the tree to compute pairs with DFS
+        def dfs(
+            visited: Set[NodeName],
+            curr_net: pt.TreeNetwork,
+            prev: Optional[NodeName],
+            curr: NodeName,
+        ) -> None:
+            visited.add(curr)
+
+            if prev is not None:
+                prev_inds = curr_net.node_tensor(prev).indices
+                prev_free = [ind for ind in prev_inds if ind in indices]
+                curr_inds = curr_net.node_tensor(curr).indices
+                curr_free = [ind for ind in curr_inds if ind in indices]
+                node_free = prev_free + curr_free
+
+                visited_node_pairs.add((prev, curr))
+                curr_net.merge(prev, curr)
+                node_inds = curr_net.node_tensor(prev).indices
+
+                # enumerate all combinations of index pairs on the current node
+                for ind_pair in itertools.combinations(node_free, 2):
+                    svals = curr_net.svals_at(
+                        prev, ind_pair, max_rank=100, with_orthonormal=False
+                    )
+
+                    if len(svals) >= 2:
+                        comb_corr[tuple(ind_pair)] = eff_rank(svals)
+                    else:
+                        comb_corr[tuple(ind_pair)] = 1
+
+                    logger.debug(
+                        "indices: %s, eff rank: %s, norm: %s, svals: %s,"
+                        " score: %s",
+                        ind_pair,
+                        eff_rank(svals),
+                        sum(svals**2),
+                        svals,
+                        comb_corr[tuple(ind_pair)],
+                    )
+
+                # swap the free indices on two nodes
+                left_inds = curr_free + [
+                    ind
+                    for ind in prev_inds
+                    if ind not in curr_inds and ind not in prev_free
+                ]
+                logger.debug("curr network is %s", curr_net)
+                logger.debug("prev node: %s, curr node: %s", prev, curr)
+                logger.debug("left_inds are %s", left_inds)
+                lefts = [node_inds.index(ind) for ind in left_inds]
+                q, r = curr_net.qr(prev, lefts)
+                nx.relabel_nodes(
+                    curr_net.network, {r: prev, q: curr}, copy=False
+                )
+
+            nbrs = list(curr_net.network.neighbors(curr))
+            for nbr in nbrs:
+                if len(nbrs) > 1:
+                    tmp_net = copy.deepcopy(curr_net)
+                else:
+                    tmp_net = curr_net
+
+                if nbr in visited:
+                    continue
+
+                # if indices in the subtree and prev node has been computed,
+                # do not traverse that branch
+                if (curr, nbr) in visited_node_pairs or (
+                    nbr,
+                    curr,
+                ) in visited_node_pairs:
+                    continue
+
+                dfs(visited, tmp_net, curr, nbr)
+
+        for end in ends:
+            tmp_net = copy.deepcopy(net)
+            tmp_net.orthonormalize(end)
+            dfs(set(), tmp_net, None, end)
+
+        return comb_corr
+
+    def _single_node_corr(
+        self, net: pt.TreeNetwork, indices: Sequence[Index]
+    ) -> Dict[Sequence[Index], float]:
+        comb_corr: Dict[Sequence[Index], float] = {}
+        # for single node networks, we can directly compute the SVDs
+        for i, ind_i in enumerate(indices):
+            for ind_j in indices[i + 1 :]:
+                ac = OSplit([ind_i, ind_j])
+                svals = ac.svals(
+                    net,
+                    svd_params=SValsParams(
+                        max_rank=100, orthonormal=True, random_seed=42
+                    ),
+                )
+                if len(svals) >= 2:
+                    comb_corr[tuple(ac.indices)] = eff_rank(
+                        svals
+                    )  # svals[0] / svals[1]
+                else:
+                    comb_corr[tuple(ac.indices)] = 1
+
+                logger.debug(
+                    "indices: %s, eff rank: %s, norm: %s, svals: %s,"
+                    " score: %s",
+                    ac.indices,
+                    eff_rank(svals),
+                    sum(svals**2),
+                    svals,
+                    comb_corr[tuple(ac.indices)],
+                )
+
+        return comb_corr
+
+
+class CrossIndexCluster(IndexCluster):
+    """Cluster indices using cross approximation rank estimates."""
+
+    def __init__(self, threshold: int, eps: float):
+        super().__init__(threshold)
+
+        self._eps = eps
+
+    def cluster(
+        self, net: pt.TreeNetwork, ind_splits: Sequence[IndexOp]
+    ) -> Sequence[Sequence[Sequence[Index]]]:
+        """
+        Incrementally run cross until we find a low rank representation.
+
+        Based on that order, we group the indices by the neighbors.
+        """
+
+        indices = net.free_indices()
+        nodes = [net.node_by_free_index(ind.name) for ind in indices]
+        # get the two ends where the nodes have only one nbr in nodes
+        ends = []
+        for n in nodes:
+            nbrs = list(net.network.neighbors(n))
+            if len(nbrs) == 1 or not all(nbr in nodes for nbr in nbrs):
+                ends.append(n)
+
+        ordered_indices = sorted(
+            indices,
+            key=lambda x: net.distance(
+                ends[0], net.node_by_free_index(x.name)
+            ),
+        )
+
+        # enumerate the indices one by one
+        i = 0
+        best_so_far = net
+        while i < len(ordered_indices):
+            max_so_far = max(ind.size for ind in net.all_indices())
+            for j in range(i, len(ordered_indices)):
+                indices = ordered_indices[:i]
+                indices.append(ordered_indices[j])
+                indices.extend(ordered_indices[i:j])
+                indices.extend(ordered_indices[j + 1 :])
+                tt = TensorTrain.rand_tt(indices)
+                # net_inds = [
+                #     ind.with_new_rng(range(ind.size)) for ind in indices
+                # ]
+                cross_config = CrossConfig(
+                    kickrank=5, max_rank=max_so_far, max_iters=max_so_far
+                )
+                cross_engine = CrossApproximation(
+                    net.as_func(net.free_indices()), cross_config
+                )
+                res = cross_engine.cross(tt, tt.end_nodes()[0], eps=self._eps)
+                if res.ranks_and_errors[-1][-1] <= self._eps:
+                    logger.debug(
+                        "cross result over indices %s is %s", indices, tt
+                    )
+                    tt_max = max(ind.size for ind in net.all_indices())
+                    if tt_max < max_so_far:
+                        best_so_far = tt
+                        max_so_far = tt_max
+
+            ordered_indices = best_so_far.free_indices()
+            i += 1
+            logger.debug("choosing the index prefix %s", ordered_indices[:i])
+
+        logger.debug("best ordered tt is %s", best_so_far)
+        nbr_cluster = RandomIndexCluster(self._threshold, rand=False)
+        return nbr_cluster.cluster(best_so_far, [])
