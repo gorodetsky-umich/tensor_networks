@@ -16,7 +16,7 @@ from pytens.cross.func_interface import TensorFunc
 from pytens.types import DimTreeNode, Index
 
 logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 class CrossAlgo(Enum):
     """Enumeration of cross algorithms."""

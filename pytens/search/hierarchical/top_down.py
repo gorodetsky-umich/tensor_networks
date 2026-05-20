@@ -560,7 +560,9 @@ class TopDownSearch:
         # decrease the delta budget exponentially
         total_delta = remaining_delta
         delta, remaining_delta = self.error_dist.split_delta(remaining_delta)
-        assert abs(delta**2 + remaining_delta**2 - total_delta**2) < 1e-8, (
+        assert math.isclose(
+            delta**2 + remaining_delta**2, total_delta**2, rel_tol=1e-9
+        ), (
             f"getting {delta**2 + remaining_delta**2}, "
             f"expecting {total_delta**2}"
         )
