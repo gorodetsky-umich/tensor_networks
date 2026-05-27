@@ -2132,6 +2132,15 @@ def tt_sum_gramsvd_round(
     return ttsum
 
 
+def _tt_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """2D matrix multiply for TT rounding.
+
+    ``np.dot`` avoids spurious runtime warnings from ``@``/``matmul`` on some
+    NumPy + Accelerate builds while matching 2D matrix multiplication here.
+    """
+    return np.dot(left, right)
+
+
 class TTRandRound:
     """
     Implementation of randomized rounding algorithms for Tensor Trains.
@@ -2267,10 +2276,12 @@ class TTRandRound:
             x = self.y.value(i)
             sx = x.shape
             if i == self.d - 1:
-                w.append(x @ Omega[i])
+                w.append(_tt_matmul(x, Omega[i]))
                 continue
-            krp = khatri_rao(w[-1], Omega[i]) 
-            w.append(x.reshape(sx[0], -1) @ krp)
+            # Match the reshape order x.reshape(r_i, n_i * r_{i+1}),
+            # where r_{i+1} varies fastest.
+            krp = khatri_rao(Omega[i], w[-1])
+            w.append(_tt_matmul(x.reshape(sx[0], -1), krp))
 
         w = w[::-1]
         return w
@@ -2287,10 +2298,12 @@ class TTRandRound:
             x = tt.value(i)
             sx = x.shape
             if i == self.d - 1:
-                w.append(x @ Omega[i])
+                w.append(_tt_matmul(x, Omega[i]))
                 continue
-            krp = khatri_rao(w[-1], Omega[i])
-            w.append(x.reshape(sx[0], -1) @ krp)
+            # Match the reshape order x.reshape(r_i, n_i * r_{i+1}),
+            # where r_{i+1} varies fastest.
+            krp = khatri_rao(Omega[i], w[-1])
+            w.append(_tt_matmul(x.reshape(sx[0], -1), krp))
 
         w = w[::-1]
         return w
@@ -2321,10 +2334,10 @@ class TTRandRound:
                     ),
                     axis=1,
                 )
-        S = current_tt_core @ current_contraction_W[tt_core_idx][
+        S = _tt_matmul(current_tt_core, current_contraction_W[tt_core_idx][
             :, orthogonal_cols : orthogonal_cols + sample_size
-        ]
-        S_perp = S - current_basis @ (current_basis.T @ S)
+        ])
+        S_perp = S - _tt_matmul(current_basis, _tt_matmul(current_basis.T, S))
 
         return S_perp, current_contraction_W
 
@@ -2358,8 +2371,8 @@ class TTRandRound:
             ],
             axis=0,
         )
-        S = current_tt_core @ W_block
-        S = S - current_basis @ (current_basis.T @ S)
+        S = _tt_matmul(current_tt_core, W_block)
+        S = S - _tt_matmul(current_basis, _tt_matmul(current_basis.T, S))
         return S, current_contraction_W
     
     def adaptive_rto_rounding(
@@ -2381,7 +2394,13 @@ class TTRandRound:
 
         ranks = self.y.ranks()
         if len(ranks) == 0:
-            return copy.deepcopy(self.y)
+            res = copy.deepcopy(self.y)
+            res._adaptive_rounding_debug = {
+                "initial_norm_estimate": None,
+                "tau": None,
+                "num_edges": 0,
+            }
+            return res
 
         sample_size = max(int(np.floor(np.max(ranks) * init_f)), min_samples)
         sample_size = max(sample_size, 1)
@@ -2395,7 +2414,7 @@ class TTRandRound:
         x1 = res.value(0)
         V_x1 = x1 if x1.ndim == 2 else x1.reshape((-1, x1.shape[-1]))
         nrmx_est = (
-            np.linalg.norm(V_x1 @ current_contraction_W[0], ord="fro")
+            np.linalg.norm(_tt_matmul(V_x1, current_contraction_W[0]), ord="fro")
             / np.sqrt(sample_size)
         )
         tau = tol * nrmx_est / np.sqrt(self.d - 1)
@@ -2415,13 +2434,13 @@ class TTRandRound:
             init_b = max(int(np.floor(max_cols * init_f)), 1)
             orthogonal_cols = 0
 
-            S_k = V_yk @ current_contraction_W[k][:, :init_b]
+            S_k = _tt_matmul(V_yk, current_contraction_W[k][:, :init_b])
             Q_k, _ = np.linalg.qr(S_k)
 
-            M_k = Q_k.T @ V_yk
+            M_k = _tt_matmul(Q_k.T, V_yk)
             base_xkp1 = res.value(k + 1)
             H_xkp1_base = base_xkp1.reshape((base_xkp1.shape[0], -1))
-            ykp1_mat = M_k @ H_xkp1_base
+            ykp1_mat = _tt_matmul(M_k, H_xkp1_base)
             
             orthogonal_cols += init_b
             b_inc = max(int(np.floor(max_cols * incr_f)), 1)
@@ -2446,11 +2465,13 @@ class TTRandRound:
 
                 S_k = S_k[:, :b_inc]
                 Q_new, _ = np.linalg.qr(S_k)
-                Q_new, _ = np.linalg.qr(Q_new - Q_k @ (Q_k.T @ Q_new))
+                Q_new, _ = np.linalg.qr(
+                    Q_new - _tt_matmul(Q_k, _tt_matmul(Q_k.T, Q_new))
+                )
                 Q_k = np.concatenate((Q_k, Q_new), axis=1)
 
-                M_k = Q_new.T @ V_yk
-                V_add = M_k @ H_xkp1_base
+                M_k = _tt_matmul(Q_new.T, V_yk)
+                V_add = _tt_matmul(M_k, H_xkp1_base)
 
                 ykp1_mat = np.concatenate((ykp1_mat, V_add), axis=0)
                 
@@ -2486,6 +2507,12 @@ class TTRandRound:
 
             current_tt_core = res.value(k + 1)
 
+        res._adaptive_rounding_debug = {
+            "initial_norm_estimate": nrmx_est,
+            "tau": tau,
+            "num_edges": self.d - 1,
+        }
+        # print(res.ranks())
         return res
 
     def rand_then_orth_two_sided(
@@ -2747,7 +2774,7 @@ class TTRandRound:
         current_core = res.value(0)
 
         # Norm estimate
-        normX_est = np.linalg.norm(current_core @ W[0], ord="fro") / np.sqrt(
+        normX_est = np.linalg.norm(_tt_matmul(current_core, W[0]), ord="fro") / np.sqrt(
             sample_size
         )
         tau = tol * normX_est / np.sqrt(self.d - 1)
@@ -2768,10 +2795,10 @@ class TTRandRound:
             init_b = int(max_mod_rank[n + 1])
             orth_cols = 0
 
-            Yn = Vn @ W[n][:, :init_b]
+            Yn = _tt_matmul(Vn, W[n][:, :init_b])
             Qn, _ = np.linalg.qr(Yn)
 
-            Mn = Qn.T @ Vn
+            Mn = _tt_matmul(Qn.T, Vn)
             lr = np.cumsum([0] + [int(rs[n + 1, j]) for j in range(m)])
             rr = np.cumsum([0] + [int(rs[n + 2, j]) for j in range(m)])
 
@@ -2781,7 +2808,7 @@ class TTRandRound:
                     Mn_j = Mn[:, lr[j] : lr[j + 1]]
                     sj_next = summands[j].value(n + 1)
                     h = sj_next.reshape((sj_next.shape[0], -1))
-                    x = Mn_j @ h
+                    x = _tt_matmul(Mn_j, h)
                     block_v = x.reshape((x.shape[0] * n_sizes[n + 1], -1))
                     blocks.append(block_v)
                 H_next = np.concatenate(blocks, axis=1)
@@ -2791,7 +2818,7 @@ class TTRandRound:
                 for j in range(m):
                     Mn_j = Mn[:, lr[j] : lr[j + 1]]
                     sj_last = summands[j].value(n + 1)
-                    ykp1 += Mn_j @ sj_last
+                    ykp1 += _tt_matmul(Mn_j, sj_last)
             res.network.nodes[n + 1]["tensor"].update_val_size(ykp1)
 
             orth_cols += init_b
@@ -2809,8 +2836,8 @@ class TTRandRound:
                     )
                     W[k] = np.concatenate((W[k], block), axis=1)
 
-            Yn = Vn @ W[n][:, orth_cols : orth_cols + sample_size]
-            Yn = Yn - Qn @ (Qn.T @ Yn)
+            Yn = _tt_matmul(Vn, W[n][:, orth_cols : orth_cols + sample_size])
+            Yn = Yn - _tt_matmul(Qn, _tt_matmul(Qn.T, Yn))
 
             while np.linalg.norm(Yn, ord="fro") / np.sqrt(sample_size) > tau:
                 b_inc = min(b_inc, max_cols - orth_cols)
@@ -2819,10 +2846,12 @@ class TTRandRound:
 
                 Yn = Yn[:, :b_inc]
                 Qnew, _ = np.linalg.qr(Yn)
-                Qnew, _ = np.linalg.qr(Qnew - Qn @ (Qn.T @ Qnew))
+                Qnew, _ = np.linalg.qr(
+                    Qnew - _tt_matmul(Qn, _tt_matmul(Qn.T, Qnew))
+                )
                 Qn = np.concatenate((Qn, Qnew), axis=1)
 
-                Mn = Qnew.T @ Vn
+                Mn = _tt_matmul(Qnew.T, Vn)
                 if n < self.d - 2:
                     H_curr = res.value(n + 1).reshape(
                         (res.value(n + 1).shape[0] * n_sizes[n + 1], -1)
@@ -2838,7 +2867,7 @@ class TTRandRound:
                         Mn_j = Mn[:, lr[j] : lr[j + 1]]
                         sj_next = summands[j].value(n + 1)
                         h = sj_next.reshape((sj_next.shape[0], -1))
-                        x = Mn_j @ h
+                        x = _tt_matmul(Mn_j, h)
                         block_v = x.reshape((x.shape[0] * n_sizes[n + 1], -1))
 
                         block = H_curr[:, rr[j] : rr[j + 1]]
@@ -2855,7 +2884,7 @@ class TTRandRound:
                     for j in range(m):
                         Mn_j = Mn[:, lr[j] : lr[j + 1]]
                         sj_last = summands[j].value(n + 1)
-                        y_add += Mn_j @ sj_last
+                        y_add += _tt_matmul(Mn_j, sj_last)
                     ykp1 = np.concatenate((res.value(n + 1), y_add), axis=0)
 
                 res.network.nodes[n + 1]["tensor"].update_val_size(ykp1)
@@ -2875,8 +2904,8 @@ class TTRandRound:
                         )
                         W[k] = np.concatenate((W[k], block), axis=1)
 
-                Yn = Vn @ W[n][:, orth_cols : orth_cols + sample_size]
-                Yn = Yn - Qn @ (Qn.T @ Yn)
+                Yn = _tt_matmul(Vn, W[n][:, orth_cols : orth_cols + sample_size])
+                Yn = Yn - _tt_matmul(Qn, _tt_matmul(Qn.T, Yn))
 
             if core_n.ndim == 2:
                 res.network.nodes[n]["tensor"].update_val_size(
@@ -2907,7 +2936,7 @@ class TTRandRound:
             s = s[:rk]
             V = Vt.T[:, :rk]
 
-            new_h = (Q @ U).T
+            new_h = _tt_matmul(Q, U).T
             new_v = h2v_block(new_h, n_sizes[n])
             if n == self.d - 1:
                 new_core = new_v.reshape((rk, n_sizes[n]))
@@ -2915,10 +2944,12 @@ class TTRandRound:
                 new_core = new_v.reshape((rk, n_sizes[n], core.shape[2]))
             res.network.nodes[n]["tensor"].update_val_size(new_core)
 
-            mat = V @ np.diag(s)
+            mat = _tt_matmul(V, np.diag(s))
             prev = res.value(n - 1)
             if prev.ndim == 2:
-                res.network.nodes[n - 1]["tensor"].update_val_size(prev @ mat)
+                res.network.nodes[n - 1]["tensor"].update_val_size(
+                    _tt_matmul(prev, mat)
+                )
             else:
                 res.network.nodes[n - 1]["tensor"].update_val_size(
                     np.einsum("ijk,kl->ijl", prev, mat)
@@ -3186,6 +3217,49 @@ def _tree_ensure_free_sketch_columns(
     _tree_append_sketch_columns(all_sketches, key, new_columns)
 
 
+def _tree_exact_residual_network_norm(
+    tn: TensorNetwork,
+    node: NodeName,
+    target_node: NodeName,
+    node_mat: np.ndarray,
+    q_basis: np.ndarray,
+    edge_pos: int,
+) -> float:
+    """Exact residual norm via a pruned residual tensor network."""
+    residual_matrix = node_mat - _tree_matmul(
+        q_basis, _tree_matmul(q_basis.T, node_mat)
+    )
+
+    residual_tn = copy.deepcopy(tn)
+    node_tensor = residual_tn.node_tensor(node)
+    moved_node = np.moveaxis(node_tensor.value, edge_pos, -1)
+    residual_value = residual_matrix.reshape(moved_node.shape)
+    residual_value = np.moveaxis(residual_value, -1, edge_pos)
+    residual_tn.set_node_tensor(
+        node, Tensor(residual_value, list(node_tensor.indices))
+    )
+
+    # Branches away from the target side are orthogonalized, so they can be
+    # pruned from the copied network before evaluating the exact norm.
+    nodes_to_remove: Set[NodeName] = set()
+    for neighbor in list(residual_tn.network.neighbors(node)):
+        if neighbor == target_node:
+            continue
+        nodes_to_remove.update(_tree_component_nodes(residual_tn, neighbor, node))
+    residual_tn.network.remove_nodes_from(nodes_to_remove)
+
+    return residual_tn.norm()
+
+
+def _tree_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """2D matrix multiply for tree rounding.
+
+    ``np.dot`` avoids spurious runtime warnings from ``@``/``matmul`` on some
+    NumPy + Accelerate builds while matching 2D matrix multiplication here.
+    """
+    return np.dot(left, right)
+
+
 def _tree_ensure_directional_sketch_columns(
     tn: TensorNetwork,
     sketching_node: NodeName,
@@ -3245,7 +3319,7 @@ def _tree_ensure_directional_sketch_columns(
     sketch_node_val = np.moveaxis(sketch_node_val, tr_ind_pos, 0).reshape(
         sketch_node_val.shape[tr_ind_pos], -1
     )
-    new_sketch = sketch_node_val @ total_kr_contraction
+    new_sketch = _tree_matmul(sketch_node_val, total_kr_contraction)
     _tree_append_sketch_columns(all_sketches, sketch_key, new_sketch)
 
 
@@ -3308,7 +3382,7 @@ def _tree_edge_sketch_blocks(
     start = start_column
     for block_size in block_sizes:
         stop = start + block_size
-        sketches.append(node_mat @ parent_sketch[:, start:stop])
+        sketches.append(_tree_matmul(node_mat, parent_sketch[:, start:stop]))
         start = stop
 
     return sketches, node_mat, edge_pos, edge_index
@@ -3406,7 +3480,7 @@ def _tree_absorb_factor(
     parent_tensor = tn.node_tensor(parent)
     parent_pos = parent_tensor.indices.index(edge_index)
 
-    factor = q_basis.T @ node_mat
+    factor = _tree_matmul(q_basis.T, node_mat)
     new_rank = q_basis.shape[1]
     new_index = edge_index.with_new_size(new_rank)
 
@@ -3451,11 +3525,18 @@ def tree_adaptive_rand_round(
         )
 
     if tn.network.number_of_edges() == 0:
-        return copy.deepcopy(tn)
+        res = copy.deepcopy(tn)
+        res._adaptive_rounding_debug = {
+            "initial_norm_estimate": None,
+            "tau": None,
+            "num_edges": 0,
+        }
+        return res
 
     res = copy.deepcopy(tn)
     num_edges = res.network.number_of_edges()
     tau: Optional[float] = None
+    norm_estimate: Optional[float] = None
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray] = {}
     if traversal_mode == "end_to_end" and final_leaf is None:
         final_leaf = root
@@ -3494,16 +3575,26 @@ def tree_adaptive_rand_round(
         sketch = sketch_blocks[0]
         residual_sketch = sketch_blocks[residual_block_index]
         if tau is None:
-            norm_est = np.linalg.norm(sketch, ord="fro") / np.sqrt(
+            # Exact vs estimate TN norm
+            # norm_estimate = res.norm() # Exact norm
+            norm_estimate = np.linalg.norm(sketch, ord="fro") / np.sqrt(
                 sketch.shape[1]
-            )
-            tau = tol * norm_est / np.sqrt(num_edges)
+            ) # Estimate norm from sketch
+            tau = tol * norm_estimate / np.sqrt(num_edges)
         q_basis, _ = np.linalg.qr(sketch[:, :init_b])
         sketch_columns_used = int(np.sum(block_sizes))
 
-        residual_sketch = residual_sketch - q_basis @ (q_basis.T @ residual_sketch)
+        residual_sketch = residual_sketch - _tree_matmul(
+            q_basis, _tree_matmul(q_basis.T, residual_sketch)
+        )
 
-        residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(residual_sketch.shape[1])
+        # Exact vs estimate residual norm
+        # residual_err = _tree_exact_residual_network_norm(
+        #     res, node, parent_node, node_mat, q_basis, edge_pos
+        # ) # Exact residual norm
+        residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(
+            residual_sketch.shape[1]
+        ) # Estimate residual norm from sketch
 
         while (residual_err > cast(float, tau) / tol_scale):
             if q_basis.shape[1] >= max_cols:
@@ -3515,7 +3606,9 @@ def tree_adaptive_rand_round(
 
             candidate = residual_sketch[:, :add_cols]
             q_new, _ = np.linalg.qr(candidate)
-            q_new, _ = np.linalg.qr(q_new - q_basis @ (q_basis.T @ q_new))
+            q_new, _ = np.linalg.qr(
+                q_new - _tree_matmul(q_basis, _tree_matmul(q_basis.T, q_new))
+            )
             if q_new.shape[1] == 0:
                 break
             q_basis = np.concatenate((q_basis, q_new), axis=1)
@@ -3531,10 +3624,17 @@ def tree_adaptive_rand_round(
             )
             residual_sketch = sketch_blocks[0]
             sketch_columns_used += sample_size
-            residual_sketch = residual_sketch - q_basis @ (
-                q_basis.T @ residual_sketch
+            residual_sketch = residual_sketch - _tree_matmul(
+                q_basis, _tree_matmul(q_basis.T, residual_sketch)
             )
-            residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(residual_sketch.shape[1])
+
+            # Exact vs estimate residual norm
+            residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(
+                residual_sketch.shape[1]
+            )
+            # residual_err = _tree_exact_residual_network_norm(
+            #     res, node, parent_node, node_mat, q_basis, edge_pos
+            # )
 
         _tree_absorb_factor(
             res,
@@ -3550,6 +3650,11 @@ def tree_adaptive_rand_round(
     if postprocess:
         res.round(postprocess_root, tol)
 
+    res._adaptive_rounding_debug = {
+        "initial_norm_estimate": norm_estimate,
+        "tau": tau,
+        "num_edges": num_edges,
+    }
     return res
 
 def ttop_rank1(
