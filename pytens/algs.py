@@ -3262,11 +3262,42 @@ def _tree_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     return np.dot(left, right)
 
 
+def _tree_sketch_norm_squared(
+    sketch: np.ndarray, factor_combine_mode: str
+) -> float:
+    """Estimate the squared Frobenius norm from a tree sketch.
+
+    For ``khatri_rao`` sketches, each sketch column is isotropic and the
+    unbiased estimator of ``||X||_F^2`` is ``||Y||_F^2 / m`` where ``m`` is the
+    sketch-column count. For ``tree_tensor`` sketches, the recursive free-index
+    and combine-tensor normalization makes ``E[YY^T]`` match ``XX^T`` directly,
+    so no extra ``1 / m`` factor is needed.
+    """
+    fro_sq = float(np.linalg.norm(sketch, ord="fro") ** 2)
+    if factor_combine_mode == "khatri_rao":
+        return fro_sq / sketch.shape[1]
+    if factor_combine_mode == "tree_tensor":
+        return fro_sq
+    raise ValueError(
+        "factor_combine_mode must be either 'khatri_rao' or 'tree_tensor'."
+    )
+
+
+def _tree_sketch_norm(sketch: np.ndarray, factor_combine_mode: str) -> float:
+    """Estimate the Frobenius norm from a tree sketch.
+
+    This is the square root of the unbiased squared-norm estimator, so it is a
+    practical norm surrogate but is not itself unbiased.
+    """
+    return float(np.sqrt(_tree_sketch_norm_squared(sketch, factor_combine_mode)))
+
+
 def _tree_random_sketch_combine_tensor(sketch_dim: int) -> np.ndarray:
     """Random 3-tensor used to combine two sketch factors.
 
-    Each entry has variance ``1 / tensor_size`` where ``tensor_size`` is the
-    total number of tensor entries.
+    Each entry has variance ``1 / sketch_dim`` so that, together with the
+    normalized free-index sketches, the resulting tree sketch preserves the
+    second moment needed for squared-norm estimation.
     """
     if sketch_dim <= 0:
         raise ValueError("sketch_dim must be positive.")
@@ -3439,17 +3470,10 @@ def _tree_edge_sketch_blocks(
     start_column: int = 0,
 ) -> Tuple[List[np.ndarray], np.ndarray, int, Index]:
     """Sketch one edge for several independent sample blocks in one traversal."""
-    total_samples = int(np.sum(block_sizes))
-    if total_samples <= 0:
+    if int(np.sum(block_sizes)) <= 0:
         raise ValueError("At least one sketch sample is required.")
 
     edge_index = _tree_common_index(tn, node, parent)
-    stop_column = start_column + total_samples
-    _tree_ensure_directional_sketch_columns(
-        tn, parent, node, all_sketches, stop_column, factor_combine_mode
-    )
-
-    parent_sketch = all_sketches[(edge_index, node)]
     node_tensor = tn.node_tensor(node)
     edge_pos = node_tensor.indices.index(edge_index)
     node_mat = np.moveaxis(node_tensor.value, edge_pos, -1).reshape(
@@ -3460,6 +3484,10 @@ def _tree_edge_sketch_blocks(
     start = start_column
     for block_size in block_sizes:
         stop = start + block_size
+        _tree_ensure_directional_sketch_columns(
+            tn, parent, node, all_sketches, stop, factor_combine_mode
+        )
+        parent_sketch = all_sketches[(edge_index, node)]
         sketches.append(_tree_matmul(node_mat, parent_sketch[:, start:stop]))
         start = stop
 
@@ -3616,6 +3644,7 @@ def tree_adaptive_rand_round(
         res = copy.deepcopy(tn)
         res._adaptive_rounding_debug = {
             "initial_norm_estimate": None,
+            "initial_norm_squared_estimate": None,
             "tau": None,
             "num_edges": 0,
         }
@@ -3670,11 +3699,7 @@ def tree_adaptive_rand_round(
         if tau is None:
             # Exact vs estimate TN norm
             # norm_estimate = res.norm() # Exact norm
-            if factor_combine_mode == "khatri_rao":
-                norm_estimate = np.linalg.norm(sketch, ord="fro") / np.sqrt(
-                    sketch.shape[1])
-            else:
-                norm_estimate = np.linalg.norm(residual_sketch, ord="fro")
+            norm_estimate = _tree_sketch_norm(sketch, factor_combine_mode)
             # Estimate norm from sketch
             # print("norm estimate:", factor_combine_mode, norm_estimate)
             tau = tol * norm_estimate / np.sqrt(num_edges)
@@ -3689,11 +3714,7 @@ def tree_adaptive_rand_round(
         # residual_err = _tree_exact_residual_network_norm(
         #     res, node, parent_node, node_mat, q_basis, edge_pos
         # ) # Exact residual norm
-        if factor_combine_mode == "khatri_rao":
-            residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(
-                residual_sketch.shape[1])
-        else:
-            residual_err = np.linalg.norm(residual_sketch, ord="fro")
+        residual_err = _tree_sketch_norm(residual_sketch, factor_combine_mode)
         # Estimate residual norm from sketch
 
         while (residual_err > cast(float, tau) / tol_scale):
@@ -3730,8 +3751,8 @@ def tree_adaptive_rand_round(
             )
 
             # Exact vs estimate residual norm
-            residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(
-                residual_sketch.shape[1]
+            residual_err = _tree_sketch_norm(
+                residual_sketch, factor_combine_mode
             )
             # residual_err = _tree_exact_residual_network_norm(
             #     res, node, parent_node, node_mat, q_basis, edge_pos
@@ -3753,6 +3774,9 @@ def tree_adaptive_rand_round(
 
     res._adaptive_rounding_debug = {
         "initial_norm_estimate": norm_estimate,
+        "initial_norm_squared_estimate": (
+            None if norm_estimate is None else norm_estimate**2
+        ),
         "tau": tau,
         "num_edges": num_edges,
         "factor_combine_mode": factor_combine_mode,
