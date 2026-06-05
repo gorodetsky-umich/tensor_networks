@@ -930,11 +930,11 @@ class TensorNetwork:  # pylint: disable=R0904
             right_sz = np.prod([merged_indices[i].size for i in right_indices])
             # optimization: this step creates redundant nodes,
             # so to avoid them we directly eliminate the node with a merge.
-            if (
-                len(left_indices) == 1
-                and merged_indices[left_indices[0]].size <= right_sz
-            ):
-                return merged
+            # if (
+            #     len(left_indices) == 1
+            #     and merged_indices[left_indices[0]].size <= right_sz
+            # ):
+            #     return merged
 
             q, r = self.qr(merged, left_indices)
             # this split changes the index orders,
@@ -3206,6 +3206,7 @@ def _tree_ensure_free_sketch_columns(
     index: Index,
     node: NodeName,
     num_columns: int,
+    normalize: bool = True,
 ) -> None:
     key = (index, node)
     existing_columns = _tree_sketch_column_count(all_sketches, key)
@@ -3213,7 +3214,8 @@ def _tree_ensure_free_sketch_columns(
         return
 
     missing_columns = num_columns - existing_columns
-    new_columns = np.random.randn(index.size, missing_columns)
+    norm_constant = np.sqrt(missing_columns) if normalize else 1.0
+    new_columns = np.random.randn(index.size, missing_columns) / norm_constant
     _tree_append_sketch_columns(all_sketches, key, new_columns)
 
 
@@ -3260,12 +3262,82 @@ def _tree_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     return np.dot(left, right)
 
 
+def _tree_random_sketch_combine_tensor(sketch_dim: int) -> np.ndarray:
+    """Random 3-tensor used to combine two sketch factors.
+
+    Each entry has variance ``1 / tensor_size`` where ``tensor_size`` is the
+    total number of tensor entries.
+    """
+    if sketch_dim <= 0:
+        raise ValueError("sketch_dim must be positive.")
+    return np.random.randn(sketch_dim, sketch_dim, sketch_dim) / np.sqrt(sketch_dim)
+
+
+def _tree_pairwise_tensor_combine(
+    left: np.ndarray, right: np.ndarray
+) -> np.ndarray:
+    """Combine two factor matrices through a random 3-tensor.
+
+    ``left`` and ``right`` must have the same sketch-column count. The result
+    has row dimension ``left.shape[0] * right.shape[0]`` and preserves the
+    sketch-column count.
+    """
+    if left.shape[1] != right.shape[1]:
+        raise ValueError("Sketch factors must share the same column dimension.")
+
+    sketch_dim = left.shape[1]
+    combine_tensor = _tree_random_sketch_combine_tensor(sketch_dim)
+    combined = np.einsum(
+        "ia,jb,abk->ijk", left, right, combine_tensor, optimize=True
+    )
+    return combined.reshape(left.shape[0] * right.shape[0], sketch_dim)
+
+
+def _tree_combine_sketch_factors(
+    factors: List[np.ndarray],
+    sketch_dim: int,
+    factor_combine_mode: str,
+) -> np.ndarray:
+    """Combine child/free sketch factors into one contraction matrix."""
+    if not factors:
+        return np.ones((1, sketch_dim))
+
+    if factor_combine_mode == "khatri_rao":
+        total = factors[0]
+        for factor in factors[1:]:
+            total = khatri_rao(total, factor)
+        return total
+
+    if factor_combine_mode != "tree_tensor":
+        raise ValueError(
+            "factor_combine_mode must be either 'khatri_rao' or 'tree_tensor'."
+        )
+
+    current_level = list(factors)
+    while len(current_level) > 1:
+        next_level = []
+        i = 0
+        while i + 1 < len(current_level):
+            next_level.append(
+                _tree_pairwise_tensor_combine(
+                    current_level[i], current_level[i + 1]
+                )
+            )
+            i += 2
+        if i < len(current_level):
+            next_level.append(current_level[i])
+        current_level = next_level
+
+    return current_level[0]
+
+
 def _tree_ensure_directional_sketch_columns(
     tn: TensorNetwork,
     sketching_node: NodeName,
     orthogonalization_node: NodeName,
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray],
     num_columns: int,
+    factor_combine_mode: str,
 ) -> None:
     """Ensure a directional edge sketch has at least num_columns columns."""
     truncation_index = _tree_common_index(tn, sketching_node, orthogonalization_node)
@@ -3278,9 +3350,8 @@ def _tree_ensure_directional_sketch_columns(
     missing_stop = num_columns
     missing_columns = missing_stop - missing_start
 
-    first_factor = True
     tr_ind_pos = -1
-    total_kr_contraction = np.ones((1, missing_columns))
+    factor_matrices = []
     for i, index in enumerate(tn.node_tensor(sketching_node).indices):
         if index == truncation_index:
             tr_ind_pos = i
@@ -3290,30 +3361,36 @@ def _tree_ensure_directional_sketch_columns(
             tn, sketching_node, index, orthogonalization_node
         )
         if neighbor is None:
+            normalize = True if factor_combine_mode == "tree_tensor" else False
             _tree_ensure_free_sketch_columns(
-                all_sketches, index, sketching_node, num_columns
+                all_sketches, index, sketching_node, num_columns, normalize
             )
             factor = all_sketches[(index, sketching_node)][
                 :, missing_start:missing_stop
             ]
         else:
             _tree_ensure_directional_sketch_columns(
-                tn, neighbor, sketching_node, all_sketches, num_columns
+                tn,
+                neighbor,
+                sketching_node,
+                all_sketches,
+                num_columns,
+                factor_combine_mode,
             )
             factor = all_sketches[(index, sketching_node)][
                 :, missing_start:missing_stop
             ]
 
-        if first_factor:
-            total_kr_contraction = factor
-            first_factor = False
-        else:
-            total_kr_contraction = khatri_rao(total_kr_contraction, factor)
+        factor_matrices.append(factor)
 
     if tr_ind_pos < 0:
         raise ValueError(
             f"Nodes {sketching_node} and {orthogonalization_node} do not share an index."
         )
+
+    total_kr_contraction = _tree_combine_sketch_factors(
+        factor_matrices, missing_columns, factor_combine_mode
+    )
 
     sketch_node_val = tn.node_tensor(sketching_node).value
     sketch_node_val = np.moveaxis(sketch_node_val, tr_ind_pos, 0).reshape(
@@ -3358,6 +3435,7 @@ def _tree_edge_sketch_blocks(
     parent: NodeName,
     block_sizes: Sequence[int],
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray],
+    factor_combine_mode: str,
     start_column: int = 0,
 ) -> Tuple[List[np.ndarray], np.ndarray, int, Index]:
     """Sketch one edge for several independent sample blocks in one traversal."""
@@ -3368,7 +3446,7 @@ def _tree_edge_sketch_blocks(
     edge_index = _tree_common_index(tn, node, parent)
     stop_column = start_column + total_samples
     _tree_ensure_directional_sketch_columns(
-        tn, parent, node, all_sketches, stop_column
+        tn, parent, node, all_sketches, stop_column, factor_combine_mode
     )
 
     parent_sketch = all_sketches[(edge_index, node)]
@@ -3509,6 +3587,7 @@ def tree_adaptive_rand_round(
     min_samples: int = 20,
     tol_scale: float = 1.0,
     postprocess: bool = False,
+    factor_combine_mode: str = "khatri_rao",
 ) -> TensorNetwork:
     """Adaptive randomized rounding for tree tensor networks.
 
@@ -3516,12 +3595,21 @@ def tree_adaptive_rand_round(
     toward ``root``. ``traversal_mode="end_to_end"`` defers the root-side
     component containing ``final_leaf`` until the end, leaving
     ``final_leaf`` as the final unorthogonalized node.
+
+    ``factor_combine_mode="khatri_rao"`` uses the original columnwise
+    Khatri-Rao factor contraction. ``factor_combine_mode="tree_tensor"``
+    combines adjacent factors through random 3-tensors in a binary-tree
+    reduction while preserving the sketch-column dimension.
     """
     if not (0 < init_f < 1) or not (0 < incr_f < 1):
         raise ValueError("init_f and incr_f must satisfy 0 < f < 1.")
     if traversal_mode not in {"leaf_to_root", "end_to_end"}:
         raise ValueError(
             "traversal_mode must be either 'leaf_to_root' or 'end_to_end'."
+        )
+    if factor_combine_mode not in {"khatri_rao", "tree_tensor"}:
+        raise ValueError(
+            "factor_combine_mode must be either 'khatri_rao' or 'tree_tensor'."
         )
 
     if tn.network.number_of_edges() == 0:
@@ -3570,16 +3658,25 @@ def tree_adaptive_rand_round(
         residual_block_index = 1
 
         sketch_blocks, node_mat, edge_pos, edge_index = _tree_edge_sketch_blocks(
-            res, node, parent_node, block_sizes, all_sketches
+            res,
+            node,
+            parent_node,
+            block_sizes,
+            all_sketches,
+            factor_combine_mode,
         )
         sketch = sketch_blocks[0]
         residual_sketch = sketch_blocks[residual_block_index]
         if tau is None:
             # Exact vs estimate TN norm
             # norm_estimate = res.norm() # Exact norm
-            norm_estimate = np.linalg.norm(sketch, ord="fro") / np.sqrt(
-                sketch.shape[1]
-            ) # Estimate norm from sketch
+            if factor_combine_mode == "khatri_rao":
+                norm_estimate = np.linalg.norm(sketch, ord="fro") / np.sqrt(
+                    sketch.shape[1])
+            else:
+                norm_estimate = np.linalg.norm(residual_sketch, ord="fro")
+            # Estimate norm from sketch
+            # print("norm estimate:", factor_combine_mode, norm_estimate)
             tau = tol * norm_estimate / np.sqrt(num_edges)
         q_basis, _ = np.linalg.qr(sketch[:, :init_b])
         sketch_columns_used = int(np.sum(block_sizes))
@@ -3592,9 +3689,12 @@ def tree_adaptive_rand_round(
         # residual_err = _tree_exact_residual_network_norm(
         #     res, node, parent_node, node_mat, q_basis, edge_pos
         # ) # Exact residual norm
-        residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(
-            residual_sketch.shape[1]
-        ) # Estimate residual norm from sketch
+        if factor_combine_mode == "khatri_rao":
+            residual_err = np.linalg.norm(residual_sketch, ord="fro") / np.sqrt(
+                residual_sketch.shape[1])
+        else:
+            residual_err = np.linalg.norm(residual_sketch, ord="fro")
+        # Estimate residual norm from sketch
 
         while (residual_err > cast(float, tau) / tol_scale):
             if q_basis.shape[1] >= max_cols:
@@ -3620,6 +3720,7 @@ def tree_adaptive_rand_round(
                 parent_node,
                 [sample_size],
                 all_sketches,
+                factor_combine_mode,
                 start_column=sketch_columns_used,
             )
             residual_sketch = sketch_blocks[0]
@@ -3654,6 +3755,7 @@ def tree_adaptive_rand_round(
         "initial_norm_estimate": norm_estimate,
         "tau": tau,
         "num_edges": num_edges,
+        "factor_combine_mode": factor_combine_mode,
     }
     return res
 
