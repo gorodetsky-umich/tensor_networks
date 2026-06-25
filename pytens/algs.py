@@ -762,7 +762,12 @@ class TensorNetwork:  # pylint: disable=R0904
         return name1
 
     def round(
-        self, node_name: NodeName, delta: float, visited: Optional[set] = None
+        self,
+        node_name: NodeName,
+        delta: float,
+        visited: Optional[set] = None,
+        equal_error_distribution: bool = False,
+        edge_delta: Optional[float] = None,
     ) -> Tuple[NodeName, float]:
         """Optimize the tree rooted at the given node."""
         # print("optimize", node_name)
@@ -771,8 +776,14 @@ class TensorNetwork:  # pylint: disable=R0904
             initial_optimize = True
             visited = set()
             self.orthonormalize(node_name)
+            if equal_error_distribution and edge_delta is None:
+                component = nx.node_connected_component(self.network, node_name)
+                num_edges = self.network.subgraph(component).number_of_edges()
+                edge_delta = delta if num_edges == 0 else delta / np.sqrt(num_edges)
         else:
             initial_optimize = False
+
+        local_delta = edge_delta if equal_error_distribution else delta
 
         node_indices = self.network.nodes[node_name]["tensor"].indices
         kept_indices = []
@@ -804,7 +815,7 @@ class TensorNetwork:  # pylint: disable=R0904
             [node_name, s, v], delta = self.svd(
                 node_name,
                 left_indices,
-                SVDConfig(delta=delta, with_orthonormal=False),
+                SVDConfig(delta=local_delta, with_orthonormal=False),
             )
             self.merge(v, s)
             self.merge(nbr, v)
@@ -812,7 +823,14 @@ class TensorNetwork:  # pylint: disable=R0904
             for idx in visited_index:
                 visited.add(idx)
 
-            r, delta = self.round(nbr, delta, visited)
+            next_delta = delta if not equal_error_distribution else cast(float, edge_delta)
+            r, delta = self.round(
+                nbr,
+                next_delta,
+                visited,
+                equal_error_distribution=equal_error_distribution,
+                edge_delta=edge_delta,
+            )
             self.merge(node_name, r)
 
         if not initial_optimize:
