@@ -10,7 +10,7 @@ from typing import List, Optional, Sequence
 
 import numpy as np
 
-from pytens.algs import Tensor, TreeNetwork
+from pytens.algs import Tensor, TensorNetwork
 from pytens.search.configuration import SearchConfig
 import pytens.search.configuration as config
 from pytens.search.constraint import ConstraintSearch
@@ -37,7 +37,7 @@ class PartitionSearch:
     def __init__(
         self,
         search_config: SearchConfig,
-        data_tensor: TreeNetwork,
+        data_tensor: TensorNetwork,
         replay_from: Optional[Sequence[Action]] = None,
     ):
         self.config = search_config
@@ -282,7 +282,7 @@ class PartitionSearch:
 
     def rank_search(self, acs: Sequence[Action]) -> Optional[SearchState]:
         """Search for ranks for the given set of split actions."""
-        empty_net = TreeNetwork()
+        empty_net = TensorNetwork()
         empty_net.add_node(
             "G", Tensor(np.empty(0), self._data_tensor.free_indices())
         )
@@ -387,7 +387,7 @@ class PartitionSearch:
         self.constraint_engine.delta = self._delta
 
         if self.config.synthesizer.algo == config.SearchAlgo.RANDOM:
-            empty_net = TreeNetwork()
+            empty_net = TensorNetwork()
             empty_net.add_node(
                 "G", Tensor(np.empty(0), self._data_tensor.free_indices())
             )
@@ -418,7 +418,7 @@ class PartitionSearch:
             search_res = self.replay(acs, True)
         else:
             self.unused_delta = self._delta
-            empty_net = TreeNetwork()
+            empty_net = TensorNetwork()
             empty_net.add_node(
                 "G", Tensor(np.empty(0), self._data_tensor.free_indices())
             )

@@ -1,344 +1,443 @@
-"""Linear constraints for finding best rank assignment."""
+"""Rank assignment by integer linear programming.
+
+Given a tree structure produced by a sequence of splits, every internal edge
+still needs a rank. For each edge we know the singular values of the
+corresponding matricization, so truncating it to a candidate rank costs a
+known amount of squared error. The ILP picks one candidate rank per edge
+such that the total squared error stays within the budget, and the network
+cost (the number of stored entries) is minimized.
+
+The model has, for every internal edge ``e`` and candidate rank ``r``, a
+binary variable ``x[e, r]`` and
+
+* one-hot choice:      ``sum_r x[e, r] == 1``               for every ``e``
+* error budget:        ``sum_{e, r} err[e, r] * x[e, r] <= delta**2``
+* objective:           ``sum_nodes free_size(node) * prod_{e in node} rank(e)``
+
+where ``rank(e) = sum_r r * x[e, r]``. A node touching several internal edges
+makes the objective a product of choices, which is linearized with one binary
+``y`` per rank combination.
+"""
 
 import copy
+import functools
 import itertools
 import logging
+import math
 import os
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence
 
 import gurobipy as gp
 import numpy as np
 from gurobipy import GRB
 
-from pytens.algs import Index, Tensor, TreeNetwork
+from pytens.algs import Index, Tensor, TensorNetwork
 from pytens.search.configuration import SearchConfig
 from pytens.search.state import ISplit, OSplit, SearchState
 from pytens.search.types import Action
 from pytens.types import AlgoParams, IndexName, SVDAlgorithm, SValsParams
 
-BAD_SCORE = 9999999999999
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Assignment of a rank to every internal edge, by edge (index) name.
+RankAssignment = Dict[IndexName, int]
 
-class ILPSolver:
-    """An ILP solver to find near-optimal rank assignments."""
 
-    def __init__(self, config: SearchConfig):
-        self.config = config
-        # Create empty environment, set options and start
-        env = gp.Env(empty=True)
-        env.setParam("OutputFlag", 0)
-        env.setParam("TimeLimit", 60)
-        env.start()
-        self.env = env
-        self.model: gp.Model = gp.Model("A model", env=env)
-        self.vars: gp.tupledict = gp.tupledict()
+@functools.lru_cache(maxsize=None)
+def _gurobi_env() -> gp.Env:
+    """The process-wide Gurobi environment, started on first use.
 
-    def add_var(self, ind: Index) -> None:
-        """Add variables for a given rank i"""
-        # for a given edge, we add binary variables i0, i1, .., in
-        indices = [(ind.name, j) for j in ind.space]
-        # print(indices)
-        # print(ind, len(indices), ind.size[1] - ind.size[0])
-        self.vars.update(self.model.addVars(indices, vtype=GRB.BINARY))
+    Starting an environment is far more expensive than building a model, so
+    every ILP shares this one.
+    """
+    env = gp.Env(empty=True)
+    env.setParam("OutputFlag", 0)
+    env.setParam("TimeLimit", 60)
+    env.start()
+    return env
 
-    def add_constraint(
+
+@dataclass
+class RankChoices:
+    """Candidate ranks for one edge, with the truncation error of each.
+
+    Attributes:
+        ranks: Candidate ranks, largest first.
+        errors: Squared error of truncating the edge to the rank at the same
+            position, i.e. the sum of the discarded squared singular values.
+    """
+
+    ranks: List[int]
+    errors: List[float]
+
+    @staticmethod
+    def empty() -> "RankChoices":
+        """No truncation is possible on this edge."""
+        return RankChoices([], [])
+
+
+def bin_singular_values(
+    svals: Sequence[float],
+    delta: float,
+    bin_size: float,
+    include_last: bool = False,
+) -> Optional[RankChoices]:
+    """Turn a spectrum into a small set of candidate ranks.
+
+    Every prefix of the (reversed) spectrum that fits into the error budget
+    ``delta**2`` is a valid truncation. Consecutive truncations whose
+    accumulated error falls into the same bin of width
+    ``bin_size * delta**2`` are collapsed into one candidate, keeping the
+    largest truncation of the bin, so the ILP sees at most ``1 / bin_size``
+    candidates per edge.
+
+    Arguments:
+        svals: Singular values in descending order.
+        delta: Error budget of the whole search step.
+        bin_size: Bin width as a fraction of ``delta**2``.
+        include_last: Also offer "keep everything" (zero error) as a choice.
+
+    Returns:
+        The candidate ranks and their errors, or ``None`` for an empty
+        spectrum.
+    """
+    n = len(svals)
+    if n == 0:
+        return None
+
+    budget = delta**2
+    bin_width = bin_size * budget
+
+    # error[k] is the squared error of discarding the k smallest values
+    error = np.concatenate([[0.0], np.cumsum(np.flip(svals) ** 2)])
+    max_discard = int(np.searchsorted(error, budget, side="right")) - 1
+
+    # candidates are numbers of discarded values, smallest first
+    discards: List[int] = []
+    if include_last:
+        discards.append(0)
+    if n > 1:
+        discards.append(1)
+
+    # Group the deeper truncations into bins of increasing error and keep
+    # the deepest truncation of every bin. A bin closes at the first
+    # truncation whose error reaches the threshold, and that truncation
+    # opens the next bin; the last bin only counts if it has two members.
+    threshold = bin_width
+    bin_members: List[int] = []
+    for k in range(2, max_discard + 1):
+        if error[k] >= threshold:
+            if bin_members:
+                discards.append(bin_members[-1])
+            threshold += bin_width
+            bin_members = []
+        bin_members.append(k)
+
+    if len(bin_members) >= 2:
+        discards.append(bin_members[-1])
+
+    ranks = [max(n - k, 1) for k in discards]
+    errors = [float(error[k]) for k in discards]
+    return RankChoices(ranks, errors)
+
+
+class RankILP:
+    """One ILP instance choosing a rank for every internal edge."""
+
+    def __init__(self, env: gp.Env):
+        self.model = gp.Model("rank assignment", env=env)
+        # x[edge name, rank] binary choice variables
+        self.choice: gp.tupledict = gp.tupledict()
+
+    def add_edge(self, edge: Index) -> None:
+        """Register an internal edge whose candidate ranks are ``edge.space``.
+
+        Exactly one candidate has to be chosen.
+        """
+        keys = [(edge.name, rank) for rank in edge.space]
+        self.choice.update(self.model.addVars(keys, vtype=GRB.BINARY))
+        self.model.addConstr(self.choice.sum(edge.name, "*") == 1)
+
+    def add_error_budget(
         self,
-        inds: List[Index],
-        pfsums: Dict[IndexName, List[float]],
+        edges: Sequence[Index],
+        errors: Dict[IndexName, Sequence[float]],
         delta: float,
     ) -> None:
-        """Given n ranks to be solved, generate all constraints
-
-        Constr1: sum_j xij = 1
-        Constr2: sum_ij xij*pij <= delta**2
+        """Bound the total truncation error by ``delta**2``.
 
         Arguments:
-            n - Number of ranks to be resolved
-            pfsums - Prefix sums of singular values for corresponding edges
-            delta - The maximum error can be accumulated
+            edges: Internal edges that were registered with ``add_edge``.
+            errors: Per edge name, the truncation error of every candidate
+                rank in the same order as ``edge.space``.
+            delta: The error budget.
         """
         coeff = {}
-        for ind in inds:
-            self.model.addConstr(self.vars.sum(ind.name, "*") == 1)
+        for edge in edges:
+            assert len(errors[edge.name]) == len(edge.space)
+            for rank, err in zip(edge.space, errors[edge.name]):
+                coeff[(edge.name, rank)] = err
 
-            # print(ind)
-            # print(ind, len(pfsums[ind.name]))
-            assert len(pfsums[ind.name]) == len(ind.space)
-            for sz, p in zip(ind.space, pfsums[ind.name]):
-                coeff[(ind.name, sz)] = p
-
+        budget = delta**2
         logger.debug("adding coeffs: %s", coeff)
-        logger.debug("allowed delta: %s", delta**2)
+        logger.debug("allowed delta: %s", budget)
 
         # rescale the numbers to avoid overflow
-        numbers = [v for v in coeff.values() if v > 1e-8] + [delta**2]
+        numbers = [v for v in coeff.values() if v > 1e-8] + [budget]
         scale = (max(numbers) ** 0.5) * (min(numbers) ** 0.5)
         if scale == 0:
             scale = 1.0
 
-        for k in coeff:
-            coeff[k] /= scale
+        for key in coeff:
+            coeff[key] /= scale
 
         self.model.addConstr(
-            self.vars.prod(coeff) <= delta**2 / scale, name="total_error"
+            self.choice.prod(coeff) <= budget / scale, name="total_error"
         )
-        # self.model.update()
 
-    def set_objective(
+    def set_cost_objective(
         self,
-        free_indices: List[Index],
-        nodes: List[Tensor],
+        free_indices: Sequence[Index],
+        nodes: Sequence[Tensor],
         upper: Optional[int],
     ) -> None:
-        """Set the objective for the solver."""
-        # max_cost = np.prod([i.size for i in free_indices])
+        """Minimize the number of stored entries over all nodes.
+
+        Arguments:
+            free_indices: Indices whose sizes are fixed.
+            nodes: The tensors of the network; every index of a node is
+                either free or a registered edge.
+            upper: If given, only solutions with cost at most ``upper`` are
+                feasible.
+        """
         cost = gp.LinExpr()
         for node in nodes:
-            var_inds = []
-
-            node_cost = 1
+            fixed_size = 1
+            edges = []
             for ind in node.indices:
                 if ind in free_indices:
-                    node_cost *= ind.size
+                    fixed_size *= ind.size
                 else:
-                    var_inds.append(ind)
+                    edges.append(ind)
 
-            all_var_cost = gp.LinExpr()
-            if len(var_inds) > 1:
-                var_sizes = [ind.space for ind in var_inds]
-                for v_sizes in itertools.product(*var_sizes):
-                    # we need to add a temporary variable to
-                    # turn this term into a linear term
-                    y = self.model.addVar(vtype=GRB.BINARY)
-                    var_sum = gp.LinExpr()
-                    var_cost = gp.LinExpr(y)
-                    for ind, v in zip(var_inds, v_sizes):
-                        self.model.addConstr(y <= self.vars[(ind.name, v)])
-                        var_sum += self.vars[(ind.name, v)]
-                        var_cost = var_cost * v
-
-                    self.model.addConstr(y >= var_sum - len(var_inds) + 1)
-                    all_var_cost += var_cost
-
-            elif len(var_inds) == 1:
-                ind = var_inds[0]
-                var_cost = gp.LinExpr()
-                for v in ind.space:
-                    var_cost += v * self.vars[(ind.name, v)]
-
-                all_var_cost += var_cost
-
-            cost += node_cost * all_var_cost
-            # print(cost)
+            cost += fixed_size * self._edge_size(edges)
 
         if upper is not None:
             self.model.addConstr(cost <= upper)
 
         self.model.setObjective(cost, GRB.MINIMIZE)
 
+    def _edge_size(self, edges: Sequence[Index]) -> gp.LinExpr:
+        """Linear expression for the product of the chosen ranks."""
+        if len(edges) == 0:
+            return gp.LinExpr()
+
+        if len(edges) == 1:
+            edge = edges[0]
+            return gp.LinExpr(
+                list(edge.space),
+                [self.choice[(edge.name, rank)] for rank in edge.space],
+            )
+
+        # Each combination of ranks gets a binary y that is forced to 1
+        # when all of its ranks are chosen. Since y carries a positive cost
+        # in a minimization, y >= sum(x) - (k - 1) alone pins it to the
+        # product of the choices at the optimum.
+        combos = list(itertools.product(*[edge.space for edge in edges]))
+        ys = self.model.addVars(len(combos), vtype=GRB.BINARY)
+        slack = len(edges) - 1
+        self.model.addConstrs(
+            ys[i]
+            >= gp.quicksum(
+                self.choice[(edge.name, rank)]
+                for edge, rank in zip(edges, combo)
+            )
+            - slack
+            for i, combo in enumerate(combos)
+        )
+        return gp.LinExpr(
+            [math.prod(combo) for combo in combos], list(ys.values())
+        )
+
+    def solve(self, edges: Sequence[Index]) -> Optional[RankAssignment]:
+        """Optimize and read back the chosen rank of every edge.
+
+        Returns ``None`` when no assignment satisfies the constraints. The
+        model is disposed either way.
+        """
+        if logger.level == logging.DEBUG:
+            logger.debug("constraints to be solved:")
+            self._log_constraints(solved=False)
+
+        self.model.optimize()
+        logger.debug("solving result: %s", self.model.Status)
+
+        assignment: Optional[RankAssignment] = None
+        if self.model.Status != GRB.INFEASIBLE:
+            assignment = {}
+            for edge in edges:
+                for rank in edge.space:
+                    if self.choice[(edge.name, rank)].x == 1:
+                        assignment[edge.name] = int(rank)
+
+            logger.debug("feasible rank assignment: %s", assignment)
+            if logger.level == logging.DEBUG:
+                self._log_constraints(solved=True)
+
+        self.model.dispose()
+        return assignment
+
+    def _log_constraints(self, solved: bool) -> None:
+        """Log constraint values for debugging."""
+        for constr in self.model.getConstrs():
+            row = self.model.getRow(constr)
+            lhs = str(row.getValue()) if solved else str(row)
+            logger.debug(
+                "Constraint: %s, %s %s %s",
+                constr.ConstrName,
+                lhs,
+                constr.Sense,
+                constr.RHS,
+            )
+
 
 class ConstraintSearch:
-    """Search rank assignments by constraint solving."""
+    """Search rank assignments by constraint solving.
+
+    ``preprocess_comb`` computes and bins the spectrum of every split the
+    enumeration may use; ``solve`` then builds and solves one ILP for a
+    concrete sequence of splits.
+
+    Attributes:
+        split_actions: Candidate ranks of every preprocessed split.
+        first_steps: Files holding the full SVD of a split, when available.
+        temp_files: Files to remove after the run.
+        delta: Error budget of the current search step.
+    """
 
     def __init__(self, config: SearchConfig):
         self.config = config
-
-        self.split_actions: Dict[Action, Tuple[List[float], List[float]]] = {}
+        self.split_actions: Dict[Action, RankChoices] = {}
         self.first_steps: Dict[Action, str] = {}
         self.temp_files: List[str] = []
         self.delta = 0.0
 
-    def abstract(
-        self, s: List[float], include_last: bool = False
-    ) -> Optional[Tuple[List[float], List[float]]]:
-        """Separate the given set of singular values into chunks."""
-        prev = 0.0
-        prev_sum = 0
-        cnt = 0
-        if len(s) == 0:
-            return None
-
-        s_sizes: List[int] = []
-        s_sums: List[float] = []
-        if include_last:
-            s_sizes.append(0)
-            s_sums.append(0)
-
-        if len(s) > 1:
-            s_sizes.append(1)
-            s_sums.append(s[-1] ** 2)
-
-        chunk_size = self.config.synthesizer.bin_size * self.delta**2
-        truncation_values = [
-            x for x in np.cumsum(np.flip(s) ** 2) if x <= self.delta**2
-        ]
-        for sv in truncation_values[1:]:
-            if sv < prev + chunk_size:
-                prev_sum = sv
-                cnt += 1
-            else:
-                prev += chunk_size
-                if cnt != 0:
-                    s_sums.append(prev_sum)
-                    s_sizes.append(cnt)
-                prev_sum = sv
-                cnt = 1
-
-        if cnt not in (0, 1):
-            s_sizes.append(cnt)
-            s_sums.append(prev_sum)
-
-        # the final sizes need to be accumulated
-        final_sizes = []
-        for x in np.cumsum(np.array(s_sizes)):
-            final_sizes.append(max(len(s) - x, 1))
-
-        # print(s_sizes, list(zip(final_sizes, s_sums)))
-        return s_sums, final_sizes
-
-    def _recompute(self, file_name: str) -> bool:
-        return self.config.preprocess.force_recompute or not os.path.exists(
-            file_name
-        )
-
     def preprocess_comb(
         self,
-        data_tensor: TreeNetwork,
+        data_tensor: TensorNetwork,
         comb: Sequence[Index],
         # precompute UV for ablation (back compatibility)
         _compute_uv: bool = False,
         cross: bool = False,
     ) -> None:
-        """Precompute the singluar values for a given index combination."""
+        """Precompute the candidate ranks of splitting off ``comb``."""
         logger.debug("preprocess %s", comb)
         logger.debug("%s", data_tensor)
 
-        ac = OSplit(comb)
-        if ac in self.split_actions:
+        action = OSplit(comb)
+        if action in self.split_actions:
             return
 
-        ac.delta = 0.0
+        action.delta = 0.0
+        svals = self._split_svals(data_tensor, action, cross)
+        choices = bin_singular_values(
+            list(svals),
+            self.delta,
+            self.config.synthesizer.bin_size,
+            include_last=True,
+        )
+        if choices is None:
+            logger.debug("no truncation for %s", comb)
+            choices = RankChoices.empty()
+        else:
+            logger.debug("preprocess: %s, %s", comb, svals)
+            logger.debug("abstract results: %s", choices)
+
+        self.split_actions[action] = choices
+
+    def _split_svals(
+        self, data_tensor: TensorNetwork, action: OSplit, cross: bool
+    ) -> np.ndarray:
+        """Singular values of a split, loaded from disk when precomputed."""
         file_name = os.path.join(
             self.config.output.output_dir, f"{len(self.first_steps)}.npz"
         )
-        if not self._recompute(file_name):
-            data = np.load(file_name)
-            s = data["s"]
-            self.first_steps[ac] = file_name
-        else:
-            net = copy.deepcopy(data_tensor)
-            rand_seed = 42 if self.config.preprocess.rand_svd else None
-            s = ac.svals(
-                net,
-                algo_params=AlgoParams(
-                    algo=SVDAlgorithm.MERGE
-                    if not cross
-                    else SVDAlgorithm.CROSS,
-                    eps=self.config.engine.eps,
-                ),
-                svd_params=SValsParams(
-                    max_rank=self.config.preprocess.max_rank,
-                    orthonormal=None,
-                    random_seed=rand_seed,
-                ),
-            )
+        precomputed = not self.config.preprocess.force_recompute and (
+            os.path.exists(file_name)
+        )
+        if precomputed:
+            self.first_steps[action] = file_name
+            return np.asarray(np.load(file_name)["s"])
 
-        res = self.abstract(list(s), True)
-        if res is not None:
-            sums, sizes = res
-            logger.debug("preprocess: %s, %s", comb, s)
-            logger.debug("abstract results: %s, %s", sums, sizes)
-            self.split_actions[OSplit(comb)] = (sums, sizes)
-        else:
-            logger.debug("no truncation for %s", comb)
-            self.split_actions[OSplit(comb)] = ([], [])
-
-    @staticmethod
-    def _log_constraints(solver: ILPSolver, solved: bool) -> None:
-        """Log constraint values for debugging."""
-        for constr in solver.model.getConstrs():
-            if solved:
-                lhs = str(solver.model.getRow(constr).getValue())
-            else:
-                lhs = str(solver.model.getRow(constr))
-            rhs = constr.RHS
-            sense = constr.Sense
-            logger.debug(
-                "Constraint: %s, %s %s %s",
-                constr.ConstrName,
-                lhs,
-                sense,
-                rhs,
-            )
+        algo = SVDAlgorithm.CROSS if cross else SVDAlgorithm.MERGE
+        rand_seed = 42 if self.config.preprocess.rand_svd else None
+        return action.svals(
+            copy.deepcopy(data_tensor),
+            algo_params=AlgoParams(algo=algo, eps=self.config.engine.eps),
+            svd_params=SValsParams(
+                max_rank=self.config.preprocess.max_rank,
+                orthonormal=None,
+                random_seed=rand_seed,
+            ),
+        )
 
     def solve(
         self, st: SearchState, upper: Optional[int]
     ) -> Optional[SearchState]:
-        """Compute cost for a given set of splits."""
-        solver = ILPSolver(self.config)
+        """Assign the cheapest feasible ranks to the links of ``st``.
 
-        pfsums = {}
-        # extract nodes from the current network
-        edge_values: Dict[IndexName, Sequence[float]] = {}
-        for idx, ac in enumerate(st.past_actions):
-            if isinstance(ac, ISplit):
-                index_ac = ac.to_osplit(st, idx)
-            elif isinstance(ac, OSplit):
-                index_ac = ac
-            else:
-                raise TypeError(f"Unsupported action type: {type(ac)}")
+        On success the ranks are written into ``st.network`` and ``st`` is
+        returned; ``None`` means no assignment fits the error budget (or the
+        ``upper`` cost bound).
+        """
+        choices = self._link_choices(st)
 
-            ac_sums, ac_sizes = self.split_actions[index_ac]
-            pfsums[st.links[idx]] = ac_sums
-            # we need to substitute the links to all
-            edge_values[st.links[idx]] = tuple(ac_sizes)
+        # every link carries its candidate ranks as its space
+        st.network.rerange_indices(
+            {link: tuple(c.ranks) for link, c in choices.items()}
+        )
+        spaces: Dict[IndexName, Sequence[float]] = {}
+        for ind in st.network.all_indices():
+            spaces[ind.name] = ind.space
 
-        st.network.rerange_indices(edge_values)
-        indices = st.network.all_indices()
         free_indices = st.network.free_indices()
-        var_indices = []
-        rerange_map = {}
-        for ind in indices:
-            rerange_map[ind.name] = ind.space
-            if ind not in free_indices:
-                var_indices.append(ind)
-                solver.add_var(ind)
-        solver.add_constraint(var_indices, pfsums, self.delta)
-
+        edges = [
+            ind for ind in st.network.all_indices() if ind not in free_indices
+        ]
         nodes = [st.network.node_tensor(n) for n in st.network.network.nodes]
-        solver.set_objective(free_indices, nodes, upper)
 
-        if logger.level == logging.DEBUG:
-            logger.debug("constraints to be solved:")
-            self._log_constraints(solver, solved=False)
+        ilp = RankILP(_gurobi_env())
+        for edge in edges:
+            ilp.add_edge(edge)
+        ilp.add_error_budget(
+            edges, {link: c.errors for link, c in choices.items()}, self.delta
+        )
+        ilp.set_cost_objective(free_indices, nodes, upper)
+        assignment = ilp.solve(edges)
 
-        solver.model.optimize()
-
-        logger.debug("solving result: %s", solver.model.Status)
-        if solver.model.Status == GRB.INFEASIBLE:
-            solver.model.dispose()
-            solver.env.dispose()
+        if assignment is None:
             return None
 
-        relabel_map: Dict[IndexName, int] = {}
-        for ind in var_indices:
-            for j in ind.space:
-                if solver.vars[(ind.name, j)].x == 1:
-                    relabel_map[ind.name] = int(j)
-
-        logger.debug("feasible rank assignment: %s", relabel_map)
-        if logger.level == logging.DEBUG:
-            self._log_constraints(solver, solved=True)
-
-        st.network.relabel_indices(relabel_map)
-        st.network.rerange_indices(rerange_map)
-        solver.model.dispose()
-        solver.env.dispose()
-
+        st.network.relabel_indices(assignment)
+        st.network.rerange_indices(spaces)
         logger.debug(
             "Get cost %s for network %s", st.network.cost(), st.network
         )
         return st
+
+    def _link_choices(self, st: SearchState) -> Dict[IndexName, RankChoices]:
+        """Candidate ranks of every link created by the past actions."""
+        choices = {}
+        for idx, action in enumerate(st.past_actions):
+            if isinstance(action, ISplit):
+                split = action.to_osplit(st, idx)
+            elif isinstance(action, OSplit):
+                split = action
+            else:
+                raise TypeError(f"Unsupported action type: {type(action)}")
+
+            choices[st.links[idx]] = self.split_actions[split]
+
+        return choices

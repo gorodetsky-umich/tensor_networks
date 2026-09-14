@@ -5,7 +5,7 @@ from typing import List, Optional, Set
 import time
 import copy
 
-from pytens.algs import TreeNetwork, Tensor
+from pytens.algs import TensorNetwork, Tensor
 from pytens.search.configuration import SearchConfig
 from pytens.search.types import SearchContext
 from pytens.search.hierarchical.types import HSearchState
@@ -22,7 +22,7 @@ class ExhaustiveSearch:
 
         self.delta = 0.0
         self.target_tensor: Tensor
-        self.best_network: TreeNetwork
+        self.best_network: TensorNetwork
 
         self.start = 0.0
         self.logging_time = 0.0
@@ -37,11 +37,11 @@ class BFSSearch(ExhaustiveSearch):
 
     def _add_wodup(
         self,
-        best_network: Optional[TreeNetwork],
+        best_network: Optional[TensorNetwork],
         new_st: SearchState,
         worked: set,
         worklist: List[SearchState],
-    ) -> TreeNetwork:
+    ) -> TensorNetwork:
         """Add a network to a worked set to remove duplicates."""
         if best_network is None or best_network.cost() > new_st.network.cost():
             best_network = new_st.network
@@ -60,7 +60,7 @@ class BFSSearch(ExhaustiveSearch):
 
         return best_network
 
-    def run(self, net: TreeNetwork) -> SearchResult:
+    def run(self, net: TensorNetwork) -> SearchResult:
         """Execute the BFS search algorithm on the given tensor network"""
 
         self.target_tensor = net.contract()
@@ -202,7 +202,7 @@ class DFSSearch(ExhaustiveSearch):
 
             self.dfs(worked, new_st)
 
-    def run(self, net: TreeNetwork) -> SearchResult:
+    def run(self, net: TensorNetwork) -> SearchResult:
         """Run a DFS search from the given tensor network."""
 
         self.target_tensor = net.contract()

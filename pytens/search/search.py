@@ -8,7 +8,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from pytens.algs import TreeNetwork
+from pytens.algs import TensorNetwork
 from pytens.cross.func_interface import CachedFunc, TensorFunc
 from pytens.cross.runner import (
     HTCrossRunner,
@@ -52,7 +52,7 @@ class SearchEngine:
     def __init__(self, config: SearchConfig) -> None:
         self.config = config
 
-    def partition_search(self, data_tensor: TreeNetwork) -> SearchResult:
+    def partition_search(self, data_tensor: TensorNetwork) -> SearchResult:
         """Perform an search with output-directed splits + constraint solve."""
 
         engine = PartitionSearch(self.config, data_tensor)
@@ -63,7 +63,7 @@ class SearchEngine:
         unopt_size = float(np.prod([i.size for i in free_indices]))
         best_size = result.best_state.network.cost()
 
-        if isinstance(data_tensor, TreeNetwork):
+        if isinstance(data_tensor, TensorNetwork):
             best_tensor = result.best_state.network.contract()
             best_val = best_tensor.value
             perm = [
@@ -88,7 +88,7 @@ class SearchEngine:
         result.stats.cr_start = float(start_cost / best_size)
         return result
 
-    def dfs(self, net: TreeNetwork) -> SearchResult:
+    def dfs(self, net: TensorNetwork) -> SearchResult:
         """Perform an exhaustive enumeration with the DFS algorithm."""
 
         dfs_runner = DFSSearch(self.config)
@@ -111,7 +111,7 @@ class SearchEngine:
 
         return result
 
-    def bfs(self, net: TreeNetwork) -> SearchResult:
+    def bfs(self, net: TensorNetwork) -> SearchResult:
         """Perform an exhaustive enumeration with the BFS algorithm."""
 
         bfs_runner = BFSSearch(self.config)
@@ -181,7 +181,9 @@ class TopDownSearchEngine(SearchEngine):
 class WhiteBoxTopDownSearchEngine(TopDownSearchEngine):
     """Search engine for the white box tensors."""
 
-    def __init__(self, config: SearchConfig, data_tensor: TreeNetwork) -> None:
+    def __init__(
+        self, config: SearchConfig, data_tensor: TensorNetwork
+    ) -> None:
         super().__init__(config)
         self._data_tensor = data_tensor
 

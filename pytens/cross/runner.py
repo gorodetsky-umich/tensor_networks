@@ -5,11 +5,9 @@ from typing import Optional
 
 import numpy as np
 
-from pytens.algs import TreeNetwork
+from pytens.algs import TensorNetwork, rand_ht, rand_tt, rand_tucker
 from pytens.cross.cross import CrossApproximation, CrossConfig
 from pytens.cross.func_interface import TensorFunc
-from pytens.ht import HierarchicalTucker
-from pytens.tt import TensorTrain
 
 
 class CrossRunner:
@@ -22,7 +20,7 @@ class CrossRunner:
         eps: float,
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
-    ) -> TreeNetwork:
+    ) -> TensorNetwork:
         """Run the cross approximation on the given function
         with the specified error.
         """
@@ -38,9 +36,9 @@ class TTCrossRunner(CrossRunner):
         eps: float,
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
-    ) -> TensorTrain:
+    ) -> TensorNetwork:
         indices = f.indices[:]
-        net = TensorTrain.rand_tt(indices, [1] * len(indices))
+        net = rand_tt(indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(
@@ -58,8 +56,8 @@ class HTCrossRunner(CrossRunner):
         eps: float,
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
-    ) -> HierarchicalTucker:
-        net = HierarchicalTucker.rand_ht(f.indices, 1)
+    ) -> TensorNetwork:
+        net = rand_ht(f.indices, 1)
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(
@@ -77,8 +75,8 @@ class TuckerCrossRunner(CrossRunner):
         eps: float,
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
-    ) -> TreeNetwork:
-        tucker = TreeNetwork.rand_tucker(f.indices)
+    ) -> TensorNetwork:
+        tucker = rand_tucker(f.indices)
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(tucker, "root", validation, eps=eps)

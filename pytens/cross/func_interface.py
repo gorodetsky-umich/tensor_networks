@@ -1,7 +1,7 @@
 """Test functions for cross approximation"""
 
 from abc import abstractmethod
-from typing import List
+from typing import List, Set
 
 import numpy as np
 
@@ -20,16 +20,12 @@ class TensorFunc:
             points via ``space`` and the grid size via ``size``.
         name: Human-readable identifier used for logging and file names.
             Defaults to ``"_func_"``; subclasses should override it.
-        calls: Array of shape ``(n_calls, d)`` recording every set of integer
-            grid indices the function has been evaluated at, accumulated
-            across all calls to ``__call__``.
     """
 
     def __init__(self, indices: List[Index]):
         self.d = len(indices)
         self.indices = indices
         self.name = "_func_"
-        self.calls = np.empty((0, self.d))
 
     def index_to_args(self, indices: np.ndarray) -> np.ndarray:
         """Convert vectorized integer indices to vectorized function arguments.
@@ -124,11 +120,28 @@ class CachedFunc(TensorFunc):
 
     def __init__(self, indices: List[Index]):
         super().__init__(indices)
-        self.calls = np.empty((0, self.d))
+        # 64-bit hashes of the unique rows evaluated so far
+        self.calls: Set[int] = set()
+        rng = np.random.default_rng(0)
+        self._row_hash_mults = rng.integers(
+            1, np.iinfo(np.uint64).max, size=self.d, dtype=np.uint64
+        ) | np.uint64(1)
+
+    def _hash_rows(self, args: np.ndarray) -> np.ndarray:
+        """One 64-bit hash per row of `args` (splitmix64 mixing per entry,
+        then a random linear combination across the columns)."""
+        x = np.ascontiguousarray(args, dtype=np.float64).view(np.uint64)
+        with np.errstate(over="ignore"):
+            x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+            x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+            x = x ^ (x >> np.uint64(31))
+            return np.asarray(
+                (x * self._row_hash_mults).sum(axis=1, dtype=np.uint64)
+            )
 
     def num_calls(self) -> int:
         """Return the number of unique calls observed so far."""
-        return len(np.unique(self.calls, axis=0))
+        return len(self.calls)
 
     @abstractmethod
     def _run(self, args: np.ndarray) -> np.ndarray:
@@ -140,5 +153,5 @@ class CachedFunc(TensorFunc):
         raise NotImplementedError
 
     def run(self, args: np.ndarray) -> np.ndarray:
-        self.calls = np.concatenate([args, self.calls])
+        self.calls.update(self._hash_rows(args).tolist())
         return self._run(args)

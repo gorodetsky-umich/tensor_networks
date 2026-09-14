@@ -9,10 +9,16 @@ from typing import Generator, List, Optional, Self, Sequence, Tuple, Any
 import networkx as nx
 import numpy as np
 
-from pytens.algs import Index, IndexName, NodeName, SVDConfig, TreeNetwork
+from pytens.algs import (
+    Index,
+    IndexName,
+    NodeName,
+    SVDConfig,
+    TensorNetwork,
+    rand_tt,
+)
 from pytens.cross.cross import TensorFunc
 from pytens.search.types import Action
-from pytens.tt import TensorTrain
 from pytens.types import (
     AlgoParams,
     IndexMerge,
@@ -84,7 +90,9 @@ class OSplit(Action):
 
         return True
 
-    def to_isplit(self, net: TreeNetwork) -> Tuple[PartitionStatus, "ISplit"]:
+    def to_isplit(
+        self, net: TensorNetwork
+    ) -> Tuple[PartitionStatus, "ISplit"]:
         """Convert an output-directed split to an input-directed one."""
         res = net.partition_node(self.indices)
 
@@ -127,14 +135,14 @@ class OSplit(Action):
             delta=self.delta,
         )
 
-    def cross(self, net: TreeNetwork) -> Tuple[NodeName, NodeName]:
+    def cross(self, net: TensorNetwork) -> Tuple[NodeName, NodeName]:
         """Execute the split index action with cross approximation"""
         _, ac = self.to_isplit(net)
         return ac.cross(net)
 
     def svd(
         self,
-        net: TreeNetwork,
+        net: TensorNetwork,
         svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
         compute_data: bool = True,
         compute_uv: bool = True,
@@ -168,7 +176,7 @@ class OSplit(Action):
 
     def svals(
         self,
-        net: TreeNetwork,
+        net: TensorNetwork,
         algo_params: AlgoParams = AlgoParams(),
         svd_params: SValsParams = SValsParams(),
     ) -> np.ndarray:
@@ -224,7 +232,7 @@ class ISplit(Action):
 
         return True
 
-    def cross(self, net: TreeNetwork) -> Tuple[NodeName, NodeName]:
+    def cross(self, net: TensorNetwork) -> Tuple[NodeName, NodeName]:
         """Execute the split action with cross approximation."""
         (u, s, v), _ = net.svd(
             self.node,
@@ -239,7 +247,7 @@ class ISplit(Action):
 
     def svd(
         self,
-        net: TreeNetwork,
+        net: TensorNetwork,
         svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
         compute_data: bool = True,
         compute_uv: bool = True,
@@ -309,7 +317,7 @@ class ISplit(Action):
 
     def svals(
         self,
-        net: TreeNetwork,
+        net: TensorNetwork,
         svd: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
     ) -> np.ndarray:
         """Compute the singular values for the current split action."""
@@ -333,7 +341,7 @@ class ISplit(Action):
         tmp_net.remove_edge(connect_nodes[0], connect_nodes[1])
         actions = []
         for subgraph in nx.connected_components(tmp_net):
-            tn = TreeNetwork()
+            tn = TensorNetwork()
             tn.network = st.network.network.subgraph(subgraph)
             indices = [
                 ind for ind in tn.free_indices() if ind in all_free_indices
@@ -354,7 +362,7 @@ class Merge(Action):
     def __str__(self) -> str:
         return f"Merge({self.node1}, {self.node2})"
 
-    def execute(self, network: TreeNetwork) -> TreeNetwork:
+    def execute(self, network: TensorNetwork) -> TensorNetwork:
         """Execute a merge action."""
         network.merge(self.node1, self.node2)
         return network
@@ -365,7 +373,7 @@ class SearchState:
 
     def __init__(
         self,
-        net: TreeNetwork,
+        net: TensorNetwork,
         delta: float,
         max_ops: int = 5,
     ):
@@ -374,15 +382,6 @@ class SearchState:
         self.past_actions: List[Action] = []  # How we reach this state
         self.max_ops = max_ops
         self.links: List[IndexName] = []
-
-    def count_actions_of_size(self, k: int = 2) -> int:
-        """Count the number of actions of the given size in the history."""
-        cnt = 0
-        for ac in self.past_actions:
-            if len(ac.indices) >= k:
-                cnt += 1
-
-        return cnt
 
     def get_legal_actions(
         self,
@@ -574,7 +573,7 @@ class SearchState:
 
 
 def svals_by_cross(
-    net: TreeNetwork,
+    net: TensorNetwork,
     indices: Sequence[Index],
     max_rank: int = 100,
     eps: float = 0.1,
@@ -590,9 +589,9 @@ def svals_by_cross(
 
     tt = net
     # if the indices are not adjacent
-    if not isinstance(net, TensorTrain) or not net.are_adjacent(indices):
+    if not net.is_tensor_train() or not net.are_adjacent(indices):
         inds = [ind.with_new_rng(range(ind.size)) for ind in target_inds]
-        tt = TensorTrain.rand_tt(inds)
+        tt = rand_tt(inds, [1] * (len(inds) - 1))
         func = net.as_func(inds)
         cross_config = CrossConfig(kickrank=100, max_iters=max_rank - 1)
         cross_engine = CrossApproximation(func, cross_config)
@@ -612,7 +611,7 @@ def svals_by_cross(
         if len(nbrs) == 1 or not all(nbr in ind_nodes for nbr in nbrs):
             ends.append(n)
 
-    temp_tree = TreeNetwork()
+    temp_tree = TensorNetwork()
     temp_tree.network = tt.network
     tt = temp_tree
 

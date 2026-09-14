@@ -18,6 +18,7 @@ from pytens.types import DimTreeNode, Index
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class CrossAlgo(Enum):
     """Enumeration of cross algorithms."""
 
@@ -424,7 +425,7 @@ class CrossApproximation:
 
     def cross(  # pylint: disable=R0913,R0917
         self,
-        net: "pt.TreeNetwork",
+        net: "pt.TensorNetwork",
         root: Optional["pt.NodeName"] = None,
         validation: Optional[np.ndarray] = None,
         eps: float = 0.1,

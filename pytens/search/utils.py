@@ -9,7 +9,6 @@ from typing import (
     Literal,
     Optional,
     Self,
-    Sequence,
     Tuple,
     Union,
 )
@@ -17,8 +16,7 @@ from typing import (
 import numpy as np
 import pydantic
 
-from pytens.algs import Tensor, TreeNetwork
-from pytens.tt import TensorTrain
+from pytens.algs import Tensor, TensorNetwork
 
 from pytens.cross.func_interface import CachedFunc, TensorFunc
 from pytens.search.state import OSplit, SearchState
@@ -27,7 +25,7 @@ from pytens.types import Index, IndexMerge, IndexOp, IndexSplit, NodeName
 if TYPE_CHECKING:
     from pytens.search.hierarchical.types import Replay
 
-DataTensor = Union[TreeNetwork, CachedFunc]
+DataTensor = Union[TensorNetwork, CachedFunc]
 
 
 class SearchStats(pydantic.BaseModel):
@@ -107,7 +105,7 @@ class SearchResult:
         return self
 
 
-def approx_error(tensor: Tensor, net: TreeNetwork) -> float:
+def approx_error(tensor: Tensor, net: TensorNetwork) -> float:
     """Compute the reconstruction error.
 
     Given a tensor network TN and the target tensor X,
@@ -129,7 +127,7 @@ def log_stats(
     target_tensor: Tensor,
     ts: float,
     st: SearchState,
-    bn: TreeNetwork,
+    bn: TensorNetwork,
 ) -> None:
     """Log statistics of a given state."""
     search_stats.ops.append((ts, len(st.past_actions)))
@@ -271,11 +269,11 @@ def unravel_indices(
 def init_state(data_tensor: DataTensor, delta: float) -> SearchState:
     """Create initial search state for the input data tensor."""
     # print(type(data_tensor))
-    if isinstance(data_tensor, TreeNetwork):
+    if isinstance(data_tensor, TensorNetwork):
         return SearchState(data_tensor, delta)
 
     if isinstance(data_tensor, TensorFunc):
-        net = TreeNetwork()
+        net = TensorNetwork()
         net.add_node(
             "G0",
             Tensor(
@@ -285,15 +283,16 @@ def init_state(data_tensor: DataTensor, delta: float) -> SearchState:
         return SearchState(net, delta)
 
     raise TypeError(
-        f"Expect data tensors to have types TreeNetwork or TensorFunc, "
+        f"Expect data tensors to have types TensorNetwork or TensorFunc, "
         f"but get {type(data_tensor)}"
     )
 
 
 def index_partition(
-    net: TreeNetwork, node1: NodeName, node2: NodeName
+    net: TensorNetwork, node1: NodeName, node2: NodeName
 ) -> Tuple[List[Index], List[Index]]:
     """Compute the partition of the index by the given edge."""
+    free = set(net.free_indices())
 
     def indices_of(start: NodeName, exclude: NodeName) -> List[Index]:
         visited = set()
@@ -306,7 +305,7 @@ def index_partition(
 
             visited.add(n)
             for ind in net.node_tensor(n).indices:
-                if ind in net.free_indices():
+                if ind in free:
                     indices.append(ind)
 
             for nbr in net.network.neighbors(n):
@@ -318,7 +317,7 @@ def index_partition(
     return indices_of(node1, node2), indices_of(node2, node1)
 
 
-def to_splits(net: TreeNetwork) -> List[OSplit]:
+def to_splits(net: TensorNetwork) -> List[OSplit]:
     """Convert a tree network into a list of OSplits."""
     free_indices = net.free_indices()
     tree = net.network
@@ -423,18 +422,3 @@ def seed_all(seed_value: int) -> None:
     # # Ensure deterministic behavior for cuDNN
     # torch.backends.cudnn.deterministic = True
     # torch.backends.cudnn.benchmark = False
-
-
-def reorder_by_svd(
-    net: TreeNetwork, indices: Sequence[Index], eps: float = 0
-) -> "TensorTrain":
-    """Reorder the indices into the target indices through SVD"""
-    assert all(ind in net.free_indices() for ind in indices), (
-        "all indices should be free"
-    )
-    data = net.contract()
-    indices = [ind.with_new_rng(range(ind.size)) for ind in indices]
-
-    perm = [data.indices.index(ind) for ind in indices]
-
-    return TensorTrain.tt_svd(data.permute(perm).value, indices, eps)

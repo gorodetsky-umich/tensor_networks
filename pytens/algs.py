@@ -19,6 +19,8 @@ from typing import (
     Tuple,
     Union,
     cast,
+    Callable,
+    FrozenSet,
 )
 
 import matplotlib.pyplot as plt
@@ -38,8 +40,8 @@ from pytens.types import (
     IndexMerge,
     IndexOp,
     IndexSplit,
-    NodeIndexPair,
     PartitionStatus,
+    SubtreeViews,
     PartitionResult,
     SValsParams,
 )
@@ -50,12 +52,17 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-@dataclass  # (frozen=True, eq=True)
+@dataclass
 class Tensor:
     """Base class for a tensor."""
 
     value: np.ndarray
     indices: List[Index]
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> "Tensor":
+        # indices are immutable and shared; the list and the array are not
+        # (order="K" keeps the memory layout, like a generic deepcopy would)
+        return Tensor(self.value.copy(order="K"), list(self.indices))
 
     def to_dict(self) -> dict:
         """Convert to dictionary. Useful for serialization."""
@@ -136,8 +143,6 @@ class Tensor:
                 )
                 new_indices.append(new_index)
 
-        # print("new shape = ", new_shape)
-        # print("new_indices = ", new_indices)
         new_val = np.zeros(new_shape)
 
         ix1 = []
@@ -151,8 +156,6 @@ class Tensor:
                 ix2.append(slice(index_here.size, None, 1))
         new_val[*ix1] = self.value
         new_val[*ix2] = other.value
-        # print(slice(1,2,4))
-        # exit(1)
         tens = Tensor(new_val, new_indices)
         return tens
 
@@ -495,6 +498,22 @@ class TensorNetwork:  # pylint: disable=R0904
         """Initialize the network."""
         self.network = nx.Graph()
 
+    def __deepcopy__(self, memo: Dict[int, Any]) -> "TensorNetwork":
+        # Rebuild the graph directly: the network is copied on nearly every
+        # search step, and the generic copy of networkx's nested dicts is
+        # far slower than adding the nodes and edges again.
+        new = self.__class__.__new__(self.__class__)
+        new.__dict__.update(self.__dict__)
+        new.network = nx.Graph()
+        for name, data in self.network.nodes(data=True):
+            new.network.add_node(name, tensor=copy.deepcopy(data["tensor"]))
+        # copy the adjacency dicts as they are so that neighbours are
+        # visited in the same order as in the original
+        # pylint: disable-next=protected-access
+        for name, nbrs in self.network._adj.items():
+            new.network._adj[name].update((nbr, {}) for nbr in nbrs)
+        return new
+
     def add_node(self, name: NodeName, tensor: Tensor) -> None:
         """Add a node to the network."""
         self.network.add_node(name, tensor=tensor)
@@ -556,10 +575,6 @@ class TensorNetwork:  # pylint: disable=R0904
         """Get the free indices."""
         icount = self.all_indices()
         free_indices = [i for i, v in icount.items() if v == 1]
-        # for i in icount:
-        #     if "_batch" in i.name:
-        #         free_indices.append(i)
-
         return free_indices
 
     def get_contraction_index(
@@ -575,14 +590,13 @@ class TensorNetwork:  # pylint: disable=R0904
 
     def nodes_by_contraction_index(self, ind: Index) -> List[NodeName]:
         """Get the two nodes connected by the given index."""
-        assert ind not in self.free_indices(), f"{ind} is a free index"
-
         nodes = []
         for n in self.network.nodes:
-            n_indices = self.node_tensor(n).indices
-            if ind in n_indices:
+            if ind in self.node_tensor(n).indices:
                 nodes.append(n)
 
+        # an index on exactly one node is free, not a contraction index
+        assert len(nodes) != 1, f"{ind} is a free index"
         assert len(nodes) <= 2
 
         return nodes
@@ -1070,76 +1084,75 @@ class TensorNetwork:  # pylint: disable=R0904
         assert values.shape[1] == len(indices), (
             f"Expected {len(free_indices)} indices, got {values.shape[1]}"
         )
-        results_shape = [values.shape[0]]
-        results_shape.extend(
-            [ind.size for ind in free_indices if ind not in indices]
-        )
-        results = np.empty(results_shape)
+
+        # Every node is sliced at the sampled indices, which become one
+        # shared batch axis "a" in front, and the rest is contracted as
+        # usual. The plan is the same for every chunk, so build it once.
+        column = {ind: k for k, ind in enumerate(indices)}
+        letters = {}
+        for k, ind in enumerate(self.all_indices()):
+            letters[ind] = chr(98 + k)
+
+        plans = []
+        node_strs = []
+        for node in self.network.nodes:
+            value, columns, node_str = self._batch_plan(
+                self.node_tensor(node), column, letters
+            )
+            plans.append((value, columns))
+            node_strs.append(node_str)
+
+        out_inds = [ind for ind in free_indices if ind not in column]
+        out_str = "a" + "".join(letters[ind] for ind in out_inds)
+        estr = ",".join(node_strs) + "->" + out_str
+
+        results = np.empty([len(values)] + [ind.size for ind in out_inds])
         chunk_size = 50000
-        chunk_start = 0
-        while chunk_start < values.shape[0]:
-            batch_size = min(chunk_size, values.shape[0] - chunk_start)
-            batch_ind = Index("_batch", batch_size)
-            ind_mapping = {batch_ind: "a"}
+        for start in range(0, len(values), chunk_size):
+            chunk = values[start : start + chunk_size]
             node_vals = []
-            node_strs = []
-            for node in self.network.nodes:
-                tensor = self.node_tensor(node)
-                tslices = []
-                node_str = ""
-
-                for ii, ind in enumerate(tensor.indices):
-                    ind_letter = chr(97 + len(ind_mapping))
-                    if ind in indices:
-                        tslices.append(
-                            (
-                                ii,
-                                values[
-                                    chunk_start : chunk_start + batch_size,
-                                    indices.index(ind),
-                                ],
-                            )
-                        )
-                    else:
-                        if ind not in ind_mapping:
-                            ind_mapping[ind] = ind_letter
-                        node_str += ind_mapping[ind]
-
-                    # print(ind, node_str)
-
-                # swap batch to the front
-                if len(tslices) > 0:
-                    perm, pslices = zip(*tslices)
-                    perm = list(perm)
-                    # add other indices to the end of perm
-                    for i in range(len(tensor.indices)):
-                        if i not in perm:
-                            perm.append(i)
-                    node_str = ind_mapping[batch_ind] + node_str
-                    batch_val = tensor.value.transpose(perm)[tuple(pslices)]
-                else:
-                    batch_val = tensor.value
-
-                node_vals.append(batch_val)
-                node_strs.append(node_str)
-
-            estr = ",".join(node_strs) + "->" + ind_mapping[batch_ind]
-            for ind in free_indices:
-                if ind not in indices:
-                    estr += ind_mapping[ind]
+            for value, columns in plans:
+                if columns:
+                    value = value[tuple(chunk[:, c] for c in columns)]
+                node_vals.append(value)
 
             logger.debug(
                 "contraction args: %s, shapes: %s",
                 estr,
                 [n.shape for n in node_vals],
             )
-
-            results[chunk_start : chunk_start + batch_size] = oe.contract(
-                estr, *node_vals, optimize="random-greedy-128"
+            results[start : start + chunk_size] = oe.contract(
+                estr, *node_vals, optimize="auto"
             )
-            chunk_start += batch_size
 
         return results
+
+    @staticmethod
+    def _batch_plan(
+        tensor: Tensor,
+        column: Dict[Index, int],
+        letters: Dict[Index, str],
+    ) -> Tuple[np.ndarray, List[int], str]:
+        """How one node enters the batched contraction of `evaluate`.
+
+        Returns the node value with the sampled indices moved to the front,
+        the sample column of each of those indices, and the node's einsum
+        term ("a" for the batch axis followed by the remaining indices).
+        """
+        sampled = []
+        rest = []
+        for i, ind in enumerate(tensor.indices):
+            if ind in column:
+                sampled.append(i)
+            else:
+                rest.append(i)
+
+        columns = [column[tensor.indices[i]] for i in sampled]
+        node_str = "".join(letters[tensor.indices[i]] for i in rest)
+        if sampled:
+            node_str = "a" + node_str
+
+        return tensor.value.transpose(sampled + rest), columns, node_str
 
     def node_size(self, node: NodeName) -> int:
         """Get the tensor size of the given node."""
@@ -1421,10 +1434,6 @@ class TensorNetwork:  # pylint: disable=R0904
                 }
         return cls.from_dict(metadata)
 
-
-class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
-    """Class for arbitrary tree-structured networks"""
-
     def round(
         self,
         node_name: NodeName,
@@ -1476,6 +1485,13 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
     ) -> Tuple[NodeName, float]:
         """Recursive depth-first truncation sweep with an absolute budget."""
         node_indices = self.node_tensor(node_name).indices
+        # which neighbour each bond index leads to; the bonds handled later
+        # in the loop are untouched by the merges of earlier ones
+        nbr_by_bond: Dict[Index, NodeName] = {}
+        for nbr in self.network.neighbors(node_name):
+            for bond in self.get_contraction_index(node_name, nbr):
+                nbr_by_bond[bond] = nbr
+
         kept_indices = []
         free_indices = []
         r = node_name
@@ -1484,15 +1500,8 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
                 kept_indices.append(idx)
                 continue
 
-            shared_index = None
-            nbr = node_name
-            for nbr in self.network.neighbors(node_name):
-                nbr_indices = self.node_tensor(nbr).indices
-                if idx in nbr_indices:
-                    shared_index = idx
-                    break
-
-            if shared_index is None:
+            nbr = nbr_by_bond.get(idx)
+            if nbr is None:
                 free_indices.append(idx)
                 continue
 
@@ -1566,7 +1575,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
     def _compress_indices(self) -> List[IndexMerge]:
         """Compress consectutive indices that are decomposed from one index"""
-        tree = TreeNetwork()
+        tree = TensorNetwork()
         tree.network = self.network
         merges = []
 
@@ -1580,7 +1589,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
         return merges
 
-    def compress(self) -> "TreeNetwork":
+    def compress(self) -> "TensorNetwork":
         """Compress the network by removing nodes
         where one index equals to the product of other indices.
         """
@@ -1601,7 +1610,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
                     if deleted:
                         break
 
-        tree = TreeNetwork()
+        tree = TensorNetwork()
         tree.network = self.network
         return tree
 
@@ -1739,7 +1748,8 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
             """Hash the nodes by their postorder"""
             visited[name] = 1
             children_rs = []
-            nbrs = sorted(list(self.network.neighbors(name)))
+            # node names may mix ints and strs, so sort by their text
+            nbrs = sorted(self.network.neighbors(name), key=str)
             for n in nbrs:
                 if n not in visited:
                     # Process children before the current node.
@@ -1768,18 +1778,25 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         cut: Optional[Set[IndexName]] = None,
     ) -> List:
         """Get all leaf indices for the subtree rooted at the given node."""
+        free = set(self.free_indices())
+        return self._leaf_indices(free, visited, node_name, cut or set())
+
+    def _leaf_indices(
+        self,
+        free: Set[Index],
+        visited: Set[NodeName],
+        node_name: NodeName,
+        cut: Set[IndexName],
+    ) -> List:
         indices = self.node_tensor(node_name).indices
         perm = []
         leaves = []
         visited.add(node_name)
 
-        if cut is None:
-            cut = set()
-
         # free indices are added first
         if len(visited) != 1:
             for i, ind in enumerate(indices):
-                if ind in self.free_indices():
+                if ind in free:
                     leaves.append([ind])
                     perm.append(i)
 
@@ -1787,39 +1804,25 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
             if n in visited:
                 continue
 
-            if self.get_contraction_index(n, node_name)[0].name in cut:
-                continue
-
-            leaves.append(self.leaf_indices(visited, n))
             common_index = self.get_contraction_index(n, node_name)
             assert len(common_index) == 1
+            if common_index[0].name in cut:
+                continue
+
+            # the cut only applies to the edges of the root
+            leaves.append(self._leaf_indices(free, visited, n, set()))
             perm.append(indices.index(common_index[0]))
 
         # reorder the leaves according to the order of the indices
         return [leaves[i] for i in np.argsort(perm)]
 
-    @staticmethod
-    def rand_tucker(indices: List[Index], rank: int = 1) -> "TreeNetwork":
-        """Return a random tucker with the given indices."""
-
-        tucker = TreeNetwork()
-        root_val = np.random.random([rank] * len(indices))
-        root_inds = [Index(f"s_{i}", rank) for i in range(len(indices))]
-        tucker.add_node("root", Tensor(root_val, root_inds))
-        for i, ind in enumerate(indices):
-            tensor_val = np.random.random((ind.size, rank))
-            tensor_inds = [ind, root_inds[i]]
-            tucker.add_node(f"G{i}", Tensor(tensor_val, tensor_inds))
-            tucker.add_edge(f"G{i}", "root")
-
-        return tucker
-
     def node_by_free_index(self, index: IndexName) -> NodeName:
         """Identify the node in the network containing the given free index"""
         node: NodeName
         for node in self.network.nodes:
-            tensor = self.node_tensor(node)
-            if index in [ind.name for ind in tensor.indices]:
+            if any(
+                ind.name == index for ind in self.node_tensor(node).indices
+            ):
                 return node
 
         raise KeyError(f"Cannot find index {index} in the network")
@@ -1930,87 +1933,6 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
         return self
 
-    @staticmethod
-    def _tucker(indices: Sequence[Index]) -> "TreeNetwork":
-        """Create a Tucker with the given indices."""
-        net = TreeNetwork()
-        core_indices = [Index(f"s{i}", 1) for i in range(len(indices))]
-        core_size = [ind.size for ind in core_indices]
-        core = Tensor(np.random.random(core_size), core_indices)
-        net.add_node("G", core)
-        for i, ind in enumerate(indices):
-            t_indices = [Index(f"s{i}", 1), ind]
-            t_size = [1, ind.size]
-            net.add_node(f"n{i}", Tensor(np.empty(t_size), t_indices))
-            net.add_edge("G", f"n{i}")
-
-        return net
-
-    def _corrcoef(
-        self, indices: Sequence[Index], sample_size: int = 50000
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Compute the Pearson's correlation coefficient along the given
-        indices."""
-        # print(indices)
-        # 1) sample points along the two indices
-        ind_sizes = [ind.size for ind in indices]
-        raw_samples: List[np.ndarray]
-        if sample_size < int(np.prod(ind_sizes)):
-            raw_samples = []
-            for ind in indices:
-                raw_samples.append(
-                    np.random.randint(0, ind.size, size=(sample_size, 1))
-                )
-        else:
-            raw_samples = list(
-                np.meshgrid(*[np.arange(0, ind.size) for ind in indices])
-            )
-
-        samples: np.ndarray = np.stack(raw_samples, axis=-1).reshape(
-            -1, len(raw_samples)
-        )
-
-        # create a sample network
-        # net = self.evaluate(indices, samples)
-
-        others = [ind for ind in self.free_indices() if ind not in indices]
-        other_size = np.prod([ind.size for ind in others])
-        # 2) compute the sum value, i.e. integration over selected indices
-        weights = np.ones(len(others))
-        sums_net = self.integrate(others, weights)
-        # print(sums_net.free_indices())
-        # print(sums_net)
-        sums = sums_net.evaluate(indices, samples)
-        # print(sums.shape)
-
-        # 3) compute the inner product over the selected indices
-        inner_net = self.attach(self, indices=others)
-        # print(inner_net.free_indices())
-        # print(inner_net)
-        inner_indices = [
-            ind.with_new_name(f"G{ind.name}") for ind in indices
-        ] + [ind.with_new_name(f"H{ind.name}") for ind in indices]
-        samples_i, samples_j = np.triu_indices(len(samples))
-        pairs = np.hstack((samples[samples_i], samples[samples_j]))
-        half_inner = inner_net.evaluate(inner_indices, pairs)
-        inner: np.ndarray = np.empty((len(samples), len(samples)))
-        inner[samples_i, samples_j] = half_inner
-        inner[samples_j, samples_i] = half_inner
-        # print(inner.shape)
-
-        # 4) compute the covariance matrix
-        mu = sums / other_size
-        cov = 1.0 / (other_size - 1) * (inner - other_size * np.outer(mu, mu))
-        # print(cov.shape)
-        # print(cov)
-
-        # 5) compute the correlation coefficient
-        stddev = np.sqrt(np.diag(cov))
-        denom = np.outer(stddev, stddev)
-        corr = cov / denom
-        corr[denom == 0] = 0
-        return samples, corr
-
     # ========================================
     # Swap and its helper functions
     # ========================================
@@ -2041,57 +1963,48 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
         return self._max_dist_nodes(ind_nodes, anchor)
 
-    def _move_index(self, ind1: Index, ind2: Index) -> None:
-        """Move ind1 to the neighborhood of ind2"""
-        logger.debug("moving index %s to index %s", ind1, ind2)
-        node1 = self.node_by_free_index(ind1.name)
-        node2 = self.node_by_free_index(ind2.name)
-        logger.debug("moving node %s to node %s", node1, node2)
-        if node1 == node2:
-            return
-
-        path = nx.shortest_path(self.network, node1, node2)
-        for n in path[1:]:
-            swapping_ind = None if n != node2 else ind2
-            self.swap_nbr(
-                path,
-                NodeIndexPair(node1, ind1),
-                NodeIndexPair(n, swapping_ind),
-            )
-            logger.debug("after swapping %s and %s, get %s", node1, n, self)
-
     def swap_nbr(
         self,
-        path: Sequence[NodeName],
-        node1_pair: NodeIndexPair,
-        node2_pair: NodeIndexPair,
+        moving: NodeName,
+        other: NodeName,
+        ahead: Optional[NodeName] = None,
     ) -> None:
-        """Swap two neighbor nodes."""
-        node1, ind1 = node1_pair.node, node1_pair.ind
-        node2, ind2 = node2_pair.node, node2_pair.ind
-        logger.debug("swapping the neighbors %s and %s", node1, node2)
-        common_ind = self.get_contraction_index(node1, node2)[0]
-        node_indices = []
+        """Move `moving` one step past its neighbor `other`.
 
-        # Collect indices from node1 that should be kept
-        for ind in self.node_tensor(node1).indices:
-            if self._should_keep_index_from_left(
-                path, common_ind, NodeIndexPair(node1, ind), ind1
-            ):
-                node_indices.append(ind)
+        Afterwards `moving` occupies the position `other` had, still
+        carrying its own free indices, and `other` occupies the position
+        `moving` had, keeping its free indices and its other subtrees:
 
-        # Collect indices from node2 that should be kept
-        for ind in self.node_tensor(node2).indices:
-            if self._should_keep_index_from_right(
-                path, common_ind, NodeIndexPair(node2, ind), ind2
-            ):
-                node_indices.append(ind)
+            before:  [subtrees of moving] - moving - other - ahead
+            after:   [subtrees of moving] - other - moving - ahead
 
-        name = self.merge(node1, node2)
-        new_indices = self.node_tensor(name).indices
-        lefts = [new_indices.index(ind) for ind in node_indices]
-        u, v = self.qr(name, lefts)
-        self.network = nx.relabel_nodes(self.network, {u: node2, v: node1})
+        `ahead` is the neighbor of `other` that `moving` should be
+        connected to next (the next node on the path it travels along);
+        with `ahead=None` the swap is a plain exchange of positions.
+        """
+        free = self.free_indices()
+
+        # decide what travels with `moving`. Only its free indices
+        # do, plus the bond towards `ahead` so that it lands next to it.
+        # Everything else -- the bonds to moving's old subtrees, all of
+        # other's free indices and other's remaining bonds -- stays with
+        # `other`, which is what puts `other` into moving's old position.
+        carried = [
+            ind for ind in self.node_tensor(moving).indices if ind in free
+        ]
+        if ahead is not None:
+            carried.append(self.get_contraction_index(other, ahead)[0])
+
+        # contract the two neighbors into one node, then split it
+        # again by QR. Q takes the indices that stay behind and is
+        # orthonormal; R takes the carried indices along with the norm.
+        merged = self.merge(moving, other)
+        merged_inds = self.node_tensor(merged).indices
+        lefts = [i for i, ind in enumerate(merged_inds) if ind not in carried]
+        q, r = self.qr(merged, lefts)
+
+        # name the factors after the positions they now occupy.
+        self.network = nx.relabel_nodes(self.network, {q: other, r: moving})
 
     def _anchor_distance(
         self,
@@ -2140,13 +2053,16 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         path: Sequence[NodeName],
         moving_node: NodeName,
     ) -> None:
-        """Swap a node along the given path."""
+        """Move `moving_node` to the end of `path`, one neighbor at a time.
+
+        `path` starts at `moving_node`; each step swaps it past the next
+        node while telling the swap which node comes after that, so the
+        moved node keeps heading down the path.
+        """
         logger.debug("moving %s along the path %s", moving_node, path)
-        for other in path[1:]:
-            # Swap the nodes along the path
-            self.swap_nbr(
-                path, NodeIndexPair(moving_node), NodeIndexPair(other)
-            )
+        for i, other in enumerate(path[1:], start=1):
+            ahead = path[i + 1] if i + 1 < len(path) else None
+            self.swap_nbr(moving_node, other, ahead)
 
     def _max_dist_nodes(
         self, ind_nodes: Sequence[NodeName], anchor: NodeName
@@ -2167,166 +2083,9 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
         return left_anchor, right_anchor
 
-    def get_subtree(self, u: NodeName, v: NodeName) -> "TreeNetwork":
-        """create a subgraph by breaking the edge"""
-        net = self.network.copy()
-        net.remove_edge(u, v)
-        subnet_nodes = nx.node_connected_component(net, v)
-        sub_tree = TreeNetwork()
-        sub_tree.network = net.subgraph(subnet_nodes)
-        return sub_tree
-
-    def _subtree_has_free_indices(
-        self, fixed_nodes: Sequence[NodeName], node: NodeName, edge: Index
-    ) -> bool:
-        if edge in self.free_indices():
-            return True
-
-        for m in self.network.neighbors(node):
-            m_inds = self.node_tensor(m).indices
-            if edge in m_inds:
-                if node in fixed_nodes:
-                    return False
-
-                sub_tree = self.get_subtree(node, m)
-                free_inds = sub_tree.free_indices()
-                return len(free_inds) > 1
-
-        return False
-
-    def _index_appears_on_path(
-        self, ind: Index, path: Sequence[NodeName]
-    ) -> bool:
-        for i, n in enumerate(path[:-1]):
-            if ind in self.get_contraction_index(n, path[i + 1]):
-                return True
-
-        return False
-
-    def _should_keep_index_from_left(
-        self,
-        path: Sequence[NodeName],
-        common_ind: Index,
-        ind_node: NodeIndexPair,
-        swapping_ind: Optional[Index] = None,
-    ) -> bool:
-        """Determine if an index from the left should be kept during swap."""
-        ind, node = ind_node.ind, ind_node.node
-        if (
-            ind == common_ind
-            or (swapping_ind is None and ind in self.free_indices())
-            or (swapping_ind is not None and ind == swapping_ind)
-        ):
-            return False
-
-        assert ind is not None
-        if self._index_appears_on_path(ind, path):
-            return True
-
-        for nbr in self.network.neighbors(node):
-            if ind in self.node_tensor(nbr).indices:
-                return True
-
-        return False
-
-    def _should_keep_index_from_right(
-        self,
-        path: Sequence[NodeName],
-        common_ind: Index,
-        ind_node: NodeIndexPair,
-        swapping_ind: Optional[Index] = None,
-    ) -> bool:
-        """Determine if an index from the right should be kept during swap."""
-        ind, node = ind_node.ind, ind_node.node
-        if (swapping_ind is None and ind in self.free_indices()) or (
-            swapping_ind is not None and ind == swapping_ind
-        ):
-            return True
-
-        for nbr in self.network.neighbors(node):
-            if ind is not None and ind in self.node_tensor(nbr).indices:
-                # found the correct neighbor
-                return ind != common_ind and not self._index_appears_on_path(
-                    ind, path
-                )
-
-        return False
-
-    @staticmethod
-    def rand_tree(indices: List[Index], ranks: List[int]) -> "TreeNetwork":
-        """Return a random tensor tree."""
-
-        ndims = len(indices)
-        num_of_nodes = len(ranks) + 1
-        assert ndims <= num_of_nodes  # In a tree, #edges = #nodes - 1
-
-        # sample a topology from given ranks
-        np.random.shuffle(ranks)
-        # sample nodes for free indices
-        nodes_with_free = np.random.choice(
-            num_of_nodes, len(indices), replace=False
-        )
-        # assign edges between nodes
-        parent: Dict[int, Tuple[NodeName, int]] = {}
-        nodes = list(range(num_of_nodes))
-        while len(nodes) > 1:
-            node = np.random.choice(nodes, 1)[0]
-            nodes.remove(node)
-
-            p = np.random.choice(num_of_nodes, 1)[0]
-            while p == node:
-                p = np.random.choice(num_of_nodes, 1)[0]
-            # print("suggesting parent of", node, "as", p)
-            # check for cycles
-            ancestor = p
-            while ancestor in parent:
-                # print("ancestor of", ancestor)
-                ancestor, _ = parent[ancestor]
-                if ancestor == node:
-                    p = np.random.choice(num_of_nodes, 1)[0]
-                    while p == node:
-                        p = np.random.choice(num_of_nodes, 1)[0]
-                    ancestor = p
-
-            # print("finalizing parent of", node, "as", p)
-            parent[node] = (p, len(nodes) - 1)
-
-        tree = TreeNetwork()
-
-        for i in range(num_of_nodes):
-            i_ranks = []
-            i_dims = []
-            if i in nodes_with_free:
-                idx = list(nodes_with_free).index(i)
-                dim = indices[idx].size
-                i_ranks.append(indices[idx])
-                i_dims.append(dim)
-
-            if i in parent:
-                _, ridx = parent[i]
-                dim = ranks[ridx]
-                i_ranks.append(Index(f"r_{ridx}", dim))
-                i_dims.append(dim)
-
-            for p, ridx in parent.values():
-                if p == i:
-                    dim = ranks[ridx]
-                    i_ranks.append(Index(f"r_{ridx}", dim))
-                    i_dims.append(dim)
-
-            value = np.random.randn(*i_dims)
-            tensor = Tensor(value, i_ranks)
-            tree.add_node(i, tensor)
-
-        for i, (p, _) in parent.items():
-            # print("edge between", i, "and", p)
-            tree.add_edge(i, p)
-
-        return tree
-
     def __add__(self, other: Any) -> Self:
         """Add two tree networks."""
-        if not isinstance(other, TreeNetwork):
+        if not isinstance(other, TensorNetwork):
             raise NotImplementedError
 
         assert nx.is_isomorphic(self.network, other.network)
@@ -2345,7 +2104,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
     def __sub__(self, other: Any) -> Self:
         """Subtract two tree networks."""
-        if not isinstance(other, TreeNetwork):
+        if not isinstance(other, TensorNetwork):
             raise NotImplementedError
 
         assert nx.is_isomorphic(self.network, other.network)
@@ -2360,7 +2119,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
     def __mul__(self, other: Any) -> Self:
         """Elementwise multiplication of two tree networks."""
-        if not isinstance(other, TreeNetwork):
+        if not isinstance(other, TensorNetwork):
             raise NotImplementedError
 
         assert nx.is_isomorphic(self.network, other.network)
@@ -2379,7 +2138,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
     def _binary_op(
         self,
-        other: "TreeNetwork",
+        other: "TensorNetwork",
         op: Literal["add", "mul"],
         trees: Tuple[DimTreeNode, DimTreeNode],
         result_net: Self,
@@ -2413,90 +2172,118 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         self, indices: Sequence[Index], svd_node: NodeName
     ) -> List[int]:
         """Get the positions such that the given indices are on the left."""
-        ok, inds = self._check_indices(indices, set(), svd_node)
-        assert ok.code in (PartitionStatus.OK, PartitionStatus.EXIST), (
+        res = self._partition_at(svd_node, self._subtree_views(indices))
+        assert res is not None, (
             f"{svd_node} is not the correct partition point"
         )
 
-        tensor = self.node_tensor(svd_node)
-        svd_node_inds = tensor.indices
-        svd_ls = set()
-        for ind in indices:
-            for svd_ind, ind_group in inds.items():
-                if ind in ind_group:
-                    svd_ls.add(svd_node_inds.index(svd_ind))
-                    break
+        svd_node_inds = self.node_tensor(svd_node).indices
+        return [svd_node_inds.index(ind) for ind in res.lca_indices]
 
-        return list(svd_ls)
+    def _subtree_views(self, indices: Sequence[Index]) -> SubtreeViews:
+        """Precompute what lies behind every directed edge.
 
-    def _check_indices(
-        self, indices: Sequence[Index], visited: Set[NodeName], node: NodeName
-    ) -> Tuple[PartitionResult, Dict[Index, List[Index]]]:
-        """Check whether a node is a partition of the given indices."""
-        visited.add(node)
-        results = {}
-        for m in self.network.neighbors(node):
-            if m not in visited:
-                res, finds = self._check_indices(indices, visited, m)
-                if res.code != PartitionStatus.OK:
-                    return res, finds
+        One pass from the leaves up gives the target indices and the number
+        of free indices below every node; the view across an edge in the
+        other direction is the complement.
+        """
+        desired = frozenset(indices)
+        free = set(self.free_indices())
 
-                # print("get", finds, "for", m, "with parent", node)
-                inds = [v for vs in finds.values() for v in vs]
-                # if finds include both desired and undesired, skip
-                desired = set(indices).intersection(set(inds))
-                undesired = set(inds).difference(set(indices))
-                # print(desired, undesired)
+        root = next(iter(self.network.nodes))
+        order = list(nx.bfs_tree(self.network, root).nodes)
+        parent: Dict[NodeName, Optional[NodeName]] = {root: None}
+        parent.update(nx.bfs_predecessors(self.network, root))
 
-                if len(desired) > 0 and len(undesired) > 0:
-                    res.code = PartitionStatus.FAIL
-                    return res, {}
+        down_desired: Dict[NodeName, FrozenSet[Index]] = {}
+        down_free: Dict[NodeName, int] = {}
+        for node in reversed(order):
+            own = [i for i in self.node_tensor(node).indices if i in free]
+            got = frozenset(i for i in own if i in desired)
+            n_free = len(own)
+            for child in self.network.neighbors(node):
+                if parent[child] == node:
+                    got |= down_desired[child]
+                    n_free += down_free[child]
 
-                results[self.get_contraction_index(m, node)[0]] = inds
-                if len(undesired) == 0 and len(desired) == len(indices):
-                    res.code = PartitionStatus.EXIST
-                    res.lca_node = m
-                    return res, results
+            down_desired[node] = got
+            down_free[node] = n_free
 
-        free_indices = self.free_indices()
-        node_indices = self.node_tensor(node).indices
-        for i in node_indices:
-            if i in free_indices:
-                results[i] = [i]
+        views = SubtreeViews(desired, root, parent, down_desired, down_free)
+        views.existing = self._existing_split(views)
+        return views
 
-        res = PartitionResult()
-        res.code = PartitionStatus.OK
-        return res, results
+    def _existing_split(
+        self, views: SubtreeViews
+    ) -> Optional[Tuple[NodeName, Index, FrozenSet[NodeName]]]:
+        """Find an edge whose one side holds exactly the target indices.
+
+        If several edges qualify (nodes without free indices between them),
+        the one with the smallest target side is returned: it is the one a
+        search from outside reaches first.
+        """
+        best = None
+        best_size = len(self.network.nodes) + 1
+        for a, b in self.network.edges:
+            for near, far in ((a, b), (b, a)):
+                got, n_other = views.behind(near, far)
+                if got != views.desired or n_other != 0:
+                    continue
+
+                cut = nx.restricted_view(self.network, [], [(a, b)])
+                side = frozenset(nx.node_connected_component(cut, far))
+                if len(side) < best_size:
+                    bond = self.get_contraction_index(near, far)[0]
+                    best = (far, bond, side)
+                    best_size = len(side)
+
+        return best
+
+    def _partition_at(
+        self, node: NodeName, views: SubtreeViews
+    ) -> Optional[PartitionResult]:
+        """Check whether `node` separates the target indices from the rest.
+
+        If an edge already separates exactly the targets, a search from any
+        node outside its target side finds it (``EXIST``); the target-side
+        endpoint is itself a valid split point (``OK``); nodes further
+        inside the target side are not. Otherwise every subtree hanging off
+        `node` must be pure -- only targets or none of them -- and `node` is
+        the split point with its target-carrying indices as the left side
+        (``OK``). Returns ``None`` when some subtree mixes both.
+        """
+        if views.existing is not None:
+            far, bond, side = views.existing
+            if node not in side:
+                return PartitionResult(PartitionStatus.EXIST, far, [bond])
+            if node != far:
+                return None
+
+        lefts: List[Index] = []
+        for nbr in self.network.neighbors(node):
+            got, n_other = views.behind(node, nbr)
+            if got and n_other:
+                return None
+
+            if got:
+                lefts.append(self.get_contraction_index(node, nbr)[0])
+
+        for ind in self.node_tensor(node).indices:
+            if ind in views.desired:
+                lefts.append(ind)
+
+        return PartitionResult(PartitionStatus.OK, node, lefts)
 
     def partition_node(self, indices: Sequence[Index]) -> PartitionResult:
-        """Find a proper node that partitions the free indices as specified."""
-        # we should find a node where the expected indices and
-        # the unexpected indices are on different indices
+        """Find a proper node that partitions the free indices as specified.
 
-        lca_indices = []
-        for n in self.network.nodes:
-            # postorder traversal from each node and
-            # if we find each index
-            visited: Set[NodeName] = set()
-            # print("postordering", n)
-            res, results = self._check_indices(indices, visited, n)
-
-            if res.code in (PartitionStatus.EXIST, PartitionStatus.OK):
-                for i in indices:
-                    for e, inds in results.items():
-                        if i in inds:
-                            lca_indices.append(e)
-                            break
-
-                assert len(lca_indices) == len(indices), (
-                    "each index should correspond to one of the edges, "
-                    f"but get {lca_indices}, {indices}"
-                )
-
-                if res.code == PartitionStatus.OK:
-                    res.lca_node = n
-
-                res.lca_indices = list(set(lca_indices))
+        Nodes are tried in insertion order and the first one that separates
+        the target indices from the rest wins.
+        """
+        views = self._subtree_views(indices)
+        for node in self.network.nodes:
+            res = self._partition_at(node, views)
+            if res is not None:
                 return res
 
         raise ValueError(
@@ -2572,10 +2359,10 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
 
     def replace_with(
         self,
-        old_subnet: "TreeNetwork",
-        new_subnet: "TreeNetwork",
+        old_subnet: "TensorNetwork",
+        new_subnet: "TensorNetwork",
         _split_info: Optional[List[IndexOp]] = None,
-    ) -> "TreeNetwork":
+    ) -> "TensorNetwork":
         """Replace a node with a sub-tensor network."""
         for n in old_subnet.network.nodes:
             if n not in self.network.nodes:
@@ -2609,7 +2396,7 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
         for u, v in new_subnet.network.edges:
             self.add_edge(u, v)
 
-        tree = TreeNetwork()
+        tree = TensorNetwork()
         tree.network = self.network
         return tree
 
@@ -2636,6 +2423,30 @@ class TreeNetwork(TensorNetwork):  # pylint: disable=R0904
                 end_nodes.append(node)
 
         return end_nodes
+
+    def is_tensor_train(self) -> bool:
+        """Check whether the network is a tensor train: a connected, acyclic
+        chain where every node has at most two neighbors and carries exactly
+        one free index.
+        """
+        graph = self.network
+        if graph.number_of_nodes() == 0:
+            return False
+        if not nx.is_connected(graph):
+            return False
+        if graph.number_of_edges() != graph.number_of_nodes() - 1:
+            return False
+        if any(deg > 2 for _, deg in graph.degree()):
+            return False
+
+        free_inds = self.free_indices()
+        for node in graph.nodes:
+            node_inds = self.node_tensor(node).indices
+            num_free = sum(1 for ind in node_inds if ind in free_inds)
+            if num_free != 1:
+                return False
+
+        return True
 
     def svals_by_merge(
         self,
@@ -2693,3 +2504,1578 @@ def vector(
     vec = TensorNetwork()
     vec.add_node(name, Tensor(value, [index]))
     return vec
+
+
+def rand_tt(indices: List[Index], ranks: List[int]) -> TensorNetwork:
+    """Return a random tt."""
+
+    dim = len(indices)
+    assert len(ranks) + 1 == len(indices)
+
+    tt = TensorNetwork()
+
+    r = [Index("r1", ranks[0])]
+    tt.add_node(
+        0,
+        Tensor(np.random.randn(indices[0].size, ranks[0]), [indices[0], r[0]]),
+    )
+
+    core = 1
+    for ii, index in enumerate(indices[1:-1]):
+        r.append(Index(f"r{ii + 2}", ranks[ii + 1]))
+        tt.add_node(
+            core,
+            Tensor(
+                np.random.randn(ranks[ii], index.size, ranks[ii + 1]),
+                [r[ii], index, r[ii + 1]],
+            ),
+        )
+        core += 1
+        tt.add_edge(ii, ii + 1)
+
+    tt.add_node(
+        dim - 1,
+        Tensor(
+            np.random.randn(ranks[-1], indices[-1].size), [r[-1], indices[-1]]
+        ),
+    )
+    tt.add_edge(dim - 2, dim - 1)
+
+    return tt
+
+
+def tt_rank1(indices: List[Index], vals: List[np.ndarray]) -> TensorNetwork:
+    """Return a random rank 1 TT tensor."""
+
+    dim = len(indices)
+
+    tt = TensorNetwork()
+
+    r = [Index("r1", 1)]
+    # print("vals[0] ", vals[0][:, np.newaxis])
+    new_tens = Tensor(vals[0][:, np.newaxis], [indices[0], r[0]])
+    tt.add_node(0, new_tens)
+    # print("new_tens = ", new_tens.indices)
+
+    core = 1
+    for ii, index in enumerate(indices[1:-1]):
+        r.append(Index(f"r{ii + 2}", 1))
+        new_tens = Tensor(
+            vals[ii + 1][np.newaxis, :, np.newaxis], [r[ii], index, r[ii + 1]]
+        )
+        tt.add_node(core, new_tens)
+        tt.add_edge(core - 1, core)
+        core += 1
+
+    tt.add_node(dim - 1, Tensor(vals[-1][np.newaxis, :], [r[-1], indices[-1]]))
+    tt.add_edge(dim - 2, dim - 1)
+    # print("tt_rank1 = ", tt)
+    return tt
+
+
+def tt_separable(
+    indices: List[Index], funcs: List[np.ndarray]
+) -> TensorNetwork:
+    """Rank 2 function formed by sums of functions of individual dimensions."""
+
+    dim = len(indices)
+
+    tt = TensorNetwork()
+    ranks = []
+    for ii, index in enumerate(indices):
+        ranks.append(Index(f"r_{ii + 1}", 2))
+        if ii == 0:
+            val = np.ones((index.size, 2))
+            val[:, 0] = funcs[ii]
+
+            tt.add_node(ii, Tensor(val, [index, ranks[-1]]))
+        elif ii < dim - 1:
+            val = np.zeros((2, index.size, 2))
+            val[0, :, 0] = 1.0
+            val[1, :, 0] = funcs[ii]
+            val[1, :, 1] = 1.0
+            tt.add_node(ii, Tensor(val, [ranks[-2], index, ranks[-1]]))
+        else:
+            val = np.ones((2, index.size))
+            val[1, :] = funcs[ii]
+            tt.add_node(ii, Tensor(val, [ranks[-2], index]))
+
+        if ii > 0:
+            tt.add_edge(ii - 1, ii)
+
+    return tt
+
+
+def tt_right_orth(tn: TensorNetwork, node: int) -> TensorNetwork:
+    """Right orthogonalize all but first core.
+
+    Tree tensor network as a TT and right orthogonalize
+
+    A right orthogonal core has the r_{k-1} x nk r_k matrix
+    R(Gk(ik)) = ( Gk(1) Gk(2) · · · Gk(nk) )
+    having orthonormal rows so that
+
+    sum G_k(i) G_k(i)^T  = I
+
+    Modifies the input tensor network
+
+    Assumes nodes have integer names
+    """
+    # pylint: disable=C0103
+    # above disables the snake case complaints for variables like R
+    val1 = tn.value(node)
+    if val1.ndim == 3:
+        # print("val1.shape = ", val1.shape)
+        r, n, b = val1.shape
+        # val1 = np.reshape(val1, (r, n * b), order="F")
+        val1 = np.reshape(val1, (r, n * b))
+        # print("val1.T.shape = ", val1.T.shape)
+        q, R = np.linalg.qr(val1.T, mode="reduced")
+        if q.shape[1] < r:
+            newq = np.zeros((q.shape[0], r))
+            newq[:, : q.shape[1]] = q
+            q = newq
+            newr = np.zeros((r, R.shape[1]))
+            newr[: R.shape[0], :] = R
+            R = newr
+
+        # print("q.shape = ", q.shape)
+        # print("r.shape = ", R.shape)
+        # print("r = ", r)
+        # print("q shape = ", q.shape)
+        # new_val = np.reshape(q.T, (r, n, b), order="F")
+        new_val = np.reshape(q.T, (r, n, b))
+        tn.node_tensor(node).update_val_size(new_val)
+    else:
+        q, R = np.linalg.qr(val1.T)
+        new_val = q.T
+        tn.node_tensor(node).update_val_size(new_val)
+
+    val2 = tn.value(node - 1)
+    # new_val2 = np.einsum("...i,ij->...j", val2, R.T)
+    new_val2 = np.dot(val2, R.T)
+    tn.node_tensor(node - 1).update_val_size(new_val2)
+
+    return tn
+
+
+def eps_to_rank(s: np.ndarray, eps: float) -> int:
+    """Tranlates the matrix approximation error \
+    to rank in a truncated SVD"""
+    tmp = (np.sqrt(np.cumsum(np.square(s[::-1])))[::-1]) <= eps
+    res: int = int(np.argmax(tmp))
+    if res == 0 and not tmp[0]:
+        return int(s.shape[0])
+    if res == 0 and tmp[0]:
+        return 1
+    return res
+
+
+def gram_eig_and_svd(
+    gl: np.ndarray, gr: np.ndarray, delta: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """ Implements eigenvalue decomposition + svd to \
+        the gram matrices of a TT-core and returns the \
+        low-rank factors """
+    pos_tol = 1e-15
+
+    eigl, vl = np.linalg.eigh(gl)
+    eigr, vr = np.linalg.eigh(gr)
+    eigl = np.abs(eigl)
+    eigr = np.abs(eigr)
+
+    eigl12 = np.sqrt(eigl)
+    eigr12 = np.sqrt(eigr)
+
+    threshold = np.ceil(np.log10(np.max(eigl12) * 1e-8 + pos_tol))
+    eigl12 = np.round(eigl12, min(-int(threshold), 16))
+    threshold = np.ceil(np.log10(np.max(eigr12) * 1e-8 + pos_tol))
+    eigr12 = np.round(eigr12, min(-int(threshold), 16))
+
+    maskl = eigl12 == 0
+    maskr = eigr12 == 0
+
+    eiglm12 = np.zeros_like(eigl12)
+    eigrm12 = np.zeros_like(eigr12)
+    eiglm12[~maskl] = 1 / eigl12[~maskl]
+    eigrm12[~maskr] = 1 / eigr12[~maskr]
+
+    # eiglm12 = np.nan_to_num(eiglm12, nan=0, posinf=0, neginf=0)
+    # eigrm12 = np.nan_to_num(eigrm12, nan=0, posinf=0, neginf=0)
+
+    tmp = (eigl12[:, np.newaxis] * vl.T) @ (vr * eigr12[np.newaxis, :])
+
+    u, s, v = np.linalg.svd(tmp)
+    rk = min(tmp.shape[0], tmp.shape[1], eps_to_rank(s, delta))
+
+    u = u[:, :rk]
+    s = s[:rk]
+    v = v[:rk, :]
+
+    curr_val = vl @ (eiglm12[:, np.newaxis] * u)
+
+    next_val = (s[:, np.newaxis] * v * eigrm12[np.newaxis, :]) @ vr.T
+    return curr_val, next_val
+
+
+def tt_gramsvd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
+    """
+    Description: Modifies the input tensor network and returns the
+    rounded version by implementing the Gram-SVD based rounding
+    approach [1].
+
+    [1] - H. Al Daas, G. Ballard and L. Manning, "Parallel Tensor-
+    Train Rounding using Gram SVD," 2022 IEEE International Parallel
+    and Distributed Processing Symposium (IPDPS), Lyon, France, 2022,
+    pp. 930-940, doi: 10.1109/IPDPS53621.2022.00095."""
+
+    def next_gram(
+        gram_now: np.ndarray, core_next: np.ndarray, order: str = "lr"
+    ) -> np.ndarray:
+        """ Calculates the Gram matrix corresponding to the next \
+        TT-core using the Gram matrix corresponding to the \
+        current core. For example, if order == "lr" (left to \
+        right sweep), the function outputs a matrix of size \
+        R_{k} x R{k} from a matrix of size R_{k-1} x R_{k-1}"""
+        snext = core_next.shape
+        if order == "lr":
+            tmp = (gram_now.T @ core_next.reshape((snext[0], -1))).reshape(
+                (-1, snext[-1])
+            )
+            return np.asarray(tmp.T @ core_next.reshape((-1, snext[-1])))
+
+        if order == "rl":
+            tmp = (core_next.reshape((-1, snext[-1])) @ gram_now).reshape(
+                (-1, snext[-2] * snext[-1])
+            )
+            return np.asarray(
+                np.dot(tmp, core_next.reshape((-1, snext[-2] * snext[-1])).T)
+            )
+
+        raise ValueError(f"Invalid order: {order}. Use 'lr' or 'rl'.")
+
+    dim = tn.dim()
+    gr_list = [tn.value(dim - 1) @ tn.value(dim - 1).T]
+    # print("pre backward sweep 1")
+    # print("tn" , tn)
+    # Collect gram matrices from right to left
+    for i in range(dim - 2, -1, -1):
+        # print("i = ", i)
+        # print(tn.value(i))
+        gr_list.append(next_gram(gr_list[-1], tn.value(i), "rl"))
+    # print("end")
+
+    norm = np.sqrt(gr_list[-1])[0, 0]
+    delta = eps * norm / (dim - 1) ** 0.5
+    gr_list = gr_list[::-1]
+
+    # print("pre backward sweep 2")
+    for i in range(dim - 1):
+        sh = list(tn.value(i).shape)
+        shp1 = list(tn.value(i + 1).shape)
+        gl = tn.value(i).reshape((-1, sh[-1])).T @ tn.value(i).reshape(
+            (-1, sh[-1])
+        )
+
+        curr_val, next_val = gram_eig_and_svd(gl, gr_list[i + 1], delta)
+
+        curr_val = tn.value(i).reshape((-1, sh[-1])) @ curr_val
+        next_val = next_val @ tn.value(i + 1).reshape((shp1[0], -1))
+
+        rk = curr_val.shape[-1]
+        sh[-1] = rk
+        shp1[0] = rk
+        curr_val = curr_val.reshape(sh)
+        next_val = next_val.reshape(shp1)
+        tn.node_tensor(i).update_val_size(curr_val)
+        tn.node_tensor(i + 1).update_val_size(next_val)
+
+    return tn
+
+
+def tt_svd_round(tn: TensorNetwork, eps: float) -> TensorNetwork:
+    """Round a tensor train.
+
+    Nodes should be integers 0,1,2,...,dim-1
+
+    orthogonalize determines of QR is used to orthogonalize the
+    cores. If orthogonalize=False, the Gram-SVD rounding algo-
+    rithm is used.
+    """
+    # pylint: disable=C0103
+    # above disables the snake case complaints for variables like R
+    # norm2 = tn.norm()
+    dim = tn.dim()
+    delta = None
+    out = tt_right_orth(tn, dim - 1)
+    for jj in range(dim - 2, 0, -1):
+        out = tt_right_orth(out, jj)
+
+    core_list = list(out.network.nodes(data=True))
+    node = core_list[0][0]
+    data = core_list[0][1]
+    value = out.value(node)
+    trunc_svd = delta_svd(value, eps / np.sqrt(dim - 1), with_normalizing=True)
+    delta = trunc_svd.delta
+    assert delta is not None
+    assert trunc_svd.v is not None
+    assert trunc_svd.u is not None
+
+    v = np.dot(np.diag(trunc_svd.s), trunc_svd.v)
+    r2 = trunc_svd.u.shape[1]
+    new_core = np.reshape(trunc_svd.u, (value.shape[0], r2))
+
+    data["tensor"].update_val_size(new_core)
+
+    # print("In here")
+    val_old = out.node_tensor(node + 1).value
+    next_val = np.einsum("ij,jk...->ik...", v, val_old)
+    out.node_tensor(node + 1).update_val_size(next_val)
+
+    for node, data in core_list[1:-1]:
+        value = data["tensor"].value
+        r1, n, r2a = value.shape
+        val = np.reshape(value, (r1 * n, r2a))
+        trunc_svd = delta_svd(val, delta)
+        assert trunc_svd.v is not None
+        assert trunc_svd.u is not None
+        v = np.dot(np.diag(trunc_svd.s), trunc_svd.v)
+        r2 = trunc_svd.u.shape[1]
+        new_core = np.reshape(trunc_svd.u, (r1, n, r2))
+        data["tensor"].update_val_size(new_core)
+
+        val_old = out.node_tensor(node + 1).value
+        next_val = np.einsum("ij,jk...->ik...", v, val_old)
+        out.node_tensor(node + 1).update_val_size(next_val)
+
+    return out
+
+
+# Rounding sum of TT cores
+def get_indices(
+    maximum: int, periodicity: int, consecutive: int, start: int
+) -> np.ndarray:
+    """
+    Gets the column indices of a matrix when right multiplied
+    by the horizontal unfolding (or its transpose) of a TT-sum
+    (H(X) or H(X).T). The indices correspond to the non-zero
+    parts of H and helps to avoid unnecessary computation.
+    """
+    indices = np.asarray(
+        np.concatenate(
+            [
+                np.arange(i, i + consecutive)
+                for i in range(start, maximum, periodicity)
+            ]
+        )
+    )
+    return indices
+
+
+def multiply_core_unfolding(  # pylint: disable=R0912
+    mat: np.ndarray,
+    cores_list: list,
+    v_unfolding: bool,
+    left_multiply: bool,
+    transpose: bool,
+) -> np.ndarray:
+    """
+    Multiplies a dense matrix 'mat' with a sparse block-diagonal
+    core in a TT-sum.
+    -   the summands are given as a Python list of tensor trains
+        ('cores_list' in the arguments).
+    -   'v_unfolding' indicates Vertical unfolding of a TT-core.
+        i.e., a Rk-1 cross nk cross Rk core will be reshaped as
+        Rk-1 * nk cross Rk matrix if v_unfolding is True. If
+        False, the core will be reshaped as Rk-1 cross nk * Rk.
+    -   'left_multiply' decides if 'cores_list' is left multiplied
+        or right multiplied to 'mat'
+    -   'transpose' denotes if we take a transpose of 'cores_list'
+        before multiplication.
+    """
+    rows, cols = mat.shape
+    n_cores = len(cores_list)
+    if left_multiply:
+        rk = [s.shape[-1] for s in cores_list]
+        rk_cumsum = np.cumsum([0] + rk)
+        rk_sum = np.sum(rk)
+        if cores_list[0].ndim == 2:
+            rk1 = [1 for s in cores_list]
+        else:
+            rk1 = [s.shape[0] for s in cores_list]
+        rk1_sum = np.sum(rk1)
+        rk1_cumsum = np.cumsum([0] + rk1)
+        n = cores_list[0].shape[1]
+
+        if v_unfolding and (not transpose):
+            assert rows == rk_sum, f"Dimension mismatch {rows} != {rk_sum}"
+            res = np.zeros((rk1_sum * n, cols))
+            for i in range(n_cores):
+                res[rk1_cumsum[i] * n : rk1_cumsum[i + 1] * n, :] = (
+                    cores_list[i].reshape((-1, rk[i]))
+                    @ mat[rk_cumsum[i] : rk_cumsum[i + 1], :]
+                )
+            return res
+
+    else:
+        rk = [s.shape[0] for s in cores_list]
+        rk_cumsum = np.cumsum([0] + rk)
+        rk_sum = np.sum(rk)
+        if cores_list[0].ndim == 2:
+            rk1 = [1 for s in cores_list]
+        else:
+            rk1 = [s.shape[-1] for s in cores_list]
+        rk1_sum = np.sum(rk1)
+        rk1_cumsum = np.cumsum([0] + rk1)
+        n = cores_list[0].shape[1]
+
+        if v_unfolding and (not transpose):
+            assert cols == rk_sum * n, (
+                f"Dimension mismatch {cols} != {rk_sum * n}"
+            )
+            res = np.zeros((rows, rk1_sum))
+            for i in range(n_cores):
+                res[:, rk1_cumsum[i] : rk1_cumsum[i + 1]] = mat[
+                    :, rk_cumsum[i] * n : rk_cumsum[i + 1] * n
+                ] @ cores_list[i].reshape((-1, rk1[i]))
+            return res
+
+        if (not v_unfolding) and (transpose):
+            assert cols == rk1_sum * n, (
+                f"Dimension mismatch {cols} != {rk1_sum * n}"
+            )
+            res = np.zeros((rows, rk_sum))
+            for i in range(n_cores):
+                ind = get_indices(cols, rk1_sum, rk1[i], rk1_cumsum[i])
+                res[:, rk_cumsum[i] : rk_cumsum[i + 1]] = (
+                    mat[:, ind] @ (cores_list[i].reshape((rk[i], -1))).T
+                )
+            return res
+
+        if (not v_unfolding) and (not transpose):
+            assert cols == rk_sum, f"Dimension mismatch {cols} != {rk_sum}"
+            res = np.zeros((rows, n * rk1_sum))
+            for i in range(n_cores):
+                ind = get_indices(rk1_sum * n, rk1_sum, rk1[i], rk1_cumsum[i])
+                res[:, ind] = mat[
+                    :, rk_cumsum[i] : rk_cumsum[i + 1]
+                ] @ cores_list[i].reshape((rk[i], -1))
+            return res
+
+    raise ValueError("Invalid options")
+
+
+def next_gram_sum(
+    gram_now: np.ndarray, core_next: list[np.ndarray], order: str = "rl"
+) -> np.ndarray:
+    """
+    Let's say that we are dealing with 's' summands in our TT sum.
+
+    gram_now is a sigma r_i times sigma r_i matrix (i from 1 to s)
+    where r_i represents the sum of rank of a particular TT core of
+    the summands. For example, it could be the sum for the last TT
+    core of every summand.
+
+    core_next is the list (of size s) of adjacent TT-core of all
+    summands. For example, if gram_now corresponds to the last TT core
+    of all the summands, then assuming order = rl, core_next will be a
+    list of the penultimate cores of all the summands.
+
+    order: 'lr' means left to right and 'rl' means right to left.
+    """
+
+    # shnext = [s.shape for s in core_next]
+    if order == "rl":
+        rk1_sum, _, rk_sum = np.sum([list(s.shape) for s in core_next], axis=0)
+        n = core_next[0].shape[1]
+        tmp = multiply_core_unfolding(gram_now, core_next, True, True, False)
+        tmp = tmp.reshape((rk1_sum, n * rk_sum))
+        return multiply_core_unfolding(tmp, core_next, False, False, True)
+
+    if order == "lr":
+        rk_sum, _, rk1_sum = np.sum([list(s.shape) for s in core_next], axis=0)
+        n = core_next[0].shape[1]
+        tmp = multiply_core_unfolding(gram_now, core_next, False, False, False)
+        tmp = tmp.reshape((rk_sum * n, rk1_sum)).T
+        return multiply_core_unfolding(tmp, core_next, True, False, False)
+
+    raise ValueError(
+        "Invalid argument for order. order should either be lr or rl"
+    )
+
+
+def tt_sum_gramsvd_round(
+    factors_list: list[TensorNetwork],
+    eps: float = 1e-14,
+) -> TensorNetwork:
+    """Gram-rounding of sum of tensor trains."""
+
+    def core_info(k: int) -> tuple[list, list]:
+        cores = [f.value(k) for f in factors_list]
+        rk = [s.shape[0] for s in cores]
+        rk1 = [s.shape[-1] for s in cores]
+        n = cores[0].shape[1]
+        if cores[0].ndim == 3:
+            return cores, [np.sum(rk), n, np.sum(rk1)]
+        return cores, [np.sum(rk), n]
+
+    dim = factors_list[0].dim()
+
+    ttsum = copy.deepcopy(factors_list[0])
+
+    gr_list = [
+        np.concatenate([f.value(dim - 1) for f in factors_list], axis=0)
+    ]
+
+    ttsum.node_tensor(dim - 1).update_val_size(gr_list[-1])
+    gr_list = [gr_list[-1] @ gr_list[-1].T]
+
+    gl = np.concatenate([f.value(0) for f in factors_list], axis=1)
+    ttsum.node_tensor(0).update_val_size(gl)
+
+    # Collect gram matrices from right to left
+    for i in range(dim - 2, 0, -1):
+        gr_list.append(
+            next_gram_sum(
+                gr_list[-1], [f.value(i) for f in factors_list], "rl"
+            )
+        )
+
+    gr_list.append(np.sum((ttsum.value(0) @ gr_list[-1]) * ttsum.value(0)))
+    norm = np.sqrt(gr_list[-1])
+    delta = eps * norm / (dim - 1) ** 0.5
+
+    gr_list = gr_list[::-1]
+
+    for i in range(dim - 1):
+        sh = list(ttsum.value(i).shape)
+        core_next, shp1 = core_info(i + 1)
+
+        gl = ttsum.value(i).reshape((-1, sh[-1])).T @ ttsum.value(i).reshape(
+            (-1, sh[-1])
+        )
+
+        curr_val, next_val = gram_eig_and_svd(gl, gr_list[i + 1], delta)
+
+        curr_val = ttsum.value(i).reshape((-1, sh[-1])) @ curr_val
+        if i == (dim - 2):
+            next_val = next_val @ ttsum.value(dim - 1)
+        else:
+            next_val = multiply_core_unfolding(
+                next_val, core_next, False, False, False
+            )
+
+        rk = curr_val.shape[-1]
+        sh[-1] = rk
+        shp1[0] = rk
+
+        curr_val = curr_val.reshape(sh)
+        next_val = next_val.reshape(shp1)
+
+        ttsum.node_tensor(i).update_val_size(curr_val)
+        ttsum.node_tensor(i + 1).update_val_size(next_val)
+
+    return ttsum
+
+
+class TTRandRound:
+    """
+    Implementation of randomized rounding algorithms for Tensor Trains.
+
+    Reference:
+    [1] - Daas et. al, "Randomized algorithms for rounding in the Tensor-
+    Train format." arxiv preprint arxiv:2110.04393 (2021). Available at:
+    https://arxiv.org/abs/2110.04393.
+    """
+
+    def __init__(
+        self, y: Union[TensorNetwork, List[TensorNetwork]], target_ranks: List
+    ):
+        self.y = y
+        self.target_ranks = target_ranks
+
+        if isinstance(y, List) and isinstance(y[0], TensorNetwork):
+            self.ns = len(y)
+            self.d = y[0].network.number_of_nodes()
+
+        elif isinstance(y, TensorNetwork):
+            self.ns = 1
+            self.d = y.network.number_of_nodes()
+
+        else:
+            raise ValueError(
+                f"Invalid type for y ({type(y)}). \
+                             Argument y only accepts a list of \
+                             TensorNetworks or a TensorNetwork"
+            )
+
+    def init_rand_mat(self, ranks: Optional[List] = None) -> List[np.ndarray]:
+        """Generates a list of random TT-cores. Individual entries
+        of the cores are Gaussian RVs and are normalized according
+        to the size of the core"""
+        if ranks is None:
+            ranks = self.target_ranks
+
+        sh = self.y[0].shape() if isinstance(self.y, list) else self.y.shape()
+        r = []
+        # Initialize random TT-tensor with specified variance
+        for i in range(self.d):
+            if i == 0:
+                curr_shp = [sh[i], ranks[i]]
+            elif i == self.d - 1:
+                curr_shp = [ranks[i - 1], sh[i]]
+            else:
+                curr_shp = [ranks[i - 1], sh[i], ranks[i]]
+            r.append(np.random.randn(*curr_shp) / np.sqrt(np.prod(curr_shp)))
+        return r
+
+    def partial_contraction(
+        self, tt: TensorNetwork, y: List[np.ndarray], direction: str = "rl"
+    ) -> List[np.ndarray]:
+        """
+        Partial contraction of TT cores. Returns a list of contracted cores
+        w_i (by combining corresponding cores of, x[:i] and y[:i] for lr and
+        x[i:] and y[i:] for rl contraction)
+        """
+        w = []
+        if direction == "rl":
+            for i in range(self.d - 1, 0, -1):
+                x = tt.value(i)
+                sx = x.shape
+                sy = y[i].shape
+                # tmp = np.einsum('ijk,ljm->ilkm', x[i], y[i])
+                if i == self.d - 1:
+                    w.append(x @ y[i].T)
+                    continue
+                tmp = (x.reshape((-1, sx[-1])) @ w[-1]).reshape((sx[0], -1))
+                tmp = tmp @ y[i].reshape((sy[0], -1)).T
+                w.append(tmp)
+
+            w = w[::-1]
+            return w
+
+        raise ValueError("Invalid option")
+
+    def rand_then_orth(self) -> TensorNetwork:
+        """Implements Algorithm 3.2 in reference [1]"""
+
+        if isinstance(self.y, TensorNetwork):
+            r = self.init_rand_mat()
+            w = self.partial_contraction(self.y, r, "rl")
+            x_approx: np.ndarray = self.y.value(0)
+            res = copy.deepcopy(self.y)
+
+            for i in range(self.d - 1):
+                sx = list(x_approx.shape)
+                zn = x_approx.reshape((-1, x_approx.shape[-1]))
+                yn = zn @ w[i]
+                q, _ = np.linalg.qr(yn)
+                x_approx = q.reshape(sx[:-1] + [q.shape[-1]])
+                res.node_tensor(i).update_val_size(x_approx)
+                sy = list(self.y.value(i + 1).shape)
+                x_approx = (
+                    q.T @ zn @ self.y.value(i + 1).reshape((sy[0], -1))
+                ).reshape([q.shape[-1]] + sy[1:])
+
+            res.node_tensor(self.d - 1).update_val_size(x_approx)
+            return res
+
+        raise ValueError(
+            "It seems that this function is \
+                        being used to round a TT-sum"
+        )
+
+    def rto_rounding_ttsum(self) -> TensorNetwork:
+        """Implements Algorithm 3.4 in reference [1]"""
+
+        if isinstance(self.y, List):
+            r = self.init_rand_mat()
+            tmp0 = []
+            w = []
+            res = copy.deepcopy(self.y[0])
+
+            for y in self.y:
+                tmp0.append(y.value(0))
+                w.append(self.partial_contraction(y, r))
+            x_approx = np.concatenate(tmp0, axis=1)
+
+            del tmp0
+
+            for i in range(self.d - 1):
+                sx = list(x_approx.shape)
+                rk = []
+                rkp1 = []
+                w_curr = []
+
+                # Setup
+                for j in range(self.ns):
+                    sh = self.y[j].value(i).shape
+                    rk.append(sh[-1])
+                    rkp1.append(self.y[j].value(i + 1).shape[-1])
+                    w_curr.append(w[j][i])
+
+                # rksum = np.sum(rk)
+                rkp1sum = np.sum(rkp1)
+                rkcumsum = np.cumsum([0] + rk)
+
+                # Start
+                zn = x_approx.reshape((-1, sx[-1]))
+                yn = zn @ np.concatenate(w_curr, axis=0)
+                q, _ = np.linalg.qr(yn)
+                self.target_ranks[i] = min(self.target_ranks[i], q.shape[-1])
+                mn = q.T @ zn
+                x_approx = q.reshape((sx[:-1] + [self.target_ranks[i]]))
+                res.node_tensor(i).update_val_size(x_approx)
+                xnp1 = []
+                shp1 = []
+                for j in range(self.ns):
+                    shp1 = self.y[j].value(i + 1).shape
+                    tmp = mn[:, rkcumsum[j] : rkcumsum[j + 1]] @ self.y[
+                        j
+                    ].value(i + 1).reshape((shp1[0], -1))
+                    xnp1.append(tmp.reshape((-1, rkp1[j])))
+
+                if i < self.d - 2:
+                    x_approx = np.concatenate(xnp1, axis=1).reshape(
+                        (self.target_ranks[i], shp1[1], rkp1sum)
+                    )
+                else:
+                    x_approx = np.sum(xnp1, axis=0).reshape(
+                        (self.target_ranks[i], shp1[1])
+                    )
+                    res.node_tensor(self.d - 1).update_val_size(x_approx)
+
+            return res
+
+        raise ValueError(
+            "It seems that this function is being used \
+                             to round a single TT"
+        )
+
+    def round(self) -> TensorNetwork:
+        """Executes rounding"""
+        if isinstance(self.y, List):
+            res = self.rto_rounding_ttsum()
+        else:
+            res = self.rand_then_orth()
+        return res
+
+
+def tt_randomized_round(y: TensorNetwork, target_ranks: List) -> TensorNetwork:
+    """Executes randomized rounding for a TT TensorNetwork"""
+
+    rand_setup = TTRandRound(y, target_ranks)
+    return rand_setup.rand_then_orth()
+
+
+def tt_sum_randomized_round(
+    y: List[TensorNetwork], target_ranks: List
+) -> TensorNetwork:
+    """Executes randomized rounding for a TT TensorNetwork"""
+
+    rand_setup = TTRandRound(y, target_ranks)
+    return rand_setup.rto_rounding_ttsum()
+
+
+def tt_rand_precond_svd_round(
+    tn: Union[TensorNetwork, List[TensorNetwork]],
+    eps: float,
+    rank_bound: list[int],
+) -> TensorNetwork:
+    """
+    Uses randomized rounding as a preconditioner to lower the ranks of
+    the Tensor Train to the specified target rank before truncating the
+    ranks further to a specified tolerance (eps) using SVD.
+
+    Issues right now:
+        - Total error accumulated post rounding is unknown due to initi-
+        al rank-based truncation.
+        - Need to adjust the eps in SVD-based truncation so that total
+        error stays consistent with the global prespecified tolerance.
+    """
+
+    rand_rounded_tn = TTRandRound(y=tn, target_ranks=rank_bound)
+    res = rand_rounded_tn.round()
+    dim = rand_rounded_tn.d
+
+    for i in range(dim - 1, 0, -1):
+        tens_curr = res.value(i)
+        sh = list(tens_curr.shape)
+        tens_next = res.value(i - 1)
+
+        delta = eps / (dim - 1) ** 0.5
+
+        trunc_svd = delta_svd(tens_curr.reshape((sh[0], -1)), delta, True)
+        assert trunc_svd.v is not None
+
+        tens_curr = trunc_svd.v.reshape([-1] + sh[1:])
+        if i == 1:
+            tens_next = np.einsum(
+                "jk,kl->jl",
+                tens_next,
+                trunc_svd.u * trunc_svd.s[np.newaxis, :],
+            )
+        else:
+            tens_next = np.einsum(
+                "ijk,kl->ijl",
+                tens_next,
+                trunc_svd.u * trunc_svd.s[np.newaxis, :],
+            )
+
+        res.node_tensor(i).update_val_size(tens_curr)
+        res.node_tensor(i - 1).update_val_size(tens_next)
+
+    return res
+
+
+def ttop_rank1(
+    indices_in: List[Index],
+    indices_out: List[Index],
+    cores: List[np.ndarray],
+    rank_name_prefix: str,
+) -> TensorNetwork:
+    """Rank 1 TT-op with op in the first dimension."""
+    assert len(indices_in) == len(indices_out)
+    dim = len(indices_in)
+    tt_op = TensorNetwork()
+
+    rank_indices = [Index(f"{rank_name_prefix}_r1", 1)]
+    a1_tens = Tensor(
+        cores[0][:, :, np.newaxis],
+        [indices_out[0], indices_in[0], rank_indices[0]],
+    )
+    tt_op.add_node(0, a1_tens)
+    for ii in range(1, dim):
+        rank_indices.append(Index(f"{rank_name_prefix}_r{ii + 1}", 1))
+        if ii < dim - 1:
+            eye = cores[ii][np.newaxis, :, :, np.newaxis]
+            eye_tens = Tensor(
+                eye,
+                [
+                    rank_indices[ii - 1],
+                    indices_out[ii],
+                    indices_in[ii],
+                    rank_indices[ii],
+                ],
+            )
+            tt_op.add_node(ii, eye_tens)
+        else:
+            eye = cores[ii][np.newaxis, :, :]
+            eye_tens = Tensor(
+                eye, [rank_indices[ii - 1], indices_out[ii], indices_in[ii]]
+            )
+            tt_op.add_node(ii, eye_tens)
+        if ii == 1:
+            tt_op.add_edge(ii - 1, ii)
+        else:
+            tt_op.add_edge(ii - 1, ii)
+
+    return tt_op
+
+
+def ttop_rank2(
+    indices_in: List[Index],
+    indices_out: List[Index],
+    cores_r1: List[np.ndarray],
+    cores_r2: List[np.ndarray],
+    rank_name_prefix: str,
+) -> TensorNetwork:
+    """Rank 2 Sum of two ttops"""
+    assert len(indices_in) == len(indices_out)
+    dim = len(indices_in)
+    tt_op = TensorNetwork()
+
+    rank_indices = [Index(f"{rank_name_prefix}_r1", 2)]
+
+    core = np.zeros((indices_out[0].size, indices_in[0].size, 2))
+    core[:, :, 0] = cores_r1[0]
+    core[:, :, 1] = cores_r2[0]
+
+    a1_tens = Tensor(core, [indices_out[0], indices_in[0], rank_indices[0]])
+
+    tt_op.add_node(0, a1_tens)
+    for ii in range(1, dim):
+        rank_indices.append(Index(f"{rank_name_prefix}_r{ii + 1}", 2))
+        if ii < dim - 1:
+            core = np.zeros((2, indices_out[ii].size, indices_in[ii].size, 2))
+            core[0, :, :, 0] = cores_r1[ii]
+            core[1, :, :, 1] = cores_r2[ii]
+
+            ai_tens = Tensor(
+                core,
+                [
+                    rank_indices[ii - 1],
+                    indices_out[ii],
+                    indices_in[ii],
+                    rank_indices[ii],
+                ],
+            )
+            tt_op.add_node(ii, ai_tens)
+        else:
+            core = np.zeros((2, indices_out[ii].size, indices_in[ii].size))
+            core[0, :, :] = cores_r1[ii]
+            core[1, :, :] = cores_r2[ii]
+            ai_tens = Tensor(
+                core, [rank_indices[ii - 1], indices_out[ii], indices_in[ii]]
+            )
+            tt_op.add_node(ii, ai_tens)
+        tt_op.add_edge(ii - 1, ii)
+
+    return tt_op
+
+
+def ttop_sum(
+    indices_in: List[Index],
+    indices_out: List[Index],
+    cores: List[List[np.ndarray]],
+    rank_name_prefix: str,
+) -> TensorNetwork:
+    """Sum of ttops"""
+    assert len(indices_in) == len(indices_out)
+    dim = len(indices_in)
+    tt_op = TensorNetwork()
+
+    num_sum = len(cores)
+    rank_indices = [Index(f"{rank_name_prefix}_r1", num_sum)]
+
+    core = np.zeros((indices_out[0].size, indices_in[0].size, num_sum))
+    for ii in range(num_sum):
+        core[:, :, ii] = cores[ii][0]
+
+    a1_tens = Tensor(core, [indices_out[0], indices_in[0], rank_indices[0]])
+
+    tt_op.add_node(0, a1_tens)
+    for ii in range(1, dim):
+        rank_indices.append(Index(f"{rank_name_prefix}_r{ii + 1}", num_sum))
+        if ii < dim - 1:
+            core = np.zeros(
+                (num_sum, indices_out[ii].size, indices_in[ii].size, num_sum)
+            )
+            for jj in range(num_sum):
+                core[jj, :, :, jj] = cores[jj][ii]
+
+            ai_tens = Tensor(
+                core,
+                [
+                    rank_indices[ii - 1],
+                    indices_out[ii],
+                    indices_in[ii],
+                    rank_indices[ii],
+                ],
+            )
+            tt_op.add_node(ii, ai_tens)
+        else:
+            core = np.zeros(
+                (num_sum, indices_out[ii].size, indices_in[ii].size)
+            )
+            for jj in range(num_sum):
+                core[jj, :, :] = cores[jj][ii]
+
+            ai_tens = Tensor(
+                core, [rank_indices[ii - 1], indices_out[ii], indices_in[ii]]
+            )
+            tt_op.add_node(ii, ai_tens)
+        tt_op.add_edge(ii - 1, ii)
+
+    return tt_op
+
+
+def tt_sum(
+    tt_in: List[TensorNetwork],
+) -> TensorNetwork:
+    """Sum a set of tensor trains."""
+
+    tt_out = TensorNetwork()
+    dim = tt_in[0].dim()
+    for ii, node in enumerate(tt_in[0].network.nodes):
+        inds = tt_in[0].node_tensor(node).indices
+        core_values = [tt.value(node) for tt in tt_in]
+
+        if ii == 0:
+            new_value = np.hstack(core_values)
+            index_left = Index(inds[0].name, inds[0].size)
+            index_right = Index("rank_0", new_value.shape[1])
+            new_inds = [index_left, index_right]
+
+        elif ii == dim - 1:
+            new_value = np.vstack(core_values)
+            index_left = Index(f"rank_{ii - 1}", new_value.shape[0])
+            index_right = Index(inds[1].name, inds[1].size)
+            new_inds = [index_left, index_right]
+
+        else:
+            rank_left = np.sum([v.shape[0] for v in core_values])
+            rank_right = np.sum([v.shape[2] for v in core_values])
+            new_shape = (rank_left, core_values[0].shape[1], rank_right)
+            new_value = np.zeros(new_shape)
+            on_rank_left = 0
+            on_rank_right = 0
+            for core_value in core_values:
+                increment_left = core_value.shape[0]
+                increment_right = core_value.shape[2]
+                new_value[
+                    on_rank_left : on_rank_left + increment_left,
+                    :,
+                    on_rank_right : on_rank_right + increment_right,
+                ] = core_value
+                on_rank_left += increment_left
+                on_rank_right += increment_right
+
+            index_left = Index(f"rank_{ii - 1}", new_value.shape[0])
+            index_middle = Index(inds[1].name, inds[1].size)
+            index_right = Index(f"rank_{ii}", new_value.shape[2])
+            new_inds = [index_left, index_middle, index_right]
+
+        tt_out.add_node(ii, Tensor(new_value, new_inds))
+        if ii > 0:
+            tt_out.add_edge(ii - 1, ii)
+
+    return tt_out
+
+
+def ttop_sum_apply(
+    tt_in: TensorNetwork,
+    indices_in: List[Index],
+    indices_out: List[Index],
+    cores: List[List[Callable[[np.ndarray], np.ndarray]]],
+    rank_name_prefix: str,
+) -> TensorNetwork:
+    """Apply sum of rank1 tt ops to a tt."""
+
+    assert len(indices_in) == len(indices_out)
+    dim = len(indices_in)
+    tt_out = TensorNetwork()
+    num_sum = len(cores)
+
+    node_list = list(tt_in.network.nodes())
+    ii = 0
+    v = tt_in.value(node_list[ii])
+    rank_indices = [Index(f"{rank_name_prefix}_r1", num_sum * v.shape[1])]
+    core = np.zeros((indices_out[ii].size, v.shape[1] * num_sum))
+    indices = [indices_out[ii], rank_indices[ii]]
+    on_ind = 0
+    for jj in range(num_sum):
+        new_core = cores[jj][ii](v)
+        new_core = np.reshape(new_core, (core.shape[0], -1))
+        core[:, on_ind : on_ind + new_core.shape[1]] = new_core
+        on_ind += new_core.shape[1]
+    tt_out.add_node(ii, Tensor(core, indices))
+
+    for ii, node_tt in enumerate(node_list[1:], start=1):
+        v = tt_in.value(node_tt)
+
+        if ii < dim - 1:
+            rank_indices.append(
+                Index(f"{rank_name_prefix}_r{ii + 1}", v.shape[2] * num_sum)
+            )
+
+            core = np.zeros(
+                (
+                    num_sum * v.shape[0],
+                    indices_out[ii].size,
+                    num_sum * v.shape[2],
+                )
+            )
+
+            indices = [rank_indices[ii - 1], indices_out[ii], rank_indices[ii]]
+            on_ind1 = 0
+            on_ind2 = 0
+            for jj in range(num_sum):
+                # new_core = np.einsum('jk,mkp->mjp', cores[jj][ii], v)
+                new_core = cores[jj][ii](v)
+                shape = new_core.shape
+                new_core = np.reshape(new_core, (shape[0], shape[1], shape[2]))
+                n1 = new_core.shape[0]
+                n2 = new_core.shape[2]
+                core[on_ind1 : on_ind1 + n1, :, on_ind2 : on_ind2 + n2] = (
+                    new_core
+                )
+                on_ind1 += n1
+                on_ind2 += n2
+        else:
+            core = np.zeros((num_sum * v.shape[0], indices_out[ii].size))
+            indices = [rank_indices[ii - 1], indices_out[ii]]
+            on_ind = 0
+            for jj in range(num_sum):
+                new_core = cores[jj][ii](v)
+                core[on_ind : on_ind + new_core.shape[0], :] = new_core
+                on_ind += new_core.shape[0]
+
+        tt_out.add_node(ii, Tensor(core, indices))
+        tt_out.add_edge(ii - 1, ii)
+
+    return tt_out
+
+
+def ttop_apply(ttop: TensorNetwork, tt_in: TensorNetwork) -> TensorNetwork:
+    """Apply a ttop to a tt tensor.
+
+    # tt overwritten, same free_indices as before
+    """
+    tt = copy.deepcopy(tt_in)
+    dim = tt.dim()
+    for ii, (node_op, node_tt) in enumerate(
+        zip(ttop.network.nodes(), tt.network.nodes())
+    ):
+        op = ttop.value(node_op)
+        v = tt.value(node_tt)
+        # print(f"op shape: {node_op}", op.shape)
+        # print(f"v shape: {node_tt}", v.shape)
+        if ii == 0:
+            new_core = np.einsum("ijk,jl->ilk", op, v)
+            n = v.shape[0]
+            new_core = np.reshape(new_core, (n, -1))
+        elif ii < dim - 1:
+            new_core = np.einsum("ijkl,mkp->mijpl", op, v)
+            shape = new_core.shape
+            new_core = np.reshape(
+                new_core, (shape[0] * shape[1], shape[2], shape[3] * shape[4])
+            )
+        else:
+            new_core = np.einsum("ijk,mk->mij", op, v)
+            shape = new_core.shape
+            new_core = np.reshape(new_core, (shape[0] * shape[1], -1))
+
+        tt.set_node_tensor(
+            node_tt, tt.node_tensor(node_tt).update_val_size(new_core)
+        )
+
+    # print("After op = ")
+    # print(tt)
+    return tt
+
+
+@typing.no_type_check
+def gmres(  # pylint: disable=R0913,R0917
+    op,  # function from in to out
+    rhs: TensorNetwork,
+    x0: TensorNetwork,
+    eps: float = 1e-5,
+    round_eps: float = 1e-10,
+    maxiter: int = 100,
+) -> Tuple[TensorNetwork, float]:
+    """Perform GMRES.
+    VERY HACKY
+    """
+    # pylint: disable=C0103
+    # above disables the snake case complaints for variables like R
+    r0 = rhs + op(x0).scale(-1.0)
+    r0 = tt_svd_round(r0, round_eps)
+    beta = r0.norm()
+
+    r0.scale(1.0 / beta)
+    # print("r0 norm = ", r0.norm())
+
+    v = [r0]
+
+    # print("beta = ", beta)
+    # print("v0 norm = ", v[0].norm())
+
+    y = []
+    H = None
+    for jj in range(maxiter):
+        # print(f"jj = {jj}")
+        delta = round_eps
+
+        w = op(v[-1])
+        w = tt_svd_round(w, delta)
+
+        if H is None:
+            H = np.zeros((jj + 2, jj + 1))
+        else:
+            m, n = H.shape
+            newH = np.zeros((m + 1, n + 1))
+            newH[:m, :n] = H
+            H = newH
+        # print(f"H shape = {H.shape}")
+        # print("inner w = ", w.inner(v[0]))
+        # # print("w = ", w)
+        # warr = w.contract().value.flatten()
+        # varr = v[0].contract().value.flatten()
+        # warr_next = warr - np.dot(warr, varr) * varr
+        # print("check inner =", np.dot(warr, warr), w.inner(w))
+        # print("H should be = ", np.dot(warr, varr), w.inner(v[0]))
+        # # exit(1)
+        # print("in arrays = ", np.dot(varr, varr), np.dot(warr_next, varr))
+        for ii in range(jj + 1):
+            # print("ii = ", ii)
+            H[ii, jj] = w.inner(v[ii])
+            vv = copy.deepcopy(v[ii])
+            vv.scale(-H[ii, jj])
+            w = w + vv
+        # print("inner w = ", w.inner(v[0]), w.inner(w))
+        # print("H = ", H)
+        # exit(1)
+        w = tt_svd_round(w, round_eps)
+        H[jj + 1, jj] = w.norm()
+        v.append(w.scale(1.0 / H[jj + 1, jj]))
+        # for ii in range(jj+2):
+        #     print(f"inner {-1, ii} = ", v[-1].inner(v[ii]))
+
+        # exit(1)
+        # + 1e-14
+
+        # print(H)
+
+        e = np.zeros((H.shape[0]))
+        e[0] = beta
+        yy, resid, _, _ = np.linalg.lstsq(H, e)
+        y.append(yy)
+        # print(f"Iteration {jj}: resid = {resid}")
+        if np.abs(resid) < eps:
+            break
+
+        # if resid < eps:
+        #     break
+    # exit(1)
+    x = copy.deepcopy(x0)
+    # print("len y = ", len(y[-1]))
+    # print("len v = ", len(v))
+    for ii, (vv, yy) in enumerate(zip(v, y[-1])):
+        x = x + vv.scale(yy)
+    x = tt_svd_round(x, round_eps)
+    r0 = rhs + op(x).scale(-1.0)
+    resid = r0.norm()
+    # print("resid = ", resid)
+    # exit(1);
+    return x, resid
+
+
+def tt_to_ht(net: TensorNetwork) -> TensorNetwork:
+    """Convert a tensor train to a hierarchical tucker"""
+    ht = TensorNetwork()
+    ht.network = copy.deepcopy(net.network)
+
+    if len(net.network.nodes) == 1:
+        return ht
+
+    ends = net.end_nodes()
+    assert len(ends) == 2
+    path = nx.shortest_path(net.network, ends[0], ends[1])
+
+    def _merge_pair(
+        n1: NodeName, n2: NodeName, connecting_inds: List[Index]
+    ) -> NodeName:
+        contract_edges = ht.get_contraction_index(n1, n2)
+        rs = []
+        for n in (n1, n2):
+            indices = ht.node_tensor(n).indices
+            split_pos = [
+                indices.index(ind)
+                for ind in indices
+                if ind not in connecting_inds and ind not in contract_edges
+            ]
+            _, r = ht.qr(n, split_pos)
+            rs.append(r)
+        return ht.merge(rs[0], rs[1])
+
+    def _to_ht(
+        nodes: Sequence[NodeName], connecting_inds: List[Index]
+    ) -> NodeName:
+        if len(nodes) == 1:
+            return nodes[0]
+        if len(nodes) == 2:
+            return _merge_pair(nodes[0], nodes[1], connecting_inds)
+
+        mid = len(nodes) // 2
+        contract_ind = ht.get_contraction_index(nodes[mid - 1], nodes[mid])[0]
+        connecting_inds.append(contract_ind)
+        r1 = _to_ht(nodes[:mid], connecting_inds)
+        r2 = _to_ht(nodes[mid:], connecting_inds)
+        return _merge_pair(r1, r2, connecting_inds)
+
+    _to_ht(path, [])
+    return ht
+
+
+# -------------------------
+# Hierarchical Tucker (HT)
+# -------------------------
+
+
+def rand_ht(
+    indices: List[Index], rank: int, child_each_level: int = 2
+) -> TensorNetwork:
+    """Return a random hierarchical tucker."""
+    ht = TensorNetwork()
+
+    def build_child(
+        pid: int, node_id: int, sub_indices: List[Index], rank: int = 1
+    ) -> int:
+        if len(sub_indices) == 1:
+            ind = sub_indices[0]
+            val = np.random.random((rank, ind.size))
+            node = Tensor(
+                val,
+                [
+                    Index(f"R_{pid}_{node_id}", rank),
+                    ind,
+                ],
+            )
+            ht.add_node(f"G{node_id}", node)
+            return node_id + 1
+
+        # partition the indices into groups hierarchically,
+        # the leftovers are always in the last group
+        ind_group_num = child_each_level
+        ind_group_size = len(sub_indices) // ind_group_num
+        last_group_size = (
+            len(sub_indices) - (ind_group_num - 1) * ind_group_size
+        )
+        next_node_id = node_id + 1
+
+        if pid == -1:
+            val = np.random.random([rank] * child_each_level)
+            indices = []
+        else:
+            val = np.random.random([rank] * (child_each_level + 1))
+            indices = [Index(f"R_{pid}_{node_id}", rank)]
+
+        for i in range(ind_group_num - 1):
+            child_id = next_node_id
+            indices.append(Index(f"R_{node_id}_{child_id}", rank))
+            next_node_id = build_child(
+                node_id,
+                next_node_id,
+                sub_indices[i * ind_group_size : (i + 1) * ind_group_size],
+                rank,
+            )
+            ht.add_edge(f"G{child_id}", f"G{node_id}")
+
+        child_id = next_node_id
+        indices.append(Index(f"R_{node_id}_{child_id}", rank))
+        next_node_id = build_child(
+            node_id, next_node_id, sub_indices[-last_group_size:], rank
+        )
+        ht.add_edge(f"G{child_id}", f"G{node_id}")
+
+        ht.set_node_tensor(f"G{node_id}", Tensor(val, indices))
+
+        return next_node_id
+
+    build_child(-1, 0, indices, rank)
+    return ht
+
+
+def ht_root(ht: TensorNetwork) -> NodeName:
+    """Find the root of a hierarchical tucker: the node with exactly two
+    indices, neither of them free."""
+    free_inds = ht.free_indices()
+
+    n: NodeName
+    for n in ht.network.nodes:
+        node_inds = ht.node_tensor(n).indices
+        if len(node_inds) != 2:
+            continue
+
+        if any(ind in free_inds for ind in node_inds):
+            continue
+
+        return n
+
+    raise ValueError("Invalid hierarchical tucker, cannot find the root.")
+
+
+def _build_ht_layers(
+    free_inds: Sequence[Index],
+) -> List[List[Sequence[Index]]]:
+    """Build the binary dimension-tree layers from root to leaves."""
+    layer: List[Sequence[Index]] = [free_inds]
+    layers = [layer]
+    while not all(len(ind_group) <= 1 for ind_group in layers[-1]):
+        next_layer: List[Sequence[Index]] = []
+        for ind_group in layers[-1]:
+            if len(ind_group) > 1:
+                mid = len(ind_group) // 2
+                next_layer.append(ind_group[:mid])
+                next_layer.append(ind_group[mid:])
+            else:
+                next_layer.append([])
+        layers.append(next_layer)
+    return layers
+
+
+def ht_svd(
+    data: np.ndarray, free_inds: Sequence[Index], eps: float
+) -> TensorNetwork:
+    """Create a hierarchical tucker for the given data using SVD."""
+    ht = TensorNetwork()
+    delta = np.linalg.norm(data) * eps / np.sqrt(2 * len(data.shape) - 3)
+
+    ind_sizes = [ind.size for ind in free_inds]
+    assert data.shape == tuple(ind_sizes)
+
+    layers = _build_ht_layers(free_inds)
+
+    # from leaves to root
+    leaf_inds = list(free_inds)[:]
+    for level, layer in enumerate(layers[1:][::-1]):
+        i = 0
+        ind_cnt = 0
+        leaf_inds_copy = leaf_inds[:]
+        for i, inds in enumerate(layer):
+            if len(inds) == 0:
+                ind_cnt += 1
+                continue
+
+            if len(inds) == 1:
+                curr_data = np.moveaxis(data, ind_cnt, 0)
+                res = delta_svd(
+                    curr_data.reshape(inds[0].size, -1), delta=delta
+                )
+                assert res.u is not None
+                leaf_ind = Index(f"s_{level}_{i}", res.u.shape[1])
+                ht.add_node(
+                    f"n_{level}_{i}",
+                    Tensor(res.u, [inds[0], leaf_ind]),
+                )
+                data = np.einsum("a...,ab->...b", curr_data, res.u)
+                data = np.moveaxis(data, -1, i)
+
+                ind_pos = leaf_inds.index(inds[0])
+                leaf_inds.pop(ind_pos)
+                leaf_inds.insert(ind_pos, leaf_ind)
+                ind_cnt += 1
+            else:
+                # build transition nodes
+                # take two leaf inds and make the reshape
+                left_size = (
+                    leaf_inds[ind_cnt].size * leaf_inds[ind_cnt + 1].size
+                )
+                curr_data = np.moveaxis(data, [ind_cnt, ind_cnt + 1], [0, 1])
+                res = delta_svd(curr_data.reshape(left_size, -1), delta=delta)
+                assert res.u is not None
+                leaf_ind = Index(f"s_{level}_{i}", res.u.shape[1])
+                ht.add_node(
+                    f"n_{level}_{i}",
+                    Tensor(
+                        res.u.reshape(
+                            leaf_inds[ind_cnt].size,
+                            leaf_inds[ind_cnt + 1].size,
+                            res.u.shape[1],
+                        ),
+                        [
+                            leaf_inds[ind_cnt],
+                            leaf_inds[ind_cnt + 1],
+                            leaf_ind,
+                        ],
+                    ),
+                )
+                data = np.einsum(
+                    "a...,ab->...b",
+                    curr_data.reshape(left_size, *curr_data.shape[2:]),
+                    res.u,
+                )
+                data = np.moveaxis(data, -1, i)
+
+                idx0 = leaf_inds_copy.index(leaf_inds[ind_cnt])
+                idx1 = leaf_inds_copy.index(leaf_inds[ind_cnt + 1])
+                ht.add_edge(f"n_{level}_{i}", f"n_{level - 1}_{idx0}")
+                ht.add_edge(f"n_{level}_{i}", f"n_{level - 1}_{idx1}")
+
+                leaf_inds.pop(ind_cnt)
+                leaf_inds.pop(ind_cnt)
+                leaf_inds.insert(ind_cnt, leaf_ind)
+
+                ind_cnt += 1
+
+    ht.add_node("root", Tensor(data, [leaf_inds[0], leaf_inds[1]]))
+
+    if len(layers) > 1:
+        ht.add_edge("root", f"n_{len(layers) - 2}_0")
+        ht.add_edge("root", f"n_{len(layers) - 2}_1")
+
+    return ht
+
+
+# --------------------------
+# Random Trees
+# --------------------------
+
+
+def rand_tree(indices: List[Index], ranks: List[int]) -> TensorNetwork:
+    """Return a random tensor tree."""
+
+    ndims = len(indices)
+    num_of_nodes = len(ranks) + 1
+    assert ndims <= num_of_nodes  # In a tree, #edges = #nodes - 1
+
+    # sample a topology from given ranks
+    np.random.shuffle(ranks)
+    # sample nodes for free indices
+    nodes_with_free = np.random.choice(
+        num_of_nodes, len(indices), replace=False
+    )
+    # assign edges between nodes
+    parent: Dict[int, Tuple[NodeName, int]] = {}
+    nodes = list(range(num_of_nodes))
+    while len(nodes) > 1:
+        node = np.random.choice(nodes, 1)[0]
+        nodes.remove(node)
+
+        p = np.random.choice(num_of_nodes, 1)[0]
+        while p == node:
+            p = np.random.choice(num_of_nodes, 1)[0]
+        # print("suggesting parent of", node, "as", p)
+        # check for cycles
+        ancestor = p
+        while ancestor in parent:
+            # print("ancestor of", ancestor)
+            ancestor, _ = parent[ancestor]
+            if ancestor == node:
+                p = np.random.choice(num_of_nodes, 1)[0]
+                while p == node:
+                    p = np.random.choice(num_of_nodes, 1)[0]
+                ancestor = p
+
+        # print("finalizing parent of", node, "as", p)
+        parent[node] = (p, len(nodes) - 1)
+
+    tree = TensorNetwork()
+
+    for i in range(num_of_nodes):
+        i_ranks = []
+        i_dims = []
+        if i in nodes_with_free:
+            idx = list(nodes_with_free).index(i)
+            dim = indices[idx].size
+            i_ranks.append(indices[idx])
+            i_dims.append(dim)
+
+        if i in parent:
+            _, ridx = parent[i]
+            dim = ranks[ridx]
+            i_ranks.append(Index(f"r_{ridx}", dim))
+            i_dims.append(dim)
+
+        for p, ridx in parent.values():
+            if p == i:
+                dim = ranks[ridx]
+                i_ranks.append(Index(f"r_{ridx}", dim))
+                i_dims.append(dim)
+
+        value = np.random.randn(*i_dims)
+        tensor = Tensor(value, i_ranks)
+        tree.add_node(i, tensor)
+
+    for i, (p, _) in parent.items():
+        # print("edge between", i, "and", p)
+        tree.add_edge(i, p)
+
+    return tree
+
+
+def rand_tucker(indices: List[Index], rank: int = 1) -> "TensorNetwork":
+    """Return a random tucker with the given indices."""
+
+    tucker = TensorNetwork()
+    root_val = np.random.random([rank] * len(indices))
+    root_inds = [Index(f"s_{i}", rank) for i in range(len(indices))]
+    tucker.add_node("root", Tensor(root_val, root_inds))
+    for i, ind in enumerate(indices):
+        tensor_val = np.random.random((ind.size, rank))
+        tensor_inds = [ind, root_inds[i]]
+        tucker.add_node(f"G{i}", Tensor(tensor_val, tensor_inds))
+        tucker.add_edge(f"G{i}", "root")
+
+    return tucker

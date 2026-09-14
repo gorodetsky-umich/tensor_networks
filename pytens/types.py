@@ -3,7 +3,16 @@
 import logging
 import itertools
 import dataclasses
-from typing import Union, Sequence, Self, Optional, Tuple, List
+from typing import (
+    Union,
+    Sequence,
+    Self,
+    Optional,
+    Tuple,
+    List,
+    Dict,
+    FrozenSet,
+)
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -37,6 +46,10 @@ class Index:
     name: Union[str, int]
     size: int
     space: Sequence[float] = tuple([])
+
+    def __deepcopy__(self, memo: Dict[int, object]) -> "Index":
+        # frozen, so a copy can never diverge from the original
+        return self
 
     def with_new_size(self, new_size: int) -> "Index":
         """Create a new index with same name but new size"""
@@ -394,15 +407,6 @@ class DimTreeNode:
 
         raise ValueError("No sibling for the given node")
 
-    def is_ancestor(self, other: "DimTreeNode") -> bool:
-        """Return true if the current node is an ancestor of other"""
-        while len(other.up_info.nodes) > 0:
-            other = other.up_info.nodes[0]
-            if other.node == self.node:
-                return True
-
-        return False
-
 
 class IndexMerge(pydantic.BaseModel):
     """An index merge request and response.
@@ -526,6 +530,7 @@ class PartitionStatus(Enum):
     EXIST = auto()
 
 
+@dataclass
 class PartitionResult:
     """Result of checking whether a set of indices forms a valid partition.
 
@@ -542,6 +547,38 @@ class PartitionResult:
     lca_indices: List[Index]
 
 
+@dataclass
+class SubtreeViews:
+    """What lies behind each directed edge of a tree, for one target set.
+
+    Built by ``TensorNetwork._subtree_views``. The tree is rooted at
+    ``root``; ``parent`` maps every node to its parent in that rooting and
+    ``down_desired`` / ``down_free`` describe the subtree below each node.
+    ``existing`` is set when some edge already separates exactly the
+    targets: the endpoint on the target side, the bond index, and the set
+    of nodes on the target side.
+    """
+
+    desired: FrozenSet[Index]
+    root: NodeName
+    parent: Dict[NodeName, Optional[NodeName]]
+    down_desired: Dict[NodeName, FrozenSet[Index]]
+    down_free: Dict[NodeName, int]
+    existing: Optional[Tuple[NodeName, Index, FrozenSet[NodeName]]] = None
+
+    def behind(self, a: NodeName, b: NodeName) -> Tuple[FrozenSet[Index], int]:
+        """Target indices and number of other free indices in the subtree
+        that hangs off `b` when seen from `a`."""
+        if self.parent[b] == a:
+            got = self.down_desired[b]
+            n_free = self.down_free[b]
+        else:
+            got = self.desired - self.down_desired[a]
+            n_free = self.down_free[self.root] - self.down_free[a]
+
+        return got, n_free - len(got)
+
+
 class SVDAlgorithm(Enum):
     """Strategy for computing singular values of a tensor partition.
 
@@ -554,21 +591,6 @@ class SVDAlgorithm(Enum):
 
     MERGE = auto()
     CROSS = auto()
-
-
-@dataclass
-class NodeIndexPair:
-    """A network node paired with an optional index it carries.
-
-    Attributes:
-        node: Name of the tensor-network node.
-        ind: An index associated with ``node``, or ``None`` if the pairing
-            is node-only (e.g. when referring to the node without specifying
-            which of its indices is of interest).
-    """
-
-    node: NodeName
-    ind: Optional[Index] = None
 
 
 @dataclass

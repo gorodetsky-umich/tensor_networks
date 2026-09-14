@@ -7,8 +7,7 @@ import time
 import numpy as np
 import json
 
-from pytens.algs import TreeNetwork, Index, Tensor
-from pytens.tt import TensorTrain
+from pytens.algs import TensorNetwork, Index, Tensor, rand_tt
 from pytens.search.configuration import SearchAlgo, SearchConfig, InitStructType
 from pytens.search.state import ISplit, OSplit, SearchState
 from pytens.search.search import BlackBoxTopDownSearchEngine, SearchEngine, TopDownSearchEngine, WhiteBoxTopDownSearchEngine
@@ -105,7 +104,7 @@ class TestAction(unittest.TestCase):
         data = np.random.randn(3, 4, 5, 6)
         indices = [Index("i", 3), Index("j", 4), Index("k", 5), Index("l", 6)]
         tensor = Tensor(data, indices)
-        net = TreeNetwork()
+        net = TensorNetwork()
         net.add_node("G", tensor)
 
         ac = ISplit("G", [0, 1])
@@ -126,7 +125,7 @@ class TestAction(unittest.TestCase):
         data = np.random.randn(3, 4, 5, 6)
         indices = [Index("i", 3), Index("j", 4), Index("k", 5), Index("l", 6)]
         tensor = Tensor(data, indices)
-        net = TreeNetwork()
+        net = TensorNetwork()
         net.add_node("G", tensor)
 
         ac = OSplit([Index("i", 3), Index("k", 5)])
@@ -151,7 +150,7 @@ class TestState(unittest.TestCase):
         data = np.random.randn(3, 4, 5)
         indices = [Index("i", 3), Index("j", 4), Index("k", 5)]
         tensor = Tensor(data, indices)
-        net = TreeNetwork()
+        net = TensorNetwork()
         net.add_node("G", tensor)
         init_state = SearchState(net, net.norm() * 0.1)
 
@@ -206,7 +205,7 @@ class TestSearch(unittest.TestCase):
         data = np.random.randn(3, 4, 5)
         indices = [Index("i", 3), Index("j", 4), Index("k", 5)]
         tensor = Tensor(data, indices)
-        self.net = TreeNetwork()
+        self.net = TensorNetwork()
         self.net.add_node("G", tensor)
 
         return super().setUp()
@@ -407,7 +406,7 @@ class TestTopDownSearch(unittest.TestCase):
         """White-box search starting from a random TT."""
         n = 8
         indices = [Index(f"I{i}", n, range(n)) for i in range(5)]
-        tt = TensorTrain.rand_tt(indices, [3, 3, 3, 3])
+        tt = rand_tt(indices, [3, 3, 3, 3])
 
         config = SearchConfig()
         config.engine.eps = 1e-1

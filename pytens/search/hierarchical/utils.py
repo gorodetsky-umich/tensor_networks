@@ -1,6 +1,6 @@
 """Utility functions for hierarchical search"""
 
-from typing import Any, Dict, List, Literal, Sequence, Tuple, Set
+from typing import Any, Dict, List, Sequence, Tuple, Set
 from collections import defaultdict
 
 import numpy as np
@@ -50,29 +50,9 @@ class DisjointSet:
             groups[root].append(x)
 
         for k in groups:
-            groups[k] = sorted(groups[k])
+            groups[k] = sorted(groups[k], key=str)
 
         return groups
-
-
-def corr(
-    corr_res: np.ndarray,
-    agg: Literal["mean", "det", "norm", "sval"],
-) -> float:
-    """Compute the correlation over the random samples of the given data."""
-    if agg == "mean":
-        return float(-np.mean(np.abs(corr_res)))
-
-    if agg == "det":
-        return float(np.linalg.det(corr_res))
-
-    if agg == "norm":
-        return float(np.linalg.norm(corr_res))
-
-    if agg == "sval":
-        return float(np.linalg.svdvals(corr_res)[0])
-
-    raise ValueError("unknown aggregation method")
 
 
 def split_func(

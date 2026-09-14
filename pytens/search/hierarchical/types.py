@@ -6,7 +6,7 @@ import copy
 from pytens.search.state import SearchState
 from pytens.search.types import Action
 from pytens.search.utils import SearchResult, SearchStats
-from pytens.algs import TreeNetwork
+from pytens.algs import TensorNetwork
 from pytens.types import Index, IndexOp, IndexMerge, IndexSplit
 
 
@@ -17,7 +17,7 @@ class HSearchState:
         self,
         free_indices: List[Index],
         reshape_history: List[IndexOp],
-        network: TreeNetwork,
+        network: TensorNetwork,
         unused_delta: float = 0,
     ):
         self.free_indices = free_indices
@@ -99,7 +99,10 @@ class SubnetResult:
     """Result for optimizing a subnet."""
 
     def __init__(
-        self, network: TreeNetwork, subnet: TreeNetwork, state: HSearchState
+        self,
+        network: TensorNetwork,
+        subnet: TensorNetwork,
+        state: HSearchState,
     ):
         self.subnet_state = state
         self.subnet = subnet
