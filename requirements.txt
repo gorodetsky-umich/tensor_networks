@@ -10,7 +10,7 @@ isort==5.13.2
 kiwisolver==1.4.5
 matplotlib==3.9.2
 mccabe==0.7.0
-mypy==1.11.2
+mypy==1.14.1
 mypy-extensions==1.0.0
 networkx==3.3
 numpy==2.1.0
