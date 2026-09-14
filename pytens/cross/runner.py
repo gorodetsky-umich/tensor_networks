@@ -5,9 +5,9 @@ from typing import Optional
 
 import numpy as np
 
-from pytens.algs import TensorNetwork
+from pytens.algs import TensorNetwork, rand_ht, rand_tt, rand_tucker
 from pytens.cross.cross import CrossApproximation, CrossConfig
-from pytens.cross.funcs import TensorFunc
+from pytens.cross.func_interface import TensorFunc
 
 
 class CrossRunner:
@@ -38,7 +38,7 @@ class TTCrossRunner(CrossRunner):
         validation: Optional[np.ndarray] = None,
     ) -> TensorNetwork:
         indices = f.indices[:]
-        net = TensorNetwork.rand_tt(indices, [1] * len(indices))
+        net = rand_tt(indices, [1] * (len(indices) - 1))
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(
@@ -57,7 +57,7 @@ class HTCrossRunner(CrossRunner):
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
     ) -> TensorNetwork:
-        net = TensorNetwork.rand_ht(f.indices, 1)
+        net = rand_ht(f.indices, 1)
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(
@@ -76,7 +76,7 @@ class TuckerCrossRunner(CrossRunner):
         kickrank: int = 2,
         validation: Optional[np.ndarray] = None,
     ) -> TensorNetwork:
-        tucker = TensorNetwork.rand_tucker(f.indices)
+        tucker = rand_tucker(f.indices)
         cross_config = CrossConfig(kickrank=kickrank)
         cross_engine = CrossApproximation(f, cross_config)
         cross_engine.cross(tucker, "root", validation, eps=eps)

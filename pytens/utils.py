@@ -1,7 +1,8 @@
 """Some utility functions."""
 
-from typing import Optional
+from typing import Optional, List
 from dataclasses import dataclass
+
 import numpy as np
 
 
@@ -9,15 +10,18 @@ import numpy as np
 class TruncSVD:
     """Store a truncated SVD."""
 
-    u: np.ndarray
+    u: Optional[np.ndarray]
     s: np.ndarray
-    v: np.ndarray
+    v: Optional[np.ndarray]
     remaining_delta: float
     delta: Optional[float] = None
 
 
 def delta_svd(
-    data: np.ndarray, delta: float, with_normalizing: bool = False
+    data: np.ndarray,
+    delta: float,
+    with_normalizing: bool = False,
+    compute_uv: bool = True,
 ) -> TruncSVD:
     """
     Performs delta-truncated SVD similar to that of the `TTSVD`_ algorithm.
@@ -52,20 +56,24 @@ def delta_svd(
 
     # delta = (eps / ((dimensions - 1) ** (0.5))) * dataNorm
 
-    m, n = data.shape
-    if m > 10 * n:  # tall and skinny
-        # print("Tall and skinny ")
-        q, r = np.linalg.qr(data)
-        u, s, v = np.linalg.svd(r)
-        u = q @ u
-    else:
-        try:
-            u, s, v = np.linalg.svd(data, False, True)
-        except np.linalg.LinAlgError:
-            # print("Numpy svd did not converge, using qr+svd")
+    if compute_uv:
+        m, n = data.shape
+        if m > 10 * n:  # tall and skinny
+            # print("Tall and skinny ")
             q, r = np.linalg.qr(data)
             u, s, v = np.linalg.svd(r)
             u = q @ u
+        else:
+            try:
+                u, s, v = np.linalg.svd(data, False, True)
+            except np.linalg.LinAlgError:
+                # print("Numpy svd did not converge, using qr+svd")
+                q, r = np.linalg.qr(data)
+                u, s, v = np.linalg.svd(r)
+                u = q @ u
+    else:
+        s = np.linalg.svdvals(data)
+        u, v = np.empty(0), np.empty(0)  # put to get rid of the type error
 
     if with_normalizing:
         norm = np.sqrt(np.sum(s**2))
@@ -83,18 +91,44 @@ def delta_svd(
 
     truncation_rank = max(len(s) - len(truncpost), 1)
     used_delta = np.cumsum(slist)[truncpost[-1]] if len(truncpost) > 0 else 0.0
-    if with_normalizing:
-        return TruncSVD(
-            u[:, :truncation_rank],
-            s[:truncation_rank],
-            v[:truncation_rank, :],
-            float(np.sqrt(delta**2 - used_delta)),
-            delta,
-        )
     return TruncSVD(
-        u[:, :truncation_rank],
+        u[:, :truncation_rank] if compute_uv else None,
         s[:truncation_rank],
-        v[:truncation_rank, :],
+        v[:truncation_rank, :] if compute_uv else None,
         float(np.sqrt(delta**2 - used_delta)),
-        None,
+        delta if with_normalizing else None,
     )
+
+
+def flatten_lists(xss: List) -> List:
+    """Flatten nested lists."""
+
+    if isinstance(xss, list):
+        result = []
+        for xs in xss:
+            if isinstance(xs, list):
+                result.extend(flatten_lists(xs))
+            else:
+                result.append(xs)
+
+        return result
+
+    return xss
+
+
+def num_ht_ranks(num_inds: int, num_branches: int = 2) -> int:
+    """Number of internals ranks in a binary HT."""
+    if num_inds == 1:
+        return 1
+
+    remaining = num_inds
+    res = num_branches
+    branch_size = num_inds // num_branches
+    for i in range(num_branches):
+        if i != num_branches - 1:
+            res += num_ht_ranks(branch_size, num_branches)
+            remaining -= branch_size
+        else:
+            res += num_ht_ranks(remaining, num_branches)
+
+    return res

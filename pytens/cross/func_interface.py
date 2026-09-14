@@ -1,12 +1,11 @@
 """Test functions for cross approximation"""
 
 from abc import abstractmethod
-from typing import List
+from typing import List, Set
 
 import numpy as np
 
 from pytens.types import Index
-import pytens.algs as pt
 
 
 class TensorFunc:
@@ -14,6 +13,13 @@ class TensorFunc:
 
     The derived classes should implement the ``run`` method,
     which evalutes the function at vectorized arguments.
+
+    Attributes:
+        d: Number of dimensions (equal to ``len(indices)``).
+        indices: One ``Index`` per dimension, each carrying the discrete grid
+            points via ``space`` and the grid size via ``size``.
+        name: Human-readable identifier used for logging and file names.
+            Defaults to ``"_func_"``; subclasses should override it.
     """
 
     def __init__(self, indices: List[Index]):
@@ -25,7 +31,7 @@ class TensorFunc:
         """Convert vectorized integer indices to vectorized function arguments.
 
         This maps each discrete index (i_k) to its associated argument value
-        using ``self.indices[k].value_choices``.
+        using ``self.indices[k].space``.
 
         Parameters
         ----------
@@ -41,7 +47,7 @@ class TensorFunc:
         indices = indices.astype(int)
         args = np.empty_like(indices, dtype=float)
         for i, ind in enumerate(self.indices):
-            args[:, i] = np.array(ind.value_choices)[indices[:, i]]
+            args[:, i] = np.array(ind.space)[indices[:, i]]
 
         return args
 
@@ -91,7 +97,7 @@ class TensorFunc:
         return self.indices
 
     @abstractmethod
-    def run(self, args: np.ndarray):
+    def run(self, args: np.ndarray) -> np.ndarray:
         """Evaluate the function for a batch of vectorized arguments.
 
         Implementations should accept a 2D array of shape ``(n, d)`` and return
@@ -99,7 +105,8 @@ class TensorFunc:
         """
         raise NotImplementedError
 
-    def __call__(self, indices: np.ndarray):
+    def __call__(self, indices: np.ndarray) -> np.ndarray:
+        # print("recording", indices.shape[0])
         args = self.index_to_args(indices)
         return self.run(args)
 
@@ -113,11 +120,28 @@ class CachedFunc(TensorFunc):
 
     def __init__(self, indices: List[Index]):
         super().__init__(indices)
-        self.calls = np.empty((0, self.d))
+        # 64-bit hashes of the unique rows evaluated so far
+        self.calls: Set[int] = set()
+        rng = np.random.default_rng(0)
+        self._row_hash_mults = rng.integers(
+            1, np.iinfo(np.uint64).max, size=self.d, dtype=np.uint64
+        ) | np.uint64(1)
+
+    def _hash_rows(self, args: np.ndarray) -> np.ndarray:
+        """One 64-bit hash per row of `args` (splitmix64 mixing per entry,
+        then a random linear combination across the columns)."""
+        x = np.ascontiguousarray(args, dtype=np.float64).view(np.uint64)
+        with np.errstate(over="ignore"):
+            x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+            x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+            x = x ^ (x >> np.uint64(31))
+            return np.asarray(
+                (x * self._row_hash_mults).sum(axis=1, dtype=np.uint64)
+            )
 
     def num_calls(self) -> int:
         """Return the number of unique calls observed so far."""
-        return len(np.unique(self.calls, axis=0))
+        return len(self.calls)
 
     @abstractmethod
     def _run(self, args: np.ndarray) -> np.ndarray:
@@ -129,31 +153,5 @@ class CachedFunc(TensorFunc):
         raise NotImplementedError
 
     def run(self, args: np.ndarray) -> np.ndarray:
-        self.calls = np.concatenate([args, self.calls])
+        self.calls.update(self._hash_rows(args).tolist())
         return self._run(args)
-
-
-class FuncData(CachedFunc):
-    """Numpy arrays as cross approximation input."""
-
-    def __init__(self, indices: List[Index], data: np.ndarray):
-        super().__init__(indices)
-        self.data = data
-
-    def _run(self, args: np.ndarray) -> np.ndarray:
-        return self.data[*args.astype(int).T]
-
-
-class FuncTensorNetwork(CachedFunc):
-    """Tensor networks as cross approximation input."""
-
-    def __init__(self, indices: List[Index], net: "pt.TensorNetwork"):
-        super().__init__(indices)
-        self.net = net
-
-    def _run(self, args: np.ndarray) -> np.ndarray:
-        return self.net.evaluate(self.indices, args.astype(int))
-
-    def cost(self) -> int:
-        """Return the evaluation cost of the underlying tensor network."""
-        return self.net.cost()
