@@ -510,10 +510,11 @@ class SearchState:
                 # np.sqrt(self.curr_delta ** 2 - new_err ** 2)
             else:
                 # we allow specify the node values
-                logger.debug(
-                    "before svd, the network norm is %s",
-                    np.square(new_net.norm()),
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "before svd, the network norm is %s",
+                        np.square(new_net.norm()),
+                    )
                 res = action.svd(new_net, svd)
                 if res is None:  # no-op
                     return self

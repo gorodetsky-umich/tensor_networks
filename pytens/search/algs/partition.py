@@ -2,6 +2,7 @@
 
 import atexit
 import copy
+import math
 import heapq
 import logging
 import random
@@ -216,6 +217,18 @@ class PartitionSearch:
         res = SearchResult()
         best_state = st
         unused_delta = 0.0
+        if self.config.synthesizer.replay_from is not None:
+            # replaying: the structure is fixed, a single rounding sweep
+            # (from the node holding the first free index) truncates the
+            # bonds the replayed splits left untouched
+            root = st.network.node_by_free_index(
+                st.network.free_indices()[0].name
+            )
+            _, unused_delta = st.network.round(root, atol=st.curr_delta)
+            res.best_state = st
+            res.unused_delta = unused_delta
+            return res
+
         for n in st.network.network.nodes:
             tmp_st = copy.deepcopy(st)
             _, unused_delta = tmp_st.network.round(n, atol=st.curr_delta)
@@ -232,6 +245,7 @@ class PartitionSearch:
         actions: Sequence[Action],
         first_iter: bool = False,
     ) -> SearchResult:
+        replaying = self.config.synthesizer.replay_from is not None
         if not actions:
             return self._round(st)
 
@@ -239,7 +253,9 @@ class PartitionSearch:
         assert isinstance(ac, OSplit)
         # support ISplit later
         conflict_ac = get_conflicts(ac, to_splits(st.network))
-        st = copy.deepcopy(st)
+        if conflict_ac is not None:
+            # merges below modify the network in place
+            st = copy.deepcopy(st)
         while conflict_ac is not None:
             logger.debug("reverting the action %s", conflict_ac)
             assert conflict_ac.reverse_edge is not None
@@ -261,12 +277,11 @@ class PartitionSearch:
         if new_st is None:
             raise RuntimeError("cannot replay the given actions")
 
-        # if self.config.synthesizer.replay_from is None:
-        #     new_st.network.compress()
-        timestamp = time.time() - self.stats.search_start
-        self.stats.costs.append((timestamp, new_st.network.cost()))
-        ukey = new_st.network.canonical_structure()
-        self.stats.incr_unique(ukey)
+        if not replaying:
+            timestamp = time.time() - self.stats.search_start
+            self.stats.costs.append((timestamp, new_st.network.cost()))
+            ukey = new_st.network.canonical_structure()
+            self.stats.incr_unique(ukey)
 
         return self._replay_impl(new_st, actions[1:])
 
@@ -394,6 +409,21 @@ class PartitionSearch:
             self._replay_from = self._random_actions(
                 empty_net, context.merge_ops, context.exclusions
             )
+
+        if self.config.synthesizer.replay_from is not None:
+            # replaying recorded splits: no rank search, the error budget
+            # is distributed equally over the splits
+            self.stats.search_start = time.time()
+            acs = self._replay_from or []
+            split_delta = self._delta / math.sqrt(max(len(acs), 1))
+            for ac in acs:
+                ac.target_size = None
+                ac.delta = split_delta
+            search_res = self.replay(acs)
+            result = result.update_best_state(search_res)
+            self.stats.search_end = time.time()
+            result.stats = self.stats
+            return result
 
         preprocess_start = time.time()
         self.preprocess(context.merge_ops, context.exclusions)

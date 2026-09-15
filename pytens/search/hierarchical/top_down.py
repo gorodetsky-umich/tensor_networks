@@ -367,7 +367,16 @@ class TopDownSearch:
         # best_st = init_st
         best_net = None
         delta = st.unused_delta
-        for n in st.network.network.nodes:
+        nodes = list(st.network.network.nodes)
+        if self.config.synthesizer.replay_from is not None:
+            # replaying: the structure is fixed, round once from the node
+            # holding the first free index instead of trying every node
+            nodes = [
+                st.network.node_by_free_index(
+                    st.network.free_indices()[0].name
+                )
+            ]
+        for n in nodes:
             network = copy.deepcopy(st.network)
             try:
                 logger.debug("unused delta: %s", delta)
@@ -489,11 +498,12 @@ class TopDownSearch:
         logger.debug("reverse name mapping is %s", reverse_map)
         before_split = st.network.free_indices()
         logger.debug("searching better structures for %s", st.network)
-        logger.debug(
-            "network norm: %s, allowed compression: %s",
-            st.network.norm() ** 2,
-            level_delta**2,
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "network norm: %s, allowed compression: %s",
+                st.network.norm() ** 2,
+                level_delta**2,
+            )
         if len(st.network.network.nodes) > self.config.sweep.subnet_size:
             return self._search_via_sweep(st, level_delta, reverse_map)
 
