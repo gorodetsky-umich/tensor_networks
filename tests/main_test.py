@@ -1694,5 +1694,143 @@ class TestGeneralOps(unittest.TestCase):
         )
 
 
+class TestStructureAgnosticOps(unittest.TestCase):
+    """Tests for separable_like, apply_index_ops and integrate_to_dense on
+    trees with and without reshaped indices."""
+
+    def setUp(self):
+        np.random.seed(7)
+        self.names = ["x", "theta", "phi"]
+        self.indices = [Index("x", 12), Index("theta", 5), Index("phi", 4)]
+        self.factors = {
+            "x": np.random.rand(12),
+            "theta": np.random.rand(5),
+            "phi": np.random.rand(4),
+        }
+        self.expected = np.einsum(
+            "i,j,k->ijk",
+            self.factors["x"],
+            self.factors["theta"],
+            self.factors["phi"],
+        )
+        # x is split into x_0 (3) x x_1 (4) on different leaves
+        self.x0, self.x1 = Index("x_0", 3), Index("x_1", 4)
+        self.split = IndexSplit(
+            index=Index("x", 12), shape=[3, 4], result=[self.x0, self.x1]
+        )
+
+    def _dense(self, net, layout=None):
+        if layout is None:
+            layout = IndexLayout.identity(self.indices)
+        return layout.original_order(net.contract(), self.names)
+
+    def _check_ops(self, ref, layout=None):
+        term = separable_like(ref, self.factors, layout)
+        # same structure as the reference
+        self.assertEqual(list(term.network.nodes), list(ref.network.nodes))
+        self.assertEqual(set(term.network.edges), set(ref.network.edges))
+        for n in ref.network.nodes:
+            self.assertEqual(
+                [i.name for i in term.node_tensor(n).indices],
+                [i.name for i in ref.node_tensor(n).indices],
+            )
+        dense_ref = self._dense(ref, layout)
+        self.assertTrue(np.allclose(self._dense(term, layout), self.expected))
+        self.assertTrue(
+            np.allclose(self._dense(ref + term, layout), dense_ref + self.expected)
+        )
+        self.assertTrue(
+            np.allclose(self._dense(ref * term, layout), dense_ref * self.expected)
+        )
+        const = constant_like(ref, 2.5, layout)
+        self.assertTrue(np.allclose(self._dense(const, layout), 2.5))
+
+        weights = {"theta": np.random.rand(5), "phi": np.random.rand(4)}
+        integral = integrate_to_dense(ref, weights, layout)
+        expected = np.einsum(
+            "ijk,j,k->i", dense_ref, weights["theta"], weights["phi"]
+        )
+        self.assertTrue(np.allclose(integral, expected))
+
+    def test_tt_reference(self):
+        tt = rand_tt(self.indices, [3, 2])
+        self._check_ops(tt)
+        term = separable_like(tt, self.factors)
+        self.assertEqual(term.ranks(), [1, 1])
+        recovered = separable_factors(term)
+        for name in self.names:
+            self.assertTrue(np.allclose(recovered[name], self.factors[name]))
+
+    def test_ht_reference(self):
+        ht = rand_ht(self.indices, 3)
+        self._check_ops(ht)
+        self.assertEqual(separable_like(ht, self.factors).ranks(), [1] * 4)
+
+    def test_split_on_one_leaf(self):
+        ht = rand_ht(self.indices, 3)
+        ht.split_index(self.split)
+        layout = IndexLayout.from_history(self.indices, [self.split])
+        self.assertEqual(layout.orig_to_atoms["x"], [3, 4])
+        self._check_ops(ht, layout)
+
+    def test_split_on_two_leaves(self):
+        ht = rand_ht([self.x0, Index("theta", 5), self.x1, Index("phi", 4)], 2)
+        layout = IndexLayout.from_history(self.indices, [self.split])
+        self._check_ops(ht, layout)
+        # the factor of x is carried along the path between x_0 and x_1
+        term = separable_like(ht, self.factors, layout)
+        self.assertEqual(max(term.ranks()), 3)
+
+    def test_merge_and_split_of_merged(self):
+        r, s = Index("r", 2), Index("s", 3)
+        theta, phi = self.indices[1], self.indices[2]
+        net = TensorNetwork()
+        net.add_node("A", Tensor(np.random.rand(3, 2), [self.x0, r]))
+        net.add_node("B", Tensor(np.random.rand(2, 4, 5, 3), [r, self.x1, theta, s]))
+        net.add_node("C", Tensor(np.random.rand(3, 4), [s, phi]))
+        net.add_edge("A", "B")
+        net.add_edge("B", "C")
+        merge = IndexMerge(indices=[self.x1, theta], result=Index("x_1_theta", 20))
+        net.merge_index(merge)
+        layout = IndexLayout.from_history(self.indices, [self.split, merge])
+        self.assertEqual(layout.free_to_atoms["x_1_theta"], [4, 1])
+        self._check_ops(net, layout)
+
+        split = IndexSplit(index=Index("x_1_theta", 20), shape=[2, 10])
+        net.split_index(split)
+        layout = IndexLayout.from_history(
+            self.indices, [self.split, merge, split]
+        )
+        self._check_ops(net, layout)
+
+        bad = IndexSplit(
+            index=Index("x_1_theta", 20),
+            shape=[5, 4],
+            result=[Index("p", 5), Index("q", 4)],
+        )
+        with self.assertRaises(ValueError):
+            IndexLayout.from_history(self.indices, [self.split, merge, bad])
+
+    def test_apply_index_ops(self):
+        ht = rand_ht(self.indices, 3)
+        dense = self._dense(ht)
+        mat_x = np.random.rand(7, 12)
+        mat_theta = np.diag(np.random.rand(5))
+        out = apply_index_ops(
+            ht, {"x": lambda v: mat_x @ v, "theta": lambda v: mat_theta @ v}
+        )
+        expected = np.einsum("ai,bj,ijk->abk", mat_x, mat_theta, dense)
+        result = out.contract().permute_by_name(self.names).value
+        self.assertTrue(np.allclose(result, expected))
+        self.assertIn(Index("x", 7), out.free_indices())
+
+        out = apply_index_ops_sum(
+            ht, [{"x": lambda v: mat_x @ v}, {"x": lambda v: 2 * mat_x @ v}], 0.5
+        )
+        expected = 1.5 * np.einsum("ai,ijk->ajk", mat_x, dense)
+        result = out.contract().permute_by_name(self.names).value
+        self.assertTrue(np.allclose(result, expected))
+
+
 if __name__ == "__main__":
     unittest.main()

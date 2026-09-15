@@ -4,6 +4,7 @@ import copy
 import itertools
 import logging
 import math
+import operator
 import typing
 from collections import Counter
 from collections.abc import Sequence
@@ -4080,24 +4081,457 @@ def rand_tucker(indices: List[Index], rank: int = 1) -> "TensorNetwork":
 
     return tucker
 
-def tree_const_like(tree_in: TensorNetwork, vals: np.ndarray) -> TensorNetwork:
-    """Return a tree network with the same structure as the input tree and 
-    the first core has the given values.
+
+# ==========================================================================
+# Structure-agnostic operations (used by the transport solver)
+#
+# The functions below work on arbitrary tree networks, including networks
+# whose free indices were reshaped by the structure search (IndexSplit /
+# IndexMerge).  `IndexLayout` records how the "original" indices of a
+# problem map onto the current free indices; the operations use it to
+# express dense per-index data (factors of a separable term, integration
+# weights) on the reshaped indices.
+# ==========================================================================
+
+
+@dataclass
+class IndexLayout:
+    """Mapping between the original indices of a tensor and the free
+    indices of a network whose indices were reshaped by IndexSplit and
+    IndexMerge operations.
+
+    Every original index and every current free index is a C-ordered
+    product of *atoms* (the finest sub-indices appearing in the history).
+
+    Attributes:
+        originals: The original indices.
+        atoms: The finest sub-indices.
+        orig_to_atoms: Positions in `atoms` of each original index.
+        free_to_atoms: Positions in `atoms` of each current free index.
     """
-    tree_out = TensorNetwork()
 
-    # clone the tree but the internal ranks are set to 1
-    free_inds = tree_in.free_indices()
-    for i, node in enumerate(tree_in.network.nodes):
-        inds = tree_in.node_tensor(node).indices
-        new_inds = []
-        for ind in inds:
-            if ind in free_inds:
-                new_inds.append(ind)
-            else:
-                new_inds.append(Index(ind.name, 1))
+    originals: List[Index]
+    atoms: List[Index]
+    orig_to_atoms: Dict[IndexName, List[int]]
+    free_to_atoms: Dict[IndexName, List[int]]
 
-        if i == 0:
-            new_tensor = Tensor(vals, new_inds)
+    @staticmethod
+    def identity(originals: Sequence[Index]) -> "IndexLayout":
+        """Layout where the current free indices are the originals."""
+        atoms = list(originals)
+        mapping = {ind.name: [i] for i, ind in enumerate(atoms)}
+        return IndexLayout(list(originals), atoms, mapping, dict(mapping))
 
-    return tree_out
+    @staticmethod
+    def from_history(
+        originals: Sequence[Index], history: Sequence[IndexOp]
+    ) -> "IndexLayout":
+        """Replay a reshape history (e.g., HSearchState.reshape_history)."""
+        layout = IndexLayout.identity(originals)
+        for op in history:
+            if isinstance(op, IndexSplit):
+                layout.apply_split(op)
+            elif isinstance(op, IndexMerge):
+                layout.apply_merge(op)
+            # permutations and swaps do not change the index identities
+
+        # name the atoms after the free index they belong to
+        for name, atom_ids in layout.free_to_atoms.items():
+            for k, aid in enumerate(atom_ids):
+                atom_name = name if len(atom_ids) == 1 else f"{name}__{k}"
+                layout.atoms[aid] = Index(atom_name, layout.atoms[aid].size)
+
+        return layout
+
+    def apply_split(self, op: IndexSplit) -> None:
+        """Replay one (executed) IndexSplit operation."""
+        assert op.result is not None, "split op must be executed first"
+        name = op.index.name
+        if name not in self.free_to_atoms:
+            raise ValueError(f"{name} is not a free index of the layout")
+
+        old_ids = self.free_to_atoms.pop(name)
+        # prefix products of the requested split shape define the cuts
+        req_cuts = set(itertools.accumulate(op.shape, operator.mul))
+        new_ids: List[int] = []
+        offset = 1
+        replaced: Dict[int, List[int]] = {}
+        for aid in old_ids:
+            size = self.atoms[aid].size
+            inner = sorted(c for c in req_cuts if offset < c < offset * size)
+            bounds = [offset] + inner + [offset * size]
+            parts = []
+            for lo, hi in zip(bounds[:-1], bounds[1:]):
+                if hi % lo != 0:
+                    raise ValueError(
+                        f"split {op.shape} of {name} is not aligned with"
+                        f" the existing sub-indices"
+                    )
+                parts.append(hi // lo)
+
+            offset *= size
+            if len(parts) == 1:
+                replaced[aid] = [aid]
+                new_ids.append(aid)
+                continue
+
+            ids = []
+            for part in parts:
+                ids.append(len(self.atoms))
+                self.atoms.append(Index(f"{name}_{len(self.atoms)}", part))
+            replaced[aid] = ids
+            new_ids.extend(ids)
+
+        for mapping in (self.orig_to_atoms, self.free_to_atoms):
+            for key, ids in mapping.items():
+                mapping[key] = list(
+                    itertools.chain.from_iterable(
+                        replaced.get(i, [i]) for i in ids
+                    )
+                )
+
+        # assign the new atoms to the resulting indices
+        pos = 0
+        for res in op.result:
+            size, ids = 1, []
+            while size < res.size:
+                ids.append(new_ids[pos])
+                size *= self.atoms[new_ids[pos]].size
+                pos += 1
+            if size != res.size:
+                raise ValueError(f"cannot form {res} from atoms of {name}")
+            self.free_to_atoms[res.name] = ids
+
+    def apply_merge(self, op: IndexMerge) -> None:
+        """Replay one (executed) IndexMerge operation."""
+        assert op.result is not None, "merge op must be executed first"
+        ids: List[int] = []
+        for ind in op.indices:
+            if ind.name not in self.free_to_atoms:
+                raise ValueError(f"{ind} is not a free index of the layout")
+            ids.extend(self.free_to_atoms.pop(ind.name))
+        self.free_to_atoms[op.result.name] = ids
+
+    def is_identity(self) -> bool:
+        """True if the free indices are exactly the originals."""
+        return all(
+            self.free_to_atoms.get(ind.name) == self.orig_to_atoms[ind.name]
+            for ind in self.originals
+        ) and len(self.free_to_atoms) == len(self.originals)
+
+    def free_indices(self) -> List[Index]:
+        """Current free indices."""
+        return [
+            Index(name, math.prod(self.atoms[i].size for i in ids))
+            for name, ids in self.free_to_atoms.items()
+        ]
+
+    def atom_indices(self, name: IndexName) -> List[Index]:
+        """Atoms of a current free index (or of an original index)."""
+        ids = self.free_to_atoms.get(name)
+        if ids is None:
+            ids = self.orig_to_atoms[name]
+        return [self.atoms[i] for i in ids]
+
+    def validate(self, tn: TensorNetwork) -> None:
+        """Check that the network has the free indices of the layout."""
+        expected = set(self.free_indices())
+        actual = set(tn.free_indices())
+        if expected != actual:
+            raise ValueError(
+                f"free indices {actual} do not match layout {expected}"
+            )
+
+    def reshape_vector(self, name: IndexName, vals: np.ndarray) -> Tensor:
+        """Express dense data over an original index on its atoms."""
+        atoms = self.atom_indices(name)
+        vals = np.asarray(vals)
+        if vals.size != math.prod(a.size for a in atoms):
+            raise ValueError(
+                f"{name}: expected size {atoms}, got {vals.shape}"
+            )
+        return Tensor(vals.reshape([a.size for a in atoms]), atoms)
+
+    def atomize(self, tn: TensorNetwork) -> TensorNetwork:
+        """Copy of the network with every free index split into atoms."""
+        out = copy.deepcopy(tn)
+        for ind in self.free_indices():
+            atoms = self.atom_indices(ind.name)
+            if len(atoms) > 1:
+                shape = [a.size for a in atoms]
+                out.split_index(
+                    IndexSplit(index=ind, shape=shape, result=atoms)
+                )
+        return out
+
+    def atomize_tensor(self, tensor: Tensor) -> Tensor:
+        """Split the (free) indices of a tensor into atoms."""
+        for ind in self.free_indices():
+            atoms = self.atom_indices(ind.name)
+            if len(atoms) > 1 and ind in tensor.indices:
+                shape = [a.size for a in atoms]
+                op = IndexSplit(index=ind, shape=shape, result=atoms)
+                tensor = tensor.split_indices(op)
+                tensor = tensor.rename_indices(
+                    {f"_fresh_index_{k}": a.name for k, a in enumerate(atoms)}
+                )
+        return tensor
+
+    def deatomize_tensor(self, tensor: Tensor) -> Tensor:
+        """Merge the atoms in a tensor back into the current free indices."""
+        for ind in self.free_indices():
+            atoms = self.atom_indices(ind.name)
+            if len(atoms) > 1 and all(a in tensor.indices for a in atoms):
+                tensor = tensor.merge_indices(atoms, ind.name)
+        return tensor
+
+    def original_order(
+        self, tensor: Tensor, order: Optional[Sequence[IndexName]] = None
+    ) -> np.ndarray:
+        """Dense values of a (contracted) tensor in the original indices.
+
+        Args:
+            tensor: A tensor over (some of) the current free indices.
+            order: Names of the original indices in the wanted order.
+                Defaults to the originals present in the tensor.
+        """
+        tensor = self.atomize_tensor(tensor)
+        if order is None:
+            order = [
+                ind.name
+                for ind in self.originals
+                if all(
+                    a in tensor.indices for a in self.atom_indices(ind.name)
+                )
+            ]
+        names = [a.name for o in order for a in self.atom_indices(o)]
+        tensor = tensor.permute_by_name(names)
+        sizes = [
+            math.prod(a.size for a in self.atom_indices(o)) for o in order
+        ]
+        return tensor.value.reshape(sizes)
+
+
+def _steiner_tree(graph: nx.Graph, nodes: Sequence[NodeName]) -> nx.Graph:
+    """Minimal subtree of a tree connecting the given nodes."""
+    keep = set(nodes)
+    for n1, n2 in itertools.combinations(nodes, 2):
+        keep.update(nx.shortest_path(graph, n1, n2))
+    return graph.subgraph(keep)
+
+
+def _expand_to_layout(
+    tensor: Optional[Tensor],
+    layout: Sequence[Index],
+    free_inds: Sequence[Index],
+) -> Tensor:
+    """Broadcast a (partial) core to the full index layout of a node.
+
+    Missing free indices become ones (outer product), missing bond indices
+    become size-1 bonds.  The result has the indices of `layout` in order.
+    """
+    if tensor is None:
+        tensor = Tensor(np.ones(()), [])
+
+    value = tensor.value
+    indices = list(tensor.indices)
+    present = {ind.name for ind in indices}
+    for ind in layout:
+        if ind.name in present:
+            continue
+        size = ind.size if ind in free_inds else 1
+        value = np.broadcast_to(value[..., np.newaxis], value.shape + (size,))
+        indices.append(Index(ind.name, size))
+
+    tensor = Tensor(np.ascontiguousarray(value), indices)
+    return tensor.permute_by_name([ind.name for ind in layout])
+
+
+def separable_like(
+    ref: TensorNetwork,
+    factors: Dict[IndexName, np.ndarray],
+    layout: Optional[IndexLayout] = None,
+    tol: float = 0.0,
+) -> TensorNetwork:
+    """Represent the separable tensor `prod_i factors[i]` on the structure
+    of a reference network.
+
+    The result has the same topology, node names, bond names and per-node
+    index order as `ref`, so `ref + result` and `ref * result` are valid.
+    Bonds inside the subtree spanned by the atoms of one original index get
+    the ranks of the (truncated) SVDs of that factor; all other bonds have
+    size one.
+
+    Args:
+        ref: The reference network.
+        factors: Dense values over each original index, keyed by name.
+        layout: Mapping from the original indices to the free indices of
+            `ref`.  Defaults to the identity on `ref.free_indices()`.
+        tol: Absolute SVD truncation tolerance for a factor spread over
+            several nodes.  Zero (default) keeps the factor exact.
+    """
+    if layout is None:
+        layout = IndexLayout.identity(ref.free_indices())
+    layout.validate(ref)
+    missing = {ind.name for ind in layout.originals} - set(factors)
+    if missing:
+        raise KeyError(f"missing factors for {missing}")
+
+    atomized = layout.atomize(ref)
+    graph = atomized.network
+    free_inds = atomized.free_indices()
+    node_layout = {n: list(atomized.node_tensor(n).indices) for n in graph}
+    leaf_of = {
+        ind.name: atomized.node_by_free_index(ind.name) for ind in free_inds
+    }
+
+    def decompose(
+        subtree: nx.Graph,
+        node: NodeName,
+        parent: Optional[NodeName],
+        cur: Tensor,
+    ) -> Dict[NodeName, Tensor]:
+        """Recursively SVD `cur` along the edges of the subtree."""
+        cores = {}
+        for child in subtree.neighbors(node):
+            if child == parent:
+                continue
+            # atoms of the factor that live in the child's branch
+            branch = nx.descendants(nx.bfs_tree(subtree, node), child)
+            branch.add(child)
+            below = [
+                i
+                for i, ind in enumerate(cur.indices)
+                if ind in free_inds and leaf_of[ind.name] in branch
+            ]
+            [u, s, v], _ = cur.svd(below, atol=tol)
+            bond = atomized.get_contraction_index(node, child)[0]
+            u = u.rename_indices({"r_split_l": bond.name})
+            cur = s.contract(v).rename_indices({"r_split_l": bond.name})
+            cores.update(decompose(subtree, child, node, u))
+        cores[node] = cur
+        return cores
+
+    result = copy.deepcopy(ref)
+    combined: Dict[NodeName, Tensor] = {}
+    for orig in layout.originals:
+        data = layout.reshape_vector(orig.name, factors[orig.name])
+        leaves = sorted({leaf_of[ind.name] for ind in data.indices}, key=str)
+        if len(leaves) == 1:
+            cores = {leaves[0]: data}
+        else:
+            subtree = _steiner_tree(graph, leaves)
+            cores = decompose(subtree, leaves[0], None, data)
+
+        for n in graph:
+            core = _expand_to_layout(cores.get(n), node_layout[n], free_inds)
+            if n in combined:
+                core = combined[n].mult(core, free_inds)
+            combined[n] = core
+
+    for n, core in combined.items():
+        core = layout.deatomize_tensor(core)
+        names = [ind.name for ind in ref.node_tensor(n).indices]
+        result.set_node_tensor(n, core.permute_by_name(names))
+
+    return result
+
+
+def constant_like(
+    ref: TensorNetwork, value: float, layout: Optional[IndexLayout] = None
+) -> TensorNetwork:
+    """Represent a constant tensor on the structure of a reference network."""
+    if layout is None:
+        layout = IndexLayout.identity(ref.free_indices())
+    factors = {ind.name: np.ones(ind.size) for ind in layout.originals}
+    factors[layout.originals[0].name] *= value
+    return separable_like(ref, factors, layout)
+
+
+def separable_factors(tn: TensorNetwork) -> Dict[IndexName, np.ndarray]:
+    """Inverse of `separable_like` for a rank-one network whose nodes each
+    carry one free index: returns the factor of every free index."""
+    free_inds = tn.free_indices()
+    factors: Dict[IndexName, np.ndarray] = {}
+    scalar = 1.0
+    for n in tn.network.nodes:
+        tensor = tn.node_tensor(n)
+        node_free = [ind for ind in tensor.indices if ind in free_inds]
+        bonds = [ind for ind in tensor.indices if ind not in node_free]
+        if any(ind.size != 1 for ind in bonds):
+            raise ValueError(f"node {n} is not rank one: {tensor.indices}")
+        if len(node_free) > 1:
+            raise ValueError(f"node {n} holds several free indices")
+        if not node_free:
+            scalar *= float(tensor.value.reshape(-1)[0])
+            continue
+        factors[node_free[0].name] = tensor.value.reshape(-1).copy()
+
+    factors[free_inds[0].name] *= scalar
+    return factors
+
+
+def apply_index_ops(
+    tn: TensorNetwork,
+    ops: Dict[IndexName, Callable[[np.ndarray], np.ndarray]],
+) -> TensorNetwork:
+    """Apply linear operators acting on single free indices.
+
+    Every operator receives the unfolding `(index size, rest)` of the node
+    holding that index and must return an array `(new size, rest)`.  This
+    is the tree analogue of applying one rank-one TT operator.
+    """
+    out = copy.deepcopy(tn)
+    for name, func in ops.items():
+        node = out.node_by_free_index(name)
+        tensor = out.node_tensor(node)
+        axis = [ind.name for ind in tensor.indices].index(name)
+        value = np.moveaxis(tensor.value, axis, 0)
+        rest = value.shape[1:]
+        value = np.asarray(func(value.reshape(value.shape[0], -1)))
+        value = np.moveaxis(value.reshape((value.shape[0],) + rest), 0, axis)
+        tensor.update_val_size(value)
+    return out
+
+
+def apply_index_ops_sum(
+    tn: TensorNetwork,
+    terms: Sequence[Dict[IndexName, Callable[[np.ndarray], np.ndarray]]],
+    scale: Optional[float] = None,
+) -> TensorNetwork:
+    """Apply a sum of rank-one index operators (see `apply_index_ops`)."""
+    out = apply_index_ops(tn, terms[0])
+    for term in terms[1:]:
+        out = out + apply_index_ops(tn, term)
+    if scale is not None:
+        out.scale(scale)
+    return out
+
+
+def integrate_to_dense(
+    tn: TensorNetwork,
+    weights: Dict[IndexName, np.ndarray],
+    layout: Optional[IndexLayout] = None,
+    order: Optional[Sequence[IndexName]] = None,
+) -> np.ndarray:
+    """Integrate over original indices and contract to a dense array.
+
+    Args:
+        tn: The network to integrate.
+        weights: Quadrature weights over each integrated original index.
+        layout: Mapping from the original indices to the free indices.
+        order: Order of the remaining original indices in the output.
+    """
+    if layout is None:
+        layout = IndexLayout.identity(tn.free_indices())
+    out = layout.atomize(tn)
+    for name, weight in weights.items():
+        wnet = TensorNetwork()
+        wnet.add_node(f"w_{name}", layout.reshape_vector(name, weight))
+        out = out.attach(wnet, rename=("", ""))
+
+    if order is None:
+        order = [
+            ind.name for ind in layout.originals if ind.name not in weights
+        ]
+    return layout.original_order(out.contract(), order)

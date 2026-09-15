@@ -167,7 +167,9 @@ def _rename_data_tensor(
 
     def split_name(ind: Index) -> Tuple[bool, int, str, int]:
         segments = str(ind.name).split("_")
-        suffix = int(segments[1]) if len(segments) > 1 else 0
+        # names such as "x_nu" have no numeric suffix
+        has_suffix = len(segments) > 1 and segments[1].isdigit()
+        suffix = int(segments[1]) if has_suffix else 0
         return (ind not in free, ind.size, segments[0], suffix)
 
     sorted_inds = sorted(data_tensor.free_indices(), key=split_name)
