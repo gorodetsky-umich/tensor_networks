@@ -4212,6 +4212,23 @@ class IndexLayout:
             ids.extend(self.free_to_atoms.pop(ind.name))
         self.free_to_atoms[op.result.name] = ids
 
+    def with_new_size(self, name: IndexName, size: int) -> "IndexLayout":
+        """Layout with an original index resized (e.g. by ghost cells).
+
+        The index must not be split into several atoms.
+        """
+        ids = self.orig_to_atoms[name]
+        if len(ids) != 1:
+            raise ValueError(f"{name} is split and cannot be resized")
+
+        layout = copy.deepcopy(self)
+        layout.atoms[ids[0]] = layout.atoms[ids[0]].with_new_size(size)
+        layout.originals = [
+            ind.with_new_size(size) if ind.name == name else ind
+            for ind in layout.originals
+        ]
+        return layout
+
     def is_identity(self) -> bool:
         """True if the free indices are exactly the originals."""
         return all(

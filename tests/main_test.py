@@ -1811,6 +1811,15 @@ class TestStructureAgnosticOps(unittest.TestCase):
         with self.assertRaises(ValueError):
             IndexLayout.from_history(self.indices, [self.split, merge, bad])
 
+    def test_with_new_size(self):
+        layout = IndexLayout.from_history(self.indices, [self.split])
+        resized = layout.with_new_size("theta", 7)
+        self.assertEqual(resized.atom_indices("theta"), [Index("theta", 7)])
+        self.assertIn(Index("theta", 7), resized.free_indices())
+        self.assertEqual(layout.atom_indices("theta"), [Index("theta", 5)])
+        with self.assertRaises(ValueError):
+            layout.with_new_size("x", 24)
+
     def test_apply_index_ops(self):
         ht = rand_ht(self.indices, 3)
         dense = self._dense(ht)

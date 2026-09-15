@@ -162,6 +162,7 @@ class TopDownSearchEngine(SearchEngine):
         result.stats.search_start = start
         result.stats.search_end = end
         result.replay_traces = best_st.replay_traces
+        result.reshape_history = best_st.reshape_history
 
         if self.config.output.collect_stats:
             self._collect_stats(result, best_st)
