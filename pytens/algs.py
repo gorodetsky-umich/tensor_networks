@@ -8,7 +8,7 @@ import operator
 import typing
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Dict,
@@ -4108,12 +4108,14 @@ class IndexLayout:
         atoms: The finest sub-indices.
         orig_to_atoms: Positions in `atoms` of each original index.
         free_to_atoms: Positions in `atoms` of each current free index.
+        history: The reshape operations replayed to build the layout.
     """
 
     originals: List[Index]
     atoms: List[Index]
     orig_to_atoms: Dict[IndexName, List[int]]
     free_to_atoms: Dict[IndexName, List[int]]
+    history: List[IndexOp] = field(default_factory=list)
 
     @staticmethod
     def identity(originals: Sequence[Index]) -> "IndexLayout":
@@ -4128,6 +4130,7 @@ class IndexLayout:
     ) -> "IndexLayout":
         """Replay a reshape history (e.g., HSearchState.reshape_history)."""
         layout = IndexLayout.identity(originals)
+        layout.history = list(history)
         for op in history:
             if isinstance(op, IndexSplit):
                 layout.apply_split(op)
