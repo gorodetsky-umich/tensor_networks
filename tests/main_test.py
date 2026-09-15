@@ -504,10 +504,16 @@ class TestTT(unittest.TestCase):
         """Indices on neighbouring nodes are adjacent in the TT chain."""
         ends = self.TT.end_nodes()
         nodes = nx.shortest_path(self.TT.network, ends[0], ends[1])
-        i0 = [ind for ind in self.TT.node_tensor(nodes[0]).indices
-              if ind in self.TT.free_indices()][0]
-        i1 = [ind for ind in self.TT.node_tensor(nodes[1]).indices
-              if ind in self.TT.free_indices()][0]
+        i0 = [
+            ind
+            for ind in self.TT.node_tensor(nodes[0]).indices
+            if ind in self.TT.free_indices()
+        ][0]
+        i1 = [
+            ind
+            for ind in self.TT.node_tensor(nodes[1]).indices
+            if ind in self.TT.free_indices()
+        ][0]
         self.assertTrue(self.TT.are_adjacent([i0, i1]))
 
     def test_tt_is_valid(self):
@@ -542,9 +548,7 @@ class TestTree(unittest.TestCase):
         self.x = Index("x", 5)
         self.u = Index("u", 10)
         self.v = Index("v", 20)
-        self.tree = rand_tree(
-            [self.x, self.u, self.v], [1, 2, 3, 4, 5]
-        )
+        self.tree = rand_tree([self.x, self.u, self.v], [1, 2, 3, 4, 5])
 
     def test_tree_split(self):
         original = self.tree.contract().value
@@ -1047,7 +1051,6 @@ class TestTree(unittest.TestCase):
             np.allclose(t12, tensor12.value, rtol=1e-10, atol=1e-10)
         )
 
-
     # ── Tensor.svd atol / rtol ────────────────────────────────────────────────
 
     def test_tensor_svd_atol_error_bounded(self):
@@ -1150,7 +1153,9 @@ class TestTree(unittest.TestCase):
         net.qr(4, [0, 2])
         result = net.contract()
         perm = [result.indices.index(i) for i in original_free]
-        self.assertTrue(np.allclose(original, result.permute(perm).value, atol=1e-5))
+        self.assertTrue(
+            np.allclose(original, result.permute(perm).value, atol=1e-5)
+        )
 
     def test_tree_compress(self):
         """TensorNetwork.compress returns a network with the same contracted value."""
@@ -1159,7 +1164,9 @@ class TestTree(unittest.TestCase):
         compressed = self.tree.compress()
         result = compressed.contract()
         perm = [result.indices.index(i) for i in original_free]
-        self.assertTrue(np.allclose(original, result.permute(perm).value, atol=1e-10))
+        self.assertTrue(
+            np.allclose(original, result.permute(perm).value, atol=1e-10)
+        )
 
     def test_tree_end_nodes(self):
         """TensorNetwork.end_nodes returns nodes that have at most one neighbour."""
@@ -1476,6 +1483,7 @@ class TestCross(unittest.TestCase):
             <= 1e-4
         )
 
+
 class TestGeneralOps(unittest.TestCase):
     """Test general operations over tensor networks"""
 
@@ -1670,7 +1678,6 @@ class TestGeneralOps(unittest.TestCase):
             np.allclose(data, value_after_swap, atol=1e-8, rtol=1e-8)
         )
 
-
     # ── TensorNetwork.cost / scale ────────────────────────────────────────────
 
     def test_cost(self):
@@ -1687,10 +1694,14 @@ class TestGeneralOps(unittest.TestCase):
         """scale(k) multiplies the contracted value by k."""
         net = TensorNetwork()
         data = np.random.randn(3, 4)
-        net.add_node("a", Tensor(np.copy(data), [Index("i", 3), Index("j", 4)]))
+        net.add_node(
+            "a", Tensor(np.copy(data), [Index("i", 3), Index("j", 4)])
+        )
         scaled = net.scale(2.0)
         self.assertTrue(
-            np.allclose(scaled.contract().value, 2.0 * data, atol=1e-8, rtol=1e-8)
+            np.allclose(
+                scaled.contract().value, 2.0 * data, atol=1e-8, rtol=1e-8
+            )
         )
 
 
@@ -1737,10 +1748,14 @@ class TestStructureAgnosticOps(unittest.TestCase):
         dense_ref = self._dense(ref, layout)
         self.assertTrue(np.allclose(self._dense(term, layout), self.expected))
         self.assertTrue(
-            np.allclose(self._dense(ref + term, layout), dense_ref + self.expected)
+            np.allclose(
+                self._dense(ref + term, layout), dense_ref + self.expected
+            )
         )
         self.assertTrue(
-            np.allclose(self._dense(ref * term, layout), dense_ref * self.expected)
+            np.allclose(
+                self._dense(ref * term, layout), dense_ref * self.expected
+            )
         )
         const = constant_like(ref, 2.5, layout)
         self.assertTrue(np.allclose(self._dense(const, layout), 2.5))
@@ -1786,11 +1801,15 @@ class TestStructureAgnosticOps(unittest.TestCase):
         theta, phi = self.indices[1], self.indices[2]
         net = TensorNetwork()
         net.add_node("A", Tensor(np.random.rand(3, 2), [self.x0, r]))
-        net.add_node("B", Tensor(np.random.rand(2, 4, 5, 3), [r, self.x1, theta, s]))
+        net.add_node(
+            "B", Tensor(np.random.rand(2, 4, 5, 3), [r, self.x1, theta, s])
+        )
         net.add_node("C", Tensor(np.random.rand(3, 4), [s, phi]))
         net.add_edge("A", "B")
         net.add_edge("B", "C")
-        merge = IndexMerge(indices=[self.x1, theta], result=Index("x_1_theta", 20))
+        merge = IndexMerge(
+            indices=[self.x1, theta], result=Index("x_1_theta", 20)
+        )
         net.merge_index(merge)
         layout = IndexLayout.from_history(self.indices, [self.split, merge])
         self.assertEqual(layout.free_to_atoms["x_1_theta"], [4, 1])
@@ -1810,6 +1829,29 @@ class TestStructureAgnosticOps(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             IndexLayout.from_history(self.indices, [self.split, merge, bad])
+
+    def test_add_mul_permuted_cores(self):
+        """Node-wise operations align indices even if a core is permuted."""
+        tt = rand_tt(self.indices, [3, 2])
+        term = separable_like(tt, self.factors)
+        # round() re-orders the indices inside the cores
+        rounded = copy.deepcopy(tt)
+        rounded.round(0, rtol=1e-12)
+        layouts = [
+            [i.name for i in rounded.node_tensor(n).indices]
+            for n in rounded.network.nodes
+        ]
+        assert layouts != [
+            [i.name for i in tt.node_tensor(n).indices]
+            for n in tt.network.nodes
+        ]
+        dense_tt = self._dense(tt)
+        self.assertTrue(
+            np.allclose(self._dense(rounded + term), dense_tt + self.expected)
+        )
+        self.assertTrue(
+            np.allclose(self._dense(rounded * term), dense_tt * self.expected)
+        )
 
     def test_with_new_size(self):
         layout = IndexLayout.from_history(self.indices, [self.split])
@@ -1834,7 +1876,9 @@ class TestStructureAgnosticOps(unittest.TestCase):
         self.assertIn(Index("x", 7), out.free_indices())
 
         out = apply_index_ops_sum(
-            ht, [{"x": lambda v: mat_x @ v}, {"x": lambda v: 2 * mat_x @ v}], 0.5
+            ht,
+            [{"x": lambda v: mat_x @ v}, {"x": lambda v: 2 * mat_x @ v}],
+            0.5,
         )
         expected = 1.5 * np.einsum("ai,ijk->ajk", mat_x, dense)
         result = out.contract().permute_by_name(self.names).value

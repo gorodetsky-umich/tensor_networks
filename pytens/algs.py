@@ -2145,8 +2145,12 @@ class TensorNetwork:  # pylint: disable=R0904
         result_net: Self,
     ) -> None:
         tree1, tree2 = trees
-        tensor1 = self.node_tensor(tree1.node)
-        tensor2 = other.node_tensor(tree2.node)
+        # align the index orders of the two nodes: the dimension trees give
+        # the canonical order [sorted free indices, children, parent], so
+        # that the positional node-wise operations pair matching indices
+        node_names = [ind.name for ind in self.node_tensor(tree1.node).indices]
+        tensor1 = self.node_tensor(tree1.node).permute(tree1.perm)
+        tensor2 = other.node_tensor(tree2.node).permute(tree2.perm)
         assert len(tensor1.indices) == len(tensor2.indices)
 
         if op == "add":
@@ -2156,7 +2160,8 @@ class TensorNetwork:  # pylint: disable=R0904
         else:
             raise ValueError(f"Unknown operation {op}")
 
-        result_net.set_node_tensor(tree1.node, res)
+        # keep the index order of this network's node
+        result_net.set_node_tensor(tree1.node, res.permute_by_name(node_names))
 
         for c1, c2 in zip(tree1.down_info.nodes, tree2.down_info.nodes):
             self._binary_op(other, op, (c1, c2), result_net)
