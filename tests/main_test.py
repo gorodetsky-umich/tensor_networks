@@ -1898,6 +1898,23 @@ class TestStructureAgnosticOps(unittest.TestCase):
         with self.assertRaises(ValueError):
             layout.with_new_size("x", 24)
 
+    def test_merged_unsplit(self):
+        """Merged (but not split) indices take the direct construction."""
+        theta, phi = self.indices[1], self.indices[2]
+        net = TensorNetwork()
+        net.add_node(
+            "A",
+            Tensor(np.random.rand(12, 2), [self.indices[0], Index("r", 2)]),
+        )
+        net.add_node(
+            "B", Tensor(np.random.rand(2, 5, 4), [Index("r", 2), theta, phi])
+        )
+        net.add_edge("A", "B")
+        merge = IndexMerge(indices=[phi, theta], result=Index("phi_theta", 20))
+        net.merge_index(merge)
+        layout = IndexLayout.from_history(self.indices, [merge])
+        self._check_ops(net, layout)
+
     def test_apply_index_ops(self):
         ht = rand_ht(self.indices, 3)
         dense = self._dense(ht)

@@ -1,6 +1,7 @@
 """Algorithms for tensor networks."""
 
 import copy
+import functools
 import itertools
 import logging
 import math
@@ -4370,6 +4371,44 @@ def _expand_to_layout(
     return tensor.permute_by_name([ind.name for ind in layout])
 
 
+def _separable_unsplit(
+    ref: TensorNetwork,
+    layout: IndexLayout,
+    factors: Dict[IndexName, np.ndarray],
+) -> TensorNetwork:
+    """`separable_like` when no original index is split: every free index
+    lives on one node, so each core is the outer product of the factors of
+    its free indices with size-one bonds; no decomposition is needed."""
+    # factor of every current free index (a free index may be a merge of
+    # several originals, whose factors are then combined)
+    atom_factor = {
+        layout.atom_indices(o.name)[0].name: np.asarray(
+            factors[o.name]
+        ).reshape(-1)
+        for o in layout.originals
+    }
+    free_factors: Dict[IndexName, np.ndarray] = {}
+    for ind in layout.free_indices():
+        vals = [atom_factor[a.name] for a in layout.atom_indices(ind.name)]
+        free_factors[ind.name] = functools.reduce(
+            np.multiply.outer, vals
+        ).reshape(-1)
+
+    result = copy.deepcopy(ref)
+    for n in ref.network.nodes:
+        indices = []
+        value = np.ones(())
+        for ind in ref.node_tensor(n).indices:
+            if ind.name in free_factors:
+                indices.append(ind)
+                value = np.multiply.outer(value, free_factors[ind.name])
+            else:
+                indices.append(Index(ind.name, 1))
+                value = value[..., np.newaxis]
+        result.set_node_tensor(n, Tensor(value, indices))
+    return result
+
+
 def separable_like(
     ref: TensorNetwork,
     factors: Dict[IndexName, np.ndarray],
@@ -4399,6 +4438,9 @@ def separable_like(
     missing = {ind.name for ind in layout.originals} - set(factors)
     if missing:
         raise KeyError(f"missing factors for {missing}")
+
+    if all(len(layout.atom_indices(o.name)) == 1 for o in layout.originals):
+        return _separable_unsplit(ref, layout, factors)
 
     atomized = layout.atomize(ref)
     graph = atomized.network
