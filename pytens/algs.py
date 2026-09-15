@@ -4082,16 +4082,9 @@ def rand_tucker(indices: List[Index], rank: int = 1) -> "TensorNetwork":
     return tucker
 
 
-# ==========================================================================
-# Structure-agnostic operations (used by the transport solver)
-#
-# The functions below work on arbitrary tree networks, including networks
-# whose free indices were reshaped by the structure search (IndexSplit /
-# IndexMerge).  `IndexLayout` records how the "original" indices of a
-# problem map onto the current free indices; the operations use it to
-# express dense per-index data (factors of a separable term, integration
-# weights) on the reshaped indices.
-# ==========================================================================
+# ------------------------------------------
+# Operations for arbitrary tree structures
+# ------------------------------------------
 
 
 @dataclass

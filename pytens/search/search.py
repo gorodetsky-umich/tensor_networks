@@ -223,7 +223,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
         self,
         config: SearchConfig,
         data_tensor: CachedFunc,
-        validation_set: np.ndarray,
+        validation_set: Optional[np.ndarray] = None,
     ) -> None:
         super().__init__(config)
         self._data_tensor = data_tensor
@@ -255,6 +255,7 @@ class BlackBoxTopDownSearchEngine(TopDownSearchEngine):
         unopt_size = float(np.prod([i.size for i in free_indices]))
         init_size = unopt_size
 
+        assert self._validation_set is not None
         data_val = self._data_tensor(self._validation_set)
 
         logger.debug("reshape history: %s", best_st.reshape_history)
