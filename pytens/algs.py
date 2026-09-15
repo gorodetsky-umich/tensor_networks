@@ -4523,9 +4523,7 @@ def apply_index_ops_sum(
     scale: Optional[float] = None,
 ) -> TensorNetwork:
     """Apply a sum of rank-one index operators (see `apply_index_ops`)."""
-    out = apply_index_ops(tn, terms[0])
-    for term in terms[1:]:
-        out = out + apply_index_ops(tn, term)
+    out = tree_sum([apply_index_ops(tn, term) for term in terms])
     if scale is not None:
         out.scale(scale)
     return out
@@ -4558,3 +4556,231 @@ def integrate_to_dense(
             ind.name for ind in layout.originals if ind.name not in weights
         ]
     return layout.original_order(out.contract(), order)
+
+
+# --------------------------------------------------------------------------
+# Sums of tree networks with the same structure
+# --------------------------------------------------------------------------
+
+
+class _TreeTerms:
+    """Cores of several networks with the same structure, per node.
+
+    All networks must share the topology, node names, bond names and free
+    indices; only the bond sizes may differ. Cores are stored in the index
+    order of the first network.
+    """
+
+    def __init__(
+        self, terms: Sequence[TensorNetwork], root: Optional[NodeName]
+    ):
+        ref = terms[0]
+        free = set(ref.free_indices())
+        self.nodes = list(ref.network.nodes)
+        self.edges = list(ref.network.edges)
+        self.indices: Dict[NodeName, List[Index]] = {}
+        self.bond_axes: Dict[NodeName, Dict[IndexName, int]] = {}
+        self.cores: Dict[NodeName, List[np.ndarray]] = {}
+        for n in self.nodes:
+            inds = ref.node_tensor(n).indices
+            names = [ind.name for ind in inds]
+            self.indices[n] = list(inds)
+            self.bond_axes[n] = {
+                ind.name: k for k, ind in enumerate(inds) if ind not in free
+            }
+            self.cores[n] = [
+                t.node_tensor(n).permute_by_name(names).value for t in terms
+            ]
+
+        # block offsets of the terms on every bond
+        self.offsets: Dict[IndexName, List[int]] = {}
+        for n in self.nodes:
+            for name, axis in self.bond_axes[n].items():
+                if name not in self.offsets:
+                    sizes = [core.shape[axis] for core in self.cores[n]]
+                    self.offsets[name] = [0] + list(
+                        itertools.accumulate(sizes)
+                    )
+
+        if root is None:
+            root = ref.node_by_free_index(min(free, key=str).name)
+        self.root = root
+        # parent / children and the bond towards the parent, in BFS order
+        self.order: List[NodeName] = [root]
+        self.parent: Dict[NodeName, Optional[NodeName]] = {root: None}
+        self.up_bond: Dict[NodeName, Optional[IndexName]] = {root: None}
+        self.children: Dict[NodeName, List[NodeName]] = {
+            n: [] for n in self.nodes
+        }
+        for n in self.order:
+            for nbr in ref.network.neighbors(n):
+                if nbr in self.parent:
+                    continue
+                self.parent[nbr] = n
+                self.children[n].append(nbr)
+                self.up_bond[nbr] = ref.get_contraction_index(n, nbr)[0].name
+                self.order.append(nbr)
+
+    def block(self, name: IndexName, i: int) -> slice:
+        """Block of term `i` on the (stacked) bond `name`."""
+        return slice(self.offsets[name][i], self.offsets[name][i + 1])
+
+    def free_indices(self, n: NodeName) -> List[Index]:
+        """Free indices of the node."""
+        bonds = self.bond_axes[n]
+        return [ind for ind in self.indices[n] if ind.name not in bonds]
+
+
+def _apply_on_axis(core: np.ndarray, axis: int, mat: np.ndarray) -> np.ndarray:
+    """Contract `core` along `axis` with `mat` (new axis size = mat.shape[0]):
+    out[..., a, ...] = sum_b mat[a, b] core[..., b, ...]."""
+    out = np.tensordot(mat, core, axes=([1], [axis]))
+    return np.moveaxis(out, 0, axis)
+
+
+def tree_sum(
+    terms: Sequence[TensorNetwork], root: Optional[NodeName] = None
+) -> TensorNetwork:
+    """Sum networks with the same structure (see `_TreeTerms`).
+
+    The cores of the terms are stacked block-diagonally along every bond
+    in one pass, which is the tree analogue of `tt_sum`.
+    """
+    if len(terms) == 1:
+        return copy.deepcopy(terms[0])
+
+    tt = _TreeTerms(terms, root)
+    out = copy.deepcopy(terms[0])
+    for n in tt.nodes:
+        bonds = tt.bond_axes[n]
+        shape = [ind.size for ind in tt.indices[n]]
+        for name, axis in bonds.items():
+            shape[axis] = tt.offsets[name][-1]
+        value = np.zeros(shape, dtype=tt.cores[n][0].dtype)
+        for i, core in enumerate(tt.cores[n]):
+            slices = [slice(None)] * len(shape)
+            for name, axis in bonds.items():
+                slices[axis] = tt.block(name, i)
+            value[tuple(slices)] = core
+        indices = [
+            Index(ind.name, shape[k]) if ind.name in bonds else ind
+            for k, ind in enumerate(tt.indices[n])
+        ]
+        out.set_node_tensor(n, Tensor(value, indices))
+    return out
+
+
+def tree_sum_gramsvd_round(
+    terms: Sequence[TensorNetwork],
+    eps: float,
+    root: Optional[NodeName] = None,
+) -> TensorNetwork:
+    """Round the sum of networks with the same structure by Gram SVD.
+
+    Tree analogue of `tt_sum_gramsvd_round`: the Gram matrices of the sum
+    on every bond are assembled from the cross Grams of the terms, each
+    bond is truncated with `gram_eig_and_svd`, and the rounded cores are
+    formed from the terms' cores and the projectors, so the rank-inflated
+    sum is never built.
+
+    The bonds are processed from the root towards the leaves. For a bond
+    the child side is still the original sum, whose Gram matrix comes from
+    the leaves-to-root sweep, while the parent side has already been
+    projected on the bonds processed before; its Gram matrix is recomputed
+    from the projected cores and the (small) Gram matrices of the projected
+    bonds. Every step is therefore a projection of the current tensor and
+    the errors add up, so the budget `eps * ||sum||` is distributed equally
+    over the bonds.
+    """
+    tt = _TreeTerms(terms, root)
+    if not tt.offsets:
+        return tree_sum(terms, root)
+
+    num = len(terms)
+    cores = {n: list(c) for n, c in tt.cores.items()}
+    # Gram matrices of the two sides of a bond, used as the environment
+    # when contracting two cores over it: `down` is the child side (the
+    # stacked Gram of the original sum, blocks per term, until the bond is
+    # projected), `up` the parent side (available once projected)
+    down_env: Dict[IndexName, np.ndarray] = {}
+    up_env: Dict[IndexName, np.ndarray] = {}
+    projected: set = set()
+
+    def cross(
+        n: NodeName, i: int, j: int, keep: Optional[IndexName]
+    ) -> np.ndarray:
+        """Contract cores i and j of node `n` over all axes but `keep`,
+        inserting the environments of the other bonds."""
+        core_i, core_j = cores[n][i], cores[n][j]
+        for name, axis in tt.bond_axes[n].items():
+            if name == keep:
+                continue
+            if name == tt.up_bond[n]:
+                gram = up_env[name]
+            elif name in projected:
+                gram = down_env[name]
+            else:
+                gram = down_env[name][tt.block(name, i), tt.block(name, j)]
+            core_j = _apply_on_axis(core_j, axis, gram)
+        if keep is None:
+            return np.tensordot(core_i, core_j, axes=core_i.ndim)
+        axis = tt.bond_axes[n][keep]
+        axes = [k for k in range(core_i.ndim) if k != axis]
+        return np.tensordot(core_i, core_j, axes=(axes, axes))
+
+    def gram(n: NodeName, keep: IndexName) -> np.ndarray:
+        size = tt.offsets[keep][-1]
+        out = np.zeros((size, size))
+        for i in range(num):
+            for j in range(i, num):
+                blk = cross(n, i, j, keep)
+                out[tt.block(keep, i), tt.block(keep, j)] = blk
+                if i != j:
+                    out[tt.block(keep, j), tt.block(keep, i)] = blk.T
+        return out
+
+    # Gram matrices of the child sides: leaves to root
+    for n in reversed(tt.order):
+        bond = tt.up_bond[n]
+        if bond is not None:
+            down_env[bond] = gram(n, bond)
+
+    norm_sq = sum(
+        float(cross(tt.root, i, j, None))
+        for i in range(num)
+        for j in range(num)
+    )
+    delta = eps * math.sqrt(norm_sq) / math.sqrt(len(tt.offsets))
+
+    # project bond by bond from the root towards the leaves
+    for n in tt.order:
+        for child in tt.children[n]:
+            bond = tt.up_bond[child]
+            assert bond is not None
+            up, down = gram(n, bond), down_env[bond]
+            parent_side, child_side = gram_eig_and_svd(up, down, delta)
+            axis = tt.bond_axes[n][bond]
+            for i in range(num):
+                mat = parent_side[tt.block(bond, i), :].T
+                cores[n][i] = _apply_on_axis(cores[n][i], axis, mat)
+            axis = tt.bond_axes[child][bond]
+            for i in range(num):
+                mat = child_side[:, tt.block(bond, i)]
+                cores[child][i] = _apply_on_axis(cores[child][i], axis, mat)
+            # Gram matrices of the two projected sides (diagonal, resp.
+            # identity, up to the rounding inside gram_eig_and_svd)
+            down_env[bond] = child_side @ down @ child_side.T
+            up_env[bond] = parent_side.T @ up @ parent_side
+            projected.add(bond)
+
+    out = copy.deepcopy(terms[0])
+    for n in tt.nodes:
+        value = sum(cores[n][1:], cores[n][0])
+        indices = [
+            Index(ind.name, value.shape[k])
+            if ind.name in tt.bond_axes[n]
+            else ind
+            for k, ind in enumerate(tt.indices[n])
+        ]
+        out.set_node_tensor(n, Tensor(value, indices))
+    return out

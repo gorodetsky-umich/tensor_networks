@@ -1853,6 +1853,42 @@ class TestStructureAgnosticOps(unittest.TestCase):
             np.allclose(self._dense(rounded * term), dense_tt * self.expected)
         )
 
+    def test_tree_sum_and_gram_round(self):
+        """tree_sum and tree_sum_gramsvd_round agree with the dense sum."""
+        for ref in (
+            rand_tucker(self.indices, 4),
+            rand_ht(self.indices, 3),
+            rand_tt(self.indices, [4, 3]),
+        ):
+            terms = [ref, ref + ref, separable_like(ref, self.factors)]
+            expected = sum(self._dense(t) for t in terms)
+            summed = tree_sum(terms)
+            self.assertTrue(np.allclose(self._dense(summed), expected))
+            self.assertEqual(
+                [
+                    i.name
+                    for n in ref.network.nodes
+                    for i in summed.node_tensor(n).indices
+                ],
+                [
+                    i.name
+                    for n in ref.network.nodes
+                    for i in ref.node_tensor(n).indices
+                ],
+            )
+            rounded = tree_sum_gramsvd_round(terms, 1e-10)
+            self.assertTrue(np.allclose(self._dense(rounded), expected))
+            # ref + ref duplicates ref: the true rank is rank(ref) + 1
+            self.assertLess(max(rounded.ranks()), max(summed.ranks()))
+
+        ref = rand_tucker(self.indices, 3)
+        small = separable_like(ref, self.factors).scale(1e-8 * ref.norm())
+        rounded = tree_sum_gramsvd_round([ref, small], 1e-3)
+        self.assertEqual(rounded.ranks(), ref.ranks())
+        self.assertTrue(
+            np.allclose(self._dense(rounded), self._dense(ref), rtol=1e-6)
+        )
+
     def test_with_new_size(self):
         layout = IndexLayout.from_history(self.indices, [self.split])
         resized = layout.with_new_size("theta", 7)
