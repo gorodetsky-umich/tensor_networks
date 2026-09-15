@@ -1441,6 +1441,7 @@ class TensorNetwork:  # pylint: disable=R0904
         *,
         atol: Optional[float] = None,
         rtol: Optional[float] = None,
+        orthonormal: bool = False,
     ) -> Tuple[NodeName, float]:
         """
         Truncate bond dimensions across the tree using a shared error budget.
@@ -1457,6 +1458,9 @@ class TensorNetwork:  # pylint: disable=R0904
             rtol: Relative error tolerance.  Converted to an absolute budget
                 by multiplying by the network's Frobenius norm before the
                 sweep begins.  Mutually exclusive with ``atol``.
+            orthonormal: The tree is already orthonormalised at
+                ``node_name`` (e.g. by a previous ``orthonormalize`` call),
+                so the orthonormalisation sweep is skipped.
 
         Returns:
             A tuple ``(root_node, remaining_delta)`` where ``root_node`` is
@@ -1474,7 +1478,8 @@ class TensorNetwork:  # pylint: disable=R0904
         if atol is None and rtol is None:
             raise ValueError("specify one of 'atol' or 'rtol'")
         delta = atol if atol is not None else (rtol or 0.0) * self.norm()
-        self.orthonormalize(node_name)
+        if not orthonormal:
+            self.orthonormalize(node_name)
         return self._round_impl(node_name, delta, set(), initial=True)
 
     def _round_impl(
