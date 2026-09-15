@@ -4079,3 +4079,25 @@ def rand_tucker(indices: List[Index], rank: int = 1) -> "TensorNetwork":
         tucker.add_edge(f"G{i}", "root")
 
     return tucker
+
+def tree_const_like(tree_in: TensorNetwork, vals: np.ndarray) -> TensorNetwork:
+    """Return a tree network with the same structure as the input tree and 
+    the first core has the given values.
+    """
+    tree_out = TensorNetwork()
+
+    # clone the tree but the internal ranks are set to 1
+    free_inds = tree_in.free_indices()
+    for i, node in enumerate(tree_in.network.nodes):
+        inds = tree_in.node_tensor(node).indices
+        new_inds = []
+        for ind in inds:
+            if ind in free_inds:
+                new_inds.append(ind)
+            else:
+                new_inds.append(Index(ind.name, 1))
+
+        if i == 0:
+            new_tensor = Tensor(vals, new_inds)
+
+    return tree_out
