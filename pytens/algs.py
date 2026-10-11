@@ -845,6 +845,128 @@ class TensorNetwork:  # pylint: disable=R0904
 
         return r, delta
 
+    def orthonormalize_edgewise(self, root: NodeName) -> NodeName:
+        """Orthonormalize a tree toward ``root`` without merging nodes.
+
+        This performs a bottom-up QR sweep. Each non-root node is reshaped into
+        a matrix whose right axis is the edge to its parent, then the resulting
+        ``R`` factor is absorbed into the parent tensor. The graph topology and
+        node count stay unchanged throughout the sweep.
+        """
+        if root not in self.network:
+            raise ValueError(f"Unknown root node {root!r}.")
+        if not nx.is_tree(self.network):
+            raise ValueError("orthonormalize_edgewise() requires a tree network.")
+
+        def _sweep(node: NodeName, parent: Optional[NodeName]) -> None:
+            for nbr in list(self.network.neighbors(node)):
+                if nbr == parent:
+                    continue
+                _sweep(nbr, node)
+
+            if parent is None:
+                return
+
+            _tree_qr_absorb_edge(self, node, parent)
+
+        _sweep(root, None)
+        return root
+
+    def round_edgewise(
+        self,
+        root: NodeName,
+        delta: float,
+        equal_error_distribution: bool = False,
+        traversal_mode: str = "rooted",
+        final_leaf: Optional[NodeName] = None,
+    ) -> Tuple[NodeName, float]:
+        """Round a tree with local edge updates instead of merge-heavy sweeps.
+
+        The algorithm first performs a QR sweep toward ``root`` so every
+        non-root subtree is orthonormalized into its parent. It then traverses
+        top-down from ``root``. ``traversal_mode="rooted"`` processes children
+        in the default rooted order. ``traversal_mode="end_to_end"`` defers one
+        root-to-leaf branch until the end at each path node, so off-path child
+        edges are truncated along the way before the path edge is processed.
+
+        Before truncating an edge, all other branches are already
+        orthonormalized into the current node, so the SVD sees the correct bond
+        spectrum. After processing a child subtree, a local QR moves the
+        orthogonality center back to the parent only if another sibling or
+        an ancestor's pending sibling still needs that subtree orthogonal.
+        """
+        if root not in self.network:
+            raise ValueError(f"Unknown root node {root!r}.")
+        if not nx.is_tree(self.network):
+            raise ValueError("round_edgewise() requires a tree network.")
+        if delta < 0:
+            raise ValueError("delta must be nonnegative.")
+        if traversal_mode not in {"rooted", "end_to_end"}:
+            raise ValueError(
+                "traversal_mode must be either 'rooted' or 'end_to_end'."
+            )
+
+        component = nx.node_connected_component(self.network, root)
+        num_edges = self.network.subgraph(component).number_of_edges()
+        edge_delta = (
+            delta / np.sqrt(num_edges)
+            if equal_error_distribution and num_edges > 0
+            else delta
+        )
+
+        path_successor: Dict[NodeName, NodeName] = {}
+        if traversal_mode == "end_to_end":
+            if final_leaf is None:
+                final_leaf = _tree_deepest_leaf(self, root)
+            if final_leaf not in self.network:
+                raise ValueError(
+                    f"Final leaf node {final_leaf!r} is not in the tensor network."
+                )
+            if final_leaf != root and self.network.degree(final_leaf) > 1:
+                raise ValueError(f"Node {final_leaf!r} is not a leaf.")
+
+            path = nx.shortest_path(self.network, root, final_leaf)
+            path_successor = {
+                path[i]: path[i + 1] for i in range(len(path) - 1)
+            }
+
+        self.orthonormalize_edgewise(root)
+
+        def _round(
+            node: NodeName,
+            parent: Optional[NodeName],
+            restore_subtree: bool,
+        ) -> float:
+            error_sq = 0.0
+            children = [
+                child
+                for child in self.network.neighbors(node)
+                if child != parent
+            ]
+            deferred_child = path_successor.get(node)
+            ordered_children = [
+                child for child in children if child != deferred_child
+            ]
+            if deferred_child is not None and deferred_child in children:
+                ordered_children.append(deferred_child)
+
+            for child_number, child in enumerate(ordered_children):
+                edge_err = _tree_truncate_edge_svd(self, node, child, edge_delta)
+                error_sq += edge_err * edge_err
+                child_needs_return = (
+                    restore_subtree or child_number + 1 < len(ordered_children)
+                )
+                child_err = _round(child, node, child_needs_return)
+                error_sq += child_err * child_err
+
+                if child_needs_return:
+                    _tree_qr_absorb_edge(self, child, node)
+
+            return float(np.sqrt(error_sq))
+
+        total_err = _round(root, None, False)
+        return root, total_err
+
     def compress(self) -> None:
         """Compress the network by removing nodes
         where one index equals to the product of other indices.
@@ -2276,7 +2398,7 @@ class TTRandRound:
         return Omega
 
     def khatri_rao_gaussians_ttsum(self, rank: int) -> List[np.ndarray]:
-        """Gaussian matrices for TT-sum using the first summand as shape reference."""
+        """Isotropic Gaussian factors shared by all TT summands."""
         Omega = []
         ref = self.y[0]
         for i in range(self.d):
@@ -2284,7 +2406,7 @@ class TTRandRound:
                 curr_shape = [ref.value(i).shape[0], rank]
             else:
                 curr_shape = [ref.value(i).shape[1], rank]
-            Omega.append(np.random.randn(*curr_shape) / np.sqrt(np.prod(curr_shape)))
+            Omega.append(np.random.randn(*curr_shape))
         return Omega
     
     def krp_contraction(self, Omega: List[np.ndarray], current_idx: int) -> List[np.ndarray]:
@@ -2729,6 +2851,7 @@ class TTRandRound:
         tol: float,
         f_inc: float,
         min_samples: int = 20,
+        postprocess: bool = False,
     ) -> TensorNetwork:
         """Adaptive randomized rounding for TT-sums (Algorithm D.2)."""
         if not isinstance(self.y, List):
@@ -2795,7 +2918,8 @@ class TTRandRound:
         normX_est = np.linalg.norm(_tt_matmul(current_core, W[0]), ord="fro") / np.sqrt(
             sample_size
         )
-        tau = tol * normX_est / np.sqrt(self.d - 1)
+        stage_tol = tol / np.sqrt(2.0) if postprocess else tol
+        tau = stage_tol * normX_est / np.sqrt(self.d - 1)
 
         for n in range(self.d - 1):
             # Current core as vertical unfolding
@@ -2936,42 +3060,43 @@ class TTRandRound:
 
             current_core = res.value(n + 1)
 
-        # Final TT-rounding (SVD sweep)
-        normX = np.linalg.norm(res.value(self.d - 1), ord="fro")
-        tau = tol * normX / np.sqrt(self.d - 1)
+        if postprocess:
+            # Reserve half the squared error budget for this SVD sweep.
+            normX = np.linalg.norm(res.value(self.d - 1), ord="fro")
+            tau = stage_tol * normX / np.sqrt(self.d - 1)
 
-        for n in range(self.d - 1, 0, -1):
-            core = res.value(n)
-            if core.ndim == 2:
-                v2h = core
-            else:
-                v2h = core.reshape((core.shape[0], -1))
+            for n in range(self.d - 1, 0, -1):
+                core = res.value(n)
+                if core.ndim == 2:
+                    v2h = core
+                else:
+                    v2h = core.reshape((core.shape[0], -1))
 
-            Q, R = np.linalg.qr(v2h.T)
-            U, s, Vt = np.linalg.svd(R, full_matrices=False)
-            rk = eps_to_rank(s, tau)
-            U = U[:, :rk]
-            s = s[:rk]
-            V = Vt.T[:, :rk]
+                Q, R = np.linalg.qr(v2h.T)
+                U, s, Vt = np.linalg.svd(R, full_matrices=False)
+                rk = eps_to_rank(s, tau)
+                U = U[:, :rk]
+                s = s[:rk]
+                V = Vt.T[:, :rk]
 
-            new_h = _tt_matmul(Q, U).T
-            new_v = h2v_block(new_h, n_sizes[n])
-            if n == self.d - 1:
-                new_core = new_v.reshape((rk, n_sizes[n]))
-            else:
-                new_core = new_v.reshape((rk, n_sizes[n], core.shape[2]))
-            res.network.nodes[n]["tensor"].update_val_size(new_core)
+                new_h = _tt_matmul(Q, U).T
+                new_v = h2v_block(new_h, n_sizes[n])
+                if n == self.d - 1:
+                    new_core = new_v.reshape((rk, n_sizes[n]))
+                else:
+                    new_core = new_v.reshape((rk, n_sizes[n], core.shape[2]))
+                res.network.nodes[n]["tensor"].update_val_size(new_core)
 
-            mat = _tt_matmul(V, np.diag(s))
-            prev = res.value(n - 1)
-            if prev.ndim == 2:
-                res.network.nodes[n - 1]["tensor"].update_val_size(
-                    _tt_matmul(prev, mat)
-                )
-            else:
-                res.network.nodes[n - 1]["tensor"].update_val_size(
-                    np.einsum("ijk,kl->ijl", prev, mat)
-                )
+                mat = _tt_matmul(V, np.diag(s))
+                prev = res.value(n - 1)
+                if prev.ndim == 2:
+                    res.network.nodes[n - 1]["tensor"].update_val_size(
+                        _tt_matmul(prev, mat)
+                    )
+                else:
+                    res.network.nodes[n - 1]["tensor"].update_val_size(
+                        np.einsum("ijk,kl->ijl", prev, mat)
+                    )
 
         return res
     
@@ -3019,11 +3144,13 @@ def tt_sum_randomized_round_adaptive(
     f_inc: float,
     a: Optional[List[float]] = None,
     min_samples: int = 20,
+    postprocess: bool = False,
 ) -> TensorNetwork:
-    """Adaptive randomized rounding for a TT-sum (Algorithms D.1/D.2)."""
+    """Adaptive randomized TT-sum rounding with optional final SVD sweep."""
     rand_setup = TTRandRound(y, target_ranks=[])
     return rand_setup.adaptive_rto_rounding_ttsum(
-        a=a, tol=tol, f_inc=f_inc, min_samples=min_samples
+        a=a, tol=tol, f_inc=f_inc, min_samples=min_samples,
+        postprocess=postprocess,
     )
 
 
@@ -3155,6 +3282,23 @@ def _tree_parent_depth(
     return parent, depth
 
 
+def _tree_deepest_leaf(tn: TensorNetwork, root: NodeName) -> NodeName:
+    """Pick a deepest leaf in the tree rooted at ``root``."""
+    _, depth = _tree_parent_depth(tn, root)
+    leaves = [
+        node
+        for node in tn.network.nodes
+        if (node == root and tn.network.degree(node) == 0)
+        or (node != root and tn.network.degree(node) == 1)
+    ]
+    if not leaves:
+        return root
+
+    deepest = max(depth[node] for node in leaves)
+    candidates = [node for node in leaves if depth[node] == deepest]
+    return min(candidates, key=str)
+
+
 def _tree_common_index(
     tn: TensorNetwork, node1: NodeName, node2: NodeName
 ) -> Index:
@@ -3191,7 +3335,14 @@ def _tree_sketch_column_count(
 ) -> int:
     if key not in all_sketches:
         return 0
-    return all_sketches[key].shape[1]
+    sketch = all_sketches[key]
+    if sketch.ndim == 2:
+        return sketch.shape[1]
+    if sketch.ndim == 3:
+        if sketch.shape[0] != sketch.shape[2]:
+            raise ValueError("Cached TT factors must have matching sketch-rank sizes.")
+        return sketch.shape[0]
+    raise ValueError("Cached sketches must be either 2D or 3D arrays.")
 
 
 def _tree_append_sketch_columns(
@@ -3199,10 +3350,45 @@ def _tree_append_sketch_columns(
     key: Tuple[Index, NodeName],
     new_columns: np.ndarray,
 ) -> None:
-    if key in all_sketches:
-        all_sketches[key] = np.concatenate((all_sketches[key], new_columns), axis=1)
-    else:
+    if key not in all_sketches:
         all_sketches[key] = new_columns
+        return
+
+    current = all_sketches[key]
+    if current.ndim != new_columns.ndim:
+        raise ValueError("Cannot append TT sketch blocks with mismatched tensor order.")
+
+    if current.ndim == 2:
+        all_sketches[key] = np.concatenate((current, new_columns), axis=1)
+        return
+
+    if current.ndim == 3:
+        if current.shape[1] != new_columns.shape[1]:
+            raise ValueError("TT internal sketch factors must keep the same edge size.")
+        old_cols = current.shape[0]
+        new_cols = new_columns.shape[0]
+        total = np.zeros(
+            (old_cols + new_cols, current.shape[1], old_cols + new_cols),
+            dtype=np.result_type(current, new_columns),
+        )
+        total[:old_cols, :, :old_cols] = current
+        total[old_cols:, :, old_cols:] = new_columns
+        all_sketches[key] = total
+        return
+
+    raise ValueError("Cached sketches must be either 2D or 3D arrays.")
+
+
+def _tree_slice_sketch_block(
+    sketch: np.ndarray,
+    start: int,
+    stop: int,
+) -> np.ndarray:
+    if sketch.ndim == 2:
+        return sketch[:, start:stop]
+    if sketch.ndim == 3:
+        return sketch[start:stop, :, start:stop]
+    raise ValueError("Cached sketches must be either 2D or 3D arrays.")
 
 
 def _tree_neighbor_across_index(
@@ -3219,12 +3405,48 @@ def _tree_neighbor_across_index(
     return None
 
 
+class _TreeSharedRandomDraws:
+    """Record one sketch's random factors and replay them for each summand."""
+
+    def __init__(self) -> None:
+        self.factors: List[np.ndarray] = []
+        self.position = 0
+        self.replaying = False
+
+    def rewind(self) -> None:
+        self.position = 0
+        self.replaying = True
+
+    def draw(
+        self, shape: Tuple[int, ...], factory: Callable[[], np.ndarray]
+    ) -> np.ndarray:
+        if not self.replaying:
+            factor = factory()
+            if factor.shape != shape:
+                raise ValueError("Generated sketch factor has an unexpected shape.")
+            self.factors.append(factor)
+            return factor
+
+        if self.position >= len(self.factors):
+            raise ValueError("Summands require different random sketch factors.")
+        factor = self.factors[self.position]
+        self.position += 1
+        if factor.shape != shape:
+            raise ValueError("Summands have incompatible sketch factor shapes.")
+        return factor
+
+    def check_complete(self) -> None:
+        if self.replaying and self.position != len(self.factors):
+            raise ValueError("Summands used different random sketch factors.")
+
+
 def _tree_ensure_free_sketch_columns(
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray],
     index: Index,
     node: NodeName,
     num_columns: int,
     normalize: bool = True,
+    shared_random: Optional[_TreeSharedRandomDraws] = None,
 ) -> None:
     key = (index, node)
     existing_columns = _tree_sketch_column_count(all_sketches, key)
@@ -3233,7 +3455,12 @@ def _tree_ensure_free_sketch_columns(
 
     missing_columns = num_columns - existing_columns
     norm_constant = np.sqrt(missing_columns) if normalize else 1.0
-    new_columns = np.random.randn(index.size, missing_columns) / norm_constant
+    factory = lambda: np.random.randn(index.size, missing_columns) / norm_constant
+    new_columns = (
+        factory()
+        if shared_random is None
+        else shared_random.draw((index.size, missing_columns), factory)
+    )
     _tree_append_sketch_columns(all_sketches, key, new_columns)
 
 
@@ -3287,17 +3514,18 @@ def _tree_sketch_norm_squared(
 
     For ``khatri_rao`` sketches, each sketch column is isotropic and the
     unbiased estimator of ``||X||_F^2`` is ``||Y||_F^2 / m`` where ``m`` is the
-    sketch-column count. For ``tree_tensor`` sketches, the recursive free-index
+    sketch-column count. For ``tree`` sketches, the recursive free-index
     and combine-tensor normalization makes ``E[YY^T]`` match ``XX^T`` directly,
     so no extra ``1 / m`` factor is needed.
     """
     fro_sq = float(np.linalg.norm(sketch, ord="fro") ** 2)
-    if factor_combine_mode == "khatri_rao":
+    if factor_combine_mode in {"khatri_rao", "tt"}:
         return fro_sq / sketch.shape[1]
-    if factor_combine_mode == "tree_tensor":
+    if factor_combine_mode == "tree":
         return fro_sq
     raise ValueError(
-        "factor_combine_mode must be either 'khatri_rao' or 'tree_tensor'."
+        "factor_combine_mode must be 'khatri_rao', 'tree', or "
+        "'tt'."
     )
 
 
@@ -3323,7 +3551,9 @@ def _tree_random_sketch_combine_tensor(sketch_dim: int) -> np.ndarray:
 
 
 def _tree_pairwise_tensor_combine(
-    left: np.ndarray, right: np.ndarray
+    left: np.ndarray,
+    right: np.ndarray,
+    shared_random: Optional[_TreeSharedRandomDraws] = None,
 ) -> np.ndarray:
     """Combine two factor matrices through a random 3-tensor.
 
@@ -3335,17 +3565,283 @@ def _tree_pairwise_tensor_combine(
         raise ValueError("Sketch factors must share the same column dimension.")
 
     sketch_dim = left.shape[1]
-    combine_tensor = _tree_random_sketch_combine_tensor(sketch_dim)
+    factory = lambda: _tree_random_sketch_combine_tensor(sketch_dim)
+    combine_tensor = (
+        factory()
+        if shared_random is None
+        else shared_random.draw((sketch_dim,) * 3, factory)
+    )
     combined = np.einsum(
         "ia,jb,abk->ijk", left, right, combine_tensor, optimize=True
     )
     return combined.reshape(left.shape[0] * right.shape[0], sketch_dim)
 
 
+def _tree_random_tt_end_factor(index_size: int, sketch_dim: int) -> np.ndarray:
+    """Random 2D Gaussian end factor for a TT embedding."""
+    if index_size <= 0:
+        raise ValueError("index_size must be positive.")
+    if sketch_dim <= 0:
+        raise ValueError("sketch_dim must be positive.")
+    return np.random.randn(index_size, sketch_dim)
+
+
+def _tree_random_tt_internal_factor(
+    index_size: int, sketch_dim: int
+) -> np.ndarray:
+    """Random 3D Gaussian TT core with constant rank ``sketch_dim``."""
+    if index_size <= 0:
+        raise ValueError("index_size must be positive.")
+    if sketch_dim <= 0:
+        raise ValueError("sketch_dim must be positive.")
+    return np.random.randn(sketch_dim, index_size, sketch_dim) / np.sqrt(
+        sketch_dim
+    )
+
+
+def _tree_ensure_free_tt_sketch_columns(
+    all_sketches: Dict[Tuple[Index, NodeName], np.ndarray],
+    index: Index,
+    node: NodeName,
+    num_columns: int,
+    *,
+    is_end_factor: bool,
+    shared_random: Optional[_TreeSharedRandomDraws] = None,
+) -> None:
+    key = (index, node)
+    existing_columns = _tree_sketch_column_count(all_sketches, key)
+    if existing_columns >= num_columns:
+        return
+
+    missing_columns = num_columns - existing_columns
+    if is_end_factor:
+        shape = (index.size, missing_columns)
+        factory = lambda: _tree_random_tt_end_factor(index.size, missing_columns)
+    else:
+        shape = (missing_columns, index.size, missing_columns)
+        factory = lambda: _tree_random_tt_internal_factor(index.size, missing_columns)
+    new_columns = (
+        factory() if shared_random is None else shared_random.draw(shape, factory)
+    )
+    _tree_append_sketch_columns(all_sketches, key, new_columns)
+
+
+def _tree_tt_extend_end_factor(
+    current: np.ndarray, factor: np.ndarray
+) -> np.ndarray:
+    """Append a 3D TT factor to an end-anchored 2D TT factor."""
+    if current.ndim != 2 or factor.ndim != 3:
+        raise ValueError("Expected a 2D factor followed by a 3D factor.")
+    if current.shape[1] != factor.shape[0]:
+        raise ValueError("TT factor ranks do not match.")
+    combined = np.einsum("pa,adb->pdb", current, factor, optimize=True)
+    return combined.reshape(current.shape[0] * factor.shape[1], factor.shape[2])
+
+
+def _tree_tt_extend_internal_factor(
+    current: np.ndarray, factor: np.ndarray
+) -> np.ndarray:
+    """Append one 3D TT factor to another while preserving open TT ranks."""
+    if current.ndim != 3 or factor.ndim != 3:
+        raise ValueError("Expected two 3D TT factors.")
+    if current.shape[2] != factor.shape[0]:
+        raise ValueError("TT factor ranks do not match.")
+    combined = np.einsum("apc,cdb->apdb", current, factor, optimize=True)
+    return combined.reshape(
+        current.shape[0], current.shape[1] * factor.shape[1], factor.shape[2]
+    )
+
+
+def _tree_component_contains_node(
+    tn: TensorNetwork,
+    start: NodeName,
+    blocked: NodeName,
+    target: NodeName,
+) -> bool:
+    """Check whether ``target`` lies in the component of ``start`` avoiding ``blocked``."""
+    return target in _tree_component_nodes(tn, start, blocked)
+
+
+def _tree_ensure_directional_tt_sketch_columns(
+    tn: TensorNetwork,
+    sketching_node: NodeName,
+    orthogonalization_node: NodeName,
+    all_sketches: Dict[Tuple[Index, NodeName], np.ndarray],
+    num_columns: int,
+    final_leaf: NodeName,
+    shared_random: Optional[_TreeSharedRandomDraws] = None,
+) -> None:
+    """Ensure a cached TT directional factor has at least ``num_columns`` samples."""
+    truncation_index = _tree_common_index(tn, sketching_node, orthogonalization_node)
+    sketch_key = (truncation_index, orthogonalization_node)
+    existing_columns = _tree_sketch_column_count(all_sketches, sketch_key)
+    if existing_columns >= num_columns:
+        return
+
+    missing_start = existing_columns
+    missing_stop = num_columns
+    missing_columns = missing_stop - missing_start
+
+    node_tensor = tn.node_tensor(sketching_node)
+    tr_ind_pos = node_tensor.indices.index(truncation_index)
+    component_contains_end = _tree_component_contains_node(
+        tn, sketching_node, orthogonalization_node, final_leaf
+    )
+
+    factor_entries: List[Tuple[int, bool, np.ndarray]] = []
+    free_indices: List[Tuple[int, Index]] = []
+
+    for i, index in enumerate(node_tensor.indices):
+        if i == tr_ind_pos:
+            continue
+
+        neighbor = _tree_neighbor_across_index(
+            tn, sketching_node, index, orthogonalization_node
+        )
+        if neighbor is None:
+            free_indices.append((i, index))
+            continue
+
+        _tree_ensure_directional_tt_sketch_columns(
+            tn,
+            neighbor,
+            sketching_node,
+            all_sketches,
+            num_columns,
+            final_leaf,
+            shared_random,
+        )
+        child_factor = _tree_slice_sketch_block(
+            all_sketches[(index, sketching_node)], missing_start, missing_stop
+        )
+        factor_entries.append((i, child_factor.ndim == 2, child_factor))
+
+    end_factor_count = sum(1 for _, is_end, _ in factor_entries if is_end)
+    if end_factor_count > 1:
+        raise ValueError("TT embedding encountered multiple end-anchored child factors.")
+
+    needs_local_end = component_contains_end and end_factor_count == 0
+    if needs_local_end and free_indices:
+        end_pos, end_index = free_indices[0]
+        _tree_ensure_free_tt_sketch_columns(
+            all_sketches,
+            end_index,
+            sketching_node,
+            num_columns,
+            is_end_factor=True,
+            shared_random=shared_random,
+        )
+        factor_entries.append(
+            (
+                end_pos,
+                True,
+                _tree_slice_sketch_block(
+                    all_sketches[(end_index, sketching_node)],
+                    missing_start,
+                    missing_stop,
+                ),
+            )
+        )
+        free_indices = free_indices[1:]
+
+    for position, index in free_indices:
+        _tree_ensure_free_tt_sketch_columns(
+            all_sketches,
+            index,
+            sketching_node,
+            num_columns,
+            is_end_factor=False,
+            shared_random=shared_random,
+        )
+        factor_entries.append(
+            (
+                position,
+                False,
+                _tree_slice_sketch_block(
+                    all_sketches[(index, sketching_node)],
+                    missing_start,
+                    missing_stop,
+                ),
+            )
+        )
+
+    if not factor_entries:
+        if component_contains_end:
+            factory = lambda: np.random.randn(1, missing_columns)
+            total_factor = (
+                factory()
+                if shared_random is None
+                else shared_random.draw((1, missing_columns), factory)
+            )
+        else:
+            factory = lambda: _tree_random_tt_internal_factor(1, missing_columns)
+            total_factor = (
+                factory()
+                if shared_random is None
+                else shared_random.draw(
+                    (missing_columns, 1, missing_columns), factory
+                )
+            )
+    else:
+        end_factors = [entry for entry in factor_entries if entry[1]]
+        internal_factors = [entry for entry in factor_entries if not entry[1]]
+
+        if end_factors:
+            chain_entries = end_factors + internal_factors
+            total_factor = end_factors[0][2]
+            for _, _, factor in internal_factors:
+                total_factor = _tree_tt_extend_end_factor(total_factor, factor)
+        else:
+            chain_entries = internal_factors
+            total_factor = internal_factors[0][2]
+            for _, _, factor in internal_factors[1:]:
+                total_factor = _tree_tt_extend_internal_factor(
+                    total_factor, factor
+                )
+
+        # TT chaining starts at the end factor; restore the core's index order
+        # before contracting its flattened physical axes.
+        physical_sizes = [
+            factor.shape[0] if is_end else factor.shape[1]
+            for _, is_end, factor in chain_entries
+        ]
+        physical_order = sorted(
+            range(len(chain_entries)), key=lambda j: chain_entries[j][0]
+        )
+        if total_factor.ndim == 2:
+            total_factor = total_factor.reshape(
+                *physical_sizes, missing_columns
+            ).transpose(
+                *physical_order, len(physical_sizes)
+            ).reshape(-1, missing_columns)
+        else:
+            total_factor = total_factor.reshape(
+                missing_columns, *physical_sizes, missing_columns
+            ).transpose(
+                0,
+                *(j + 1 for j in physical_order),
+                len(physical_sizes) + 1,
+            ).reshape(missing_columns, -1, missing_columns)
+
+    sketch_node_val = np.moveaxis(node_tensor.value, tr_ind_pos, 0).reshape(
+        node_tensor.value.shape[tr_ind_pos], -1
+    )
+
+    if total_factor.ndim == 2:
+        new_sketch = _tree_matmul(sketch_node_val, total_factor)
+    else:
+        new_sketch = np.einsum(
+            "ep,apb->aeb", sketch_node_val, total_factor, optimize=True
+        )
+
+    _tree_append_sketch_columns(all_sketches, sketch_key, new_sketch)
+
+
 def _tree_combine_sketch_factors(
     factors: List[np.ndarray],
     sketch_dim: int,
     factor_combine_mode: str,
+    shared_random: Optional[_TreeSharedRandomDraws] = None,
 ) -> np.ndarray:
     """Combine child/free sketch factors into one contraction matrix."""
     if not factors:
@@ -3357,9 +3853,10 @@ def _tree_combine_sketch_factors(
             total = khatri_rao(total, factor)
         return total
 
-    if factor_combine_mode != "tree_tensor":
+    if factor_combine_mode != "tree":
         raise ValueError(
-            "factor_combine_mode must be either 'khatri_rao' or 'tree_tensor'."
+            "factor_combine_mode must be 'khatri_rao', 'tree', or "
+            "'tt'."
         )
 
     current_level = list(factors)
@@ -3369,7 +3866,7 @@ def _tree_combine_sketch_factors(
         while i + 1 < len(current_level):
             next_level.append(
                 _tree_pairwise_tensor_combine(
-                    current_level[i], current_level[i + 1]
+                    current_level[i], current_level[i + 1], shared_random
                 )
             )
             i += 2
@@ -3387,8 +3884,26 @@ def _tree_ensure_directional_sketch_columns(
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray],
     num_columns: int,
     factor_combine_mode: str,
+    final_leaf: Optional[NodeName] = None,
+    shared_random: Optional[_TreeSharedRandomDraws] = None,
 ) -> None:
     """Ensure a directional edge sketch has at least num_columns columns."""
+    if factor_combine_mode == "tt":
+        if final_leaf is None:
+            raise ValueError(
+                "tt requires a final leaf for end-to-end traversal."
+            )
+        _tree_ensure_directional_tt_sketch_columns(
+            tn,
+            sketching_node,
+            orthogonalization_node,
+            all_sketches,
+            num_columns,
+            final_leaf,
+            shared_random,
+        )
+        return
+
     truncation_index = _tree_common_index(tn, sketching_node, orthogonalization_node)
     sketch_key = (truncation_index, orthogonalization_node)
     existing_columns = _tree_sketch_column_count(all_sketches, sketch_key)
@@ -3410,9 +3925,10 @@ def _tree_ensure_directional_sketch_columns(
             tn, sketching_node, index, orthogonalization_node
         )
         if neighbor is None:
-            normalize = True if factor_combine_mode == "tree_tensor" else False
+            normalize = True if factor_combine_mode == "tree" else False
             _tree_ensure_free_sketch_columns(
-                all_sketches, index, sketching_node, num_columns, normalize
+                all_sketches, index, sketching_node, num_columns, normalize,
+                shared_random,
             )
             factor = all_sketches[(index, sketching_node)][
                 :, missing_start:missing_stop
@@ -3425,6 +3941,8 @@ def _tree_ensure_directional_sketch_columns(
                 all_sketches,
                 num_columns,
                 factor_combine_mode,
+                final_leaf=final_leaf,
+                shared_random=shared_random,
             )
             factor = all_sketches[(index, sketching_node)][
                 :, missing_start:missing_stop
@@ -3438,7 +3956,7 @@ def _tree_ensure_directional_sketch_columns(
         )
 
     total_kr_contraction = _tree_combine_sketch_factors(
-        factor_matrices, missing_columns, factor_combine_mode
+        factor_matrices, missing_columns, factor_combine_mode, shared_random
     )
 
     sketch_node_val = tn.node_tensor(sketching_node).value
@@ -3486,6 +4004,8 @@ def _tree_edge_sketch_blocks(
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray],
     factor_combine_mode: str,
     start_column: int = 0,
+    final_leaf: Optional[NodeName] = None,
+    shared_random: Optional[_TreeSharedRandomDraws] = None,
 ) -> Tuple[List[np.ndarray], np.ndarray, int, Index]:
     """Sketch one edge for several independent sample blocks in one traversal."""
     if int(np.sum(block_sizes)) <= 0:
@@ -3503,13 +4023,129 @@ def _tree_edge_sketch_blocks(
     for block_size in block_sizes:
         stop = start + block_size
         _tree_ensure_directional_sketch_columns(
-            tn, parent, node, all_sketches, stop, factor_combine_mode
+            tn,
+            parent,
+            node,
+            all_sketches,
+            stop,
+            factor_combine_mode,
+            final_leaf=final_leaf,
+            shared_random=shared_random,
         )
         parent_sketch = all_sketches[(edge_index, node)]
-        sketches.append(_tree_matmul(node_mat, parent_sketch[:, start:stop]))
+        parent_block = _tree_slice_sketch_block(parent_sketch, start, stop)
+        if parent_block.ndim != 2:
+            raise ValueError(
+                "Directional TT embedding must return a 2D factor on the "
+                "deferred end-to-end source side."
+            )
+        sketches.append(_tree_matmul(node_mat, parent_block))
         start = stop
 
     return sketches, node_mat, edge_pos, edge_index
+
+
+def _tree_sum_edge_sketch_blocks(
+    summands: Sequence[TensorNetwork],
+    node: NodeName,
+    parent: NodeName,
+    block_sizes: Sequence[int],
+    all_sketches: Sequence[Dict[Tuple[Index, NodeName], np.ndarray]],
+    factor_combine_mode: str,
+    start_column: int = 0,
+    final_leaf: Optional[NodeName] = None,
+) -> List[np.ndarray]:
+    """Sketch summands separately with one shared random embedding."""
+    if len(summands) != len(all_sketches):
+        raise ValueError("Each tree summand must have its own sketch cache.")
+
+    shared_random = _TreeSharedRandomDraws()
+    summand_blocks: List[List[np.ndarray]] = []
+    for summand_number, (summand, sketch_cache) in enumerate(
+        zip(summands, all_sketches)
+    ):
+        if summand_number:
+            shared_random.rewind()
+        blocks, _, _, _ = _tree_edge_sketch_blocks(
+            summand,
+            node,
+            parent,
+            block_sizes,
+            sketch_cache,
+            factor_combine_mode,
+            start_column=start_column,
+            final_leaf=final_leaf,
+            shared_random=shared_random,
+        )
+        shared_random.check_complete()
+        summand_blocks.append(blocks)
+
+    combined_blocks: List[np.ndarray] = []
+    for block_index in range(len(block_sizes)):
+        combined = summand_blocks[0][block_index].copy()
+        for blocks in summand_blocks[1:]:
+            if blocks[block_index].shape != combined.shape:
+                raise ValueError(
+                    "Tree summands produced incompatible sketch row "
+                    "dimensions."
+                )
+            combined += blocks[block_index]
+        combined_blocks.append(combined)
+    return combined_blocks
+
+
+def _validate_tree_sum_summands(
+    summands: Sequence[TensorNetwork],
+) -> None:
+    """Validate the structural compatibility required by tree-sum rounding."""
+    if not summands:
+        raise ValueError(
+            "At least one tree tensor network summand is required."
+        )
+
+    reference = summands[0]
+    reference_nodes = set(reference.network.nodes)
+    reference_edges = {frozenset(edge) for edge in reference.network.edges}
+    if (
+        reference.network.number_of_nodes() > 0
+        and not nx.is_tree(reference.network)
+    ):
+        raise ValueError(
+            "Adaptive tree-sum rounding requires tree tensor networks."
+        )
+
+    reference_counts = Counter(
+        index.name
+        for node in reference.network.nodes
+        for index in reference.node_tensor(node).indices
+    )
+    for summand in summands[1:]:
+        if set(summand.network.nodes) != reference_nodes or {
+            frozenset(edge) for edge in summand.network.edges
+        } != reference_edges:
+            raise ValueError(
+                "All tree summands must have the same labeled topology."
+            )
+
+        for node in reference.network.nodes:
+            reference_indices = reference.node_tensor(node).indices
+            summand_indices = summand.node_tensor(node).indices
+            if [index.name for index in summand_indices] != [
+                index.name for index in reference_indices
+            ]:
+                raise ValueError(
+                    "All tree summands must use the same node index ordering."
+                )
+            for reference_index, summand_index in zip(
+                reference_indices, summand_indices
+            ):
+                if (
+                    reference_counts[reference_index.name] == 1
+                    and reference_index.size != summand_index.size
+                ):
+                    raise ValueError(
+                        "Free-index sizes must agree across all tree summands."
+                    )
 
 
 def _tree_postorder_edge_traversal(
@@ -3590,6 +4226,63 @@ def _tree_leaf_to_root_edge_traversal(
     )
 
 
+def _tree_qr_absorb_edge(
+    tn: TensorNetwork, node: NodeName, parent: NodeName
+) -> None:
+    """QR-orthonormalize ``node`` toward ``parent`` and absorb ``R`` upward."""
+    node_tensor = tn.node_tensor(node)
+    parent_tensor = tn.node_tensor(parent)
+    edge_index = tn.get_contraction_index(node, parent)[0]
+    edge_pos = node_tensor.indices.index(edge_index)
+    parent_pos = parent_tensor.indices.index(edge_index)
+
+    moved = np.moveaxis(node_tensor.value, edge_pos, -1)
+    node_mat = moved.reshape(-1, moved.shape[-1])
+    q_basis, factor = np.linalg.qr(node_mat)
+
+    new_rank = q_basis.shape[1]
+    new_index = edge_index.with_new_size(new_rank)
+
+    new_node_value = q_basis.reshape(moved.shape[:-1] + (new_rank,))
+    new_node_value = np.moveaxis(new_node_value, -1, edge_pos)
+    new_node_indices = list(node_tensor.indices)
+    new_node_indices[edge_pos] = new_index
+    tn.set_node_tensor(node, Tensor(new_node_value, new_node_indices))
+
+    parent_value = np.tensordot(factor, parent_tensor.value, axes=(1, parent_pos))
+    parent_value = np.moveaxis(parent_value, 0, parent_pos)
+    new_parent_indices = list(parent_tensor.indices)
+    new_parent_indices[parent_pos] = new_index
+    tn.set_node_tensor(parent, Tensor(parent_value, new_parent_indices))
+
+
+def _tree_truncate_edge_svd(
+    tn: TensorNetwork,
+    node: NodeName,
+    parent: NodeName,
+    delta: float,
+) -> float:
+    """Truncate the edge from ``node`` to ``parent`` and absorb the factor."""
+    node_tensor = tn.node_tensor(node)
+    edge_index = tn.get_contraction_index(node, parent)[0]
+    edge_pos = node_tensor.indices.index(edge_index)
+
+    moved = np.moveaxis(node_tensor.value, edge_pos, -1)
+    node_mat = moved.reshape(-1, moved.shape[-1])
+    trunc_svd = delta_svd(node_mat, delta)
+    _tree_absorb_factor(
+        tn,
+        node,
+        parent,
+        trunc_svd.u,
+        node_mat,
+        edge_pos,
+        edge_index,
+    )
+    discarded_sq = max(delta * delta - trunc_svd.remaining_delta**2, 0.0)
+    return float(np.sqrt(discarded_sq))
+
+
 def _tree_absorb_factor(
     tn: TensorNetwork,
     node: NodeName,
@@ -3643,9 +4336,12 @@ def tree_adaptive_rand_round(
     ``final_leaf`` as the final unorthogonalized node.
 
     ``factor_combine_mode="khatri_rao"`` uses the original columnwise
-    Khatri-Rao factor contraction. ``factor_combine_mode="tree_tensor"``
+    Khatri-Rao factor contraction. ``factor_combine_mode="tree"``
     combines adjacent factors through random 3-tensors in a binary-tree
     reduction while preserving the sketch-column dimension.
+    ``factor_combine_mode="tt"`` propagates one end-anchored 2D
+    factor and otherwise 3D TT factors of constant rank equal to the sketch
+    width.
     """
     if not (0 < init_f < 1) or not (0 < incr_f < 1):
         raise ValueError("init_f and incr_f must satisfy 0 < f < 1.")
@@ -3653,9 +4349,17 @@ def tree_adaptive_rand_round(
         raise ValueError(
             "traversal_mode must be either 'leaf_to_root' or 'end_to_end'."
         )
-    if factor_combine_mode not in {"khatri_rao", "tree_tensor"}:
+    if factor_combine_mode not in {"khatri_rao", "tree", "tt"}:
         raise ValueError(
-            "factor_combine_mode must be either 'khatri_rao' or 'tree_tensor'."
+            "factor_combine_mode must be 'khatri_rao', 'tree', or "
+            "'tt'."
+        )
+    if (
+        factor_combine_mode == "tt"
+        and traversal_mode != "end_to_end"
+    ):
+        raise ValueError(
+            "tt is only implemented for traversal_mode='end_to_end'."
         )
 
     if tn.network.number_of_edges() == 0:
@@ -3675,6 +4379,11 @@ def tree_adaptive_rand_round(
     all_sketches: Dict[Tuple[Index, NodeName], np.ndarray] = {}
     if traversal_mode == "end_to_end" and final_leaf is None:
         final_leaf = root
+    if factor_combine_mode == "tt":
+        if final_leaf not in res.network:
+            raise ValueError(f"Leaf node {final_leaf} is not in the tensor network.")
+        if res.network.degree(cast(NodeName, final_leaf)) > 1:
+            raise ValueError(f"Node {final_leaf} is not a leaf.")
 
     if traversal_mode == "leaf_to_root":
         traversal = _tree_leaf_to_root_edge_traversal(res, root)
@@ -3711,6 +4420,7 @@ def tree_adaptive_rand_round(
             block_sizes,
             all_sketches,
             factor_combine_mode,
+            final_leaf=cast(Optional[NodeName], final_leaf),
         )
         sketch = sketch_blocks[0]
         residual_sketch = sketch_blocks[residual_block_index]
@@ -3761,6 +4471,7 @@ def tree_adaptive_rand_round(
                 all_sketches,
                 factor_combine_mode,
                 start_column=sketch_columns_used,
+                final_leaf=cast(Optional[NodeName], final_leaf),
             )
             residual_sketch = sketch_blocks[0]
             sketch_columns_used += sample_size
@@ -3787,8 +4498,8 @@ def tree_adaptive_rand_round(
         )
         _tree_invalidate_changed_sketches(res, all_sketches, {node, parent_node})
         
-    if postprocess:
-        res.round(postprocess_root, tol)
+    if postprocess: 
+        res.round_edgewise(postprocess_root, tol)
 
     res._adaptive_rounding_debug = {
         "initial_norm_estimate": norm_estimate,
@@ -3800,6 +4511,251 @@ def tree_adaptive_rand_round(
         "factor_combine_mode": factor_combine_mode,
     }
     return res
+
+
+def tree_sum_adaptive_rand_round(
+    summands: Sequence[TensorNetwork],
+    tol: float,
+    root: NodeName,
+    coefficients: Optional[Sequence[float]] = None,
+    final_leaf: Optional[NodeName] = None,
+    traversal_mode: str = "end_to_end",
+    init_f: float = 0.1,
+    incr_f: float = 0.05,
+    min_samples: int = 20,
+    tol_scale: float = 1.0,
+    postprocess: bool = True,
+    factor_combine_mode: str = "khatri_rao",
+) -> TensorNetwork:
+    """Adaptively round a sum of compatible tree tensor networks.
+
+    The summands are never assembled into a block-diagonal tensor network.
+    Instead, each random embedding is shared by all summands, contracted with
+    each summand separately, and the resulting sketches are added. The shared
+    range basis is then absorbed into every summand before the sweep continues.
+    """
+    _validate_tree_sum_summands(summands)
+    if not (0 < init_f < 1) or not (0 < incr_f < 1):
+        raise ValueError("init_f and incr_f must satisfy 0 < f < 1.")
+    if traversal_mode not in {"leaf_to_root", "end_to_end"}:
+        raise ValueError(
+            "traversal_mode must be either 'leaf_to_root' or 'end_to_end'."
+        )
+    if factor_combine_mode not in {
+        "khatri_rao",
+        "tree",
+        "tt",
+    }:
+        raise ValueError(
+            "factor_combine_mode must be 'khatri_rao', 'tree', or "
+            "'tt'."
+        )
+    if factor_combine_mode == "tt" and traversal_mode != "end_to_end":
+        raise ValueError(
+            "tt is only implemented for traversal_mode='end_to_end'."
+        )
+
+    if coefficients is None:
+        coefficients = [1.0] * len(summands)
+    if len(coefficients) != len(summands):
+        raise ValueError(
+            "Coefficient count must match the number of summands."
+        )
+
+    components = [copy.deepcopy(summand) for summand in summands]
+    for component, coefficient in zip(components, coefficients):
+        if coefficient != 1:
+            component.scale(coefficient)
+
+    reference = components[0]
+    if root not in reference.network:
+        raise ValueError(f"Root node {root!r} is not in the tensor network.")
+    if traversal_mode == "end_to_end" and final_leaf is None:
+        final_leaf = root
+    if factor_combine_mode == "tt":
+        if final_leaf not in reference.network:
+            raise ValueError(
+                f"Leaf node {final_leaf!r} is not in the tensor network."
+            )
+        if reference.network.degree(cast(NodeName, final_leaf)) > 1:
+            raise ValueError(f"Node {final_leaf!r} is not a leaf.")
+
+    result = copy.deepcopy(reference)
+    num_edges = reference.network.number_of_edges()
+    if num_edges == 0:
+        only_node = next(iter(reference.network.nodes))
+        summed_value = components[0].value(only_node).copy()
+        for component in components[1:]:
+            summed_value += component.value(only_node)
+        result.set_node_tensor(
+            only_node,
+            Tensor(
+                summed_value,
+                list(reference.node_tensor(only_node).indices),
+            ),
+        )
+        result._adaptive_rounding_debug = {
+            "initial_norm_estimate": None,
+            "initial_norm_squared_estimate": None,
+            "tau": None,
+            "num_edges": 0,
+            "num_summands": len(components),
+            "factor_combine_mode": factor_combine_mode,
+        }
+        return result
+
+    if traversal_mode == "leaf_to_root":
+        traversal = _tree_leaf_to_root_edge_traversal(reference, root)
+        final_node = root
+    else:
+        final_node = cast(NodeName, final_leaf)
+        traversal = _tree_two_phase_edge_traversal(reference, root, final_node)
+
+    sketch_caches: List[Dict[Tuple[Index, NodeName], np.ndarray]] = [
+        {} for _ in components
+    ]
+    tau: Optional[float] = None
+    norm_estimate: Optional[float] = None
+
+    for node, parent_node in traversal:
+        node_matrices: List[np.ndarray] = []
+        edge_data: List[Tuple[int, Index]] = []
+        row_shapes: List[Tuple[int, ...]] = []
+        for component in components:
+            node_tensor = component.node_tensor(node)
+            edge_index = _tree_common_index(component, node, parent_node)
+            edge_pos = node_tensor.indices.index(edge_index)
+            moved = np.moveaxis(node_tensor.value, edge_pos, -1)
+            row_shapes.append(moved.shape[:-1])
+            node_matrices.append(moved.reshape(-1, moved.shape[-1]))
+            edge_data.append((edge_pos, edge_index))
+
+        if any(shape != row_shapes[0] for shape in row_shapes[1:]):
+            raise ValueError(
+                "Tree summands have incompatible target-side dimensions "
+                "during rounding."
+            )
+        row_count = node_matrices[0].shape[0]
+        max_cols = min(
+            row_count, sum(matrix.shape[1] for matrix in node_matrices)
+        )
+        init_b = max(int(np.floor(max_cols * init_f)), 1)
+        init_samples = max(init_b, min_samples)
+        b_inc = max(int(np.floor(max_cols * incr_f)), 1)
+        sample_size = max(b_inc, min_samples)
+
+        block_sizes = [init_samples, sample_size]
+        sketch_blocks = _tree_sum_edge_sketch_blocks(
+            components,
+            node,
+            parent_node,
+            block_sizes,
+            sketch_caches,
+            factor_combine_mode,
+            final_leaf=cast(Optional[NodeName], final_leaf),
+        )
+        sketch, residual_sketch = sketch_blocks
+        if tau is None:
+            norm_estimate = _tree_sketch_norm(sketch, factor_combine_mode)
+            tau = tol * norm_estimate / np.sqrt(num_edges)
+
+        q_basis, _ = np.linalg.qr(sketch[:, :init_b])
+        sketch_columns_used = int(np.sum(block_sizes))
+        residual_sketch = residual_sketch - _tree_matmul(
+            q_basis, _tree_matmul(q_basis.T, residual_sketch)
+        )
+        residual_err = _tree_sketch_norm(residual_sketch, factor_combine_mode)
+
+        while residual_err > cast(float, tau) / tol_scale:
+            if q_basis.shape[1] >= max_cols:
+                break
+            add_cols = min(b_inc, max_cols - q_basis.shape[1])
+            if add_cols <= 0:
+                break
+
+            candidate = residual_sketch[:, :add_cols]
+            q_new, _ = np.linalg.qr(candidate)
+            q_new, _ = np.linalg.qr(
+                q_new - _tree_matmul(q_basis, _tree_matmul(q_basis.T, q_new))
+            )
+            if q_new.shape[1] == 0:
+                break
+            q_basis = np.concatenate((q_basis, q_new), axis=1)
+
+            sample_size = max(add_cols, min_samples)
+            residual_sketch = _tree_sum_edge_sketch_blocks(
+                components,
+                node,
+                parent_node,
+                [sample_size],
+                sketch_caches,
+                factor_combine_mode,
+                start_column=sketch_columns_used,
+                final_leaf=cast(Optional[NodeName], final_leaf),
+            )[0]
+            sketch_columns_used += sample_size
+            residual_sketch = residual_sketch - _tree_matmul(
+                q_basis, _tree_matmul(q_basis.T, residual_sketch)
+            )
+            residual_err = _tree_sketch_norm(
+                residual_sketch, factor_combine_mode
+            )
+
+        component_data = zip(
+            components, node_matrices, edge_data, sketch_caches
+        )
+        for component, node_matrix, edge, sketch_cache in component_data:
+            edge_pos, edge_index = edge
+            _tree_absorb_factor(
+                component,
+                node,
+                parent_node,
+                q_basis,
+                node_matrix,
+                edge_pos,
+                edge_index,
+            )
+            _tree_invalidate_changed_sketches(
+                component, sketch_cache, {node, parent_node}
+            )
+
+        # Every processed node is the same shared orthonormal basis in all
+        # components, so only one copy is needed in the output network.
+        result.set_node_tensor(
+            node, copy.deepcopy(components[0].node_tensor(node))
+        )
+
+    final_value = components[0].value(final_node).copy()
+    for component in components[1:]:
+        if component.value(final_node).shape != final_value.shape:
+            raise ValueError(
+                "Tree summands have incompatible final-core dimensions."
+            )
+        final_value += component.value(final_node)
+    result.set_node_tensor(
+        final_node,
+        Tensor(
+            final_value,
+            list(components[0].node_tensor(final_node).indices),
+        ),
+    )
+
+    if postprocess:
+        print("true")
+        result.round_edgewise(final_node, tol)
+
+    result._adaptive_rounding_debug = {
+        "initial_norm_estimate": norm_estimate,
+        "initial_norm_squared_estimate": (
+            None if norm_estimate is None else norm_estimate**2
+        ),
+        "tau": tau,
+        "num_edges": num_edges,
+        "num_summands": len(components),
+        "factor_combine_mode": factor_combine_mode,
+    }
+    return result
+
 
 def ttop_rank1(
     indices_in: List[Index],
