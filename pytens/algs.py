@@ -875,44 +875,39 @@ class TensorNetwork:  # pylint: disable=R0904
     def round_edgewise(
         self,
         root: NodeName,
-        delta: float,
+        tol: float,
         equal_error_distribution: bool = False,
         traversal_mode: str = "rooted",
         final_leaf: Optional[NodeName] = None,
     ) -> Tuple[NodeName, float]:
         """Round a tree with local edge updates instead of merge-heavy sweeps.
 
-        The algorithm first performs a QR sweep toward ``root`` so every
-        non-root subtree is orthonormalized into its parent. It then traverses
-        top-down from ``root``. ``traversal_mode="rooted"`` processes children
-        in the default rooted order. ``traversal_mode="end_to_end"`` defers one
-        root-to-leaf branch until the end at each path node, so off-path child
-        edges are truncated along the way before the path edge is processed.
+        ``tol`` is relative to the norm of the input network. The algorithm
+        first performs a QR sweep toward ``root`` so every non-root subtree
+        is orthonormalized into its parent. The root tensor then carries the
+        full network norm. A top-down sweep truncates edges with an absolute
+        budget derived from that norm. ``traversal_mode="end_to_end"`` defers
+        one root-to-leaf branch until the end at each path node.
 
         Before truncating an edge, all other branches are already
         orthonormalized into the current node, so the SVD sees the correct bond
         spectrum. After processing a child subtree, a local QR moves the
         orthogonality center back to the parent only if another sibling or
         an ancestor's pending sibling still needs that subtree orthogonal.
+        With equal error distribution, each edge receives an absolute budget
+        of ``tol * ||A|| / sqrt(number_of_edges)``. The returned error estimate
+        is absolute.
         """
         if root not in self.network:
             raise ValueError(f"Unknown root node {root!r}.")
         if not nx.is_tree(self.network):
             raise ValueError("round_edgewise() requires a tree network.")
-        if delta < 0:
-            raise ValueError("delta must be nonnegative.")
+        if tol < 0:
+            raise ValueError("tol must be nonnegative.")
         if traversal_mode not in {"rooted", "end_to_end"}:
             raise ValueError(
                 "traversal_mode must be either 'rooted' or 'end_to_end'."
             )
-
-        component = nx.node_connected_component(self.network, root)
-        num_edges = self.network.subgraph(component).number_of_edges()
-        edge_delta = (
-            delta / np.sqrt(num_edges)
-            if equal_error_distribution and num_edges > 0
-            else delta
-        )
 
         path_successor: Dict[NodeName, NodeName] = {}
         if traversal_mode == "end_to_end":
@@ -931,40 +926,16 @@ class TensorNetwork:  # pylint: disable=R0904
             }
 
         self.orthonormalize_edgewise(root)
-
-        def _round(
-            node: NodeName,
-            parent: Optional[NodeName],
-            restore_subtree: bool,
-        ) -> float:
-            error_sq = 0.0
-            children = [
-                child
-                for child in self.network.neighbors(node)
-                if child != parent
-            ]
-            deferred_child = path_successor.get(node)
-            ordered_children = [
-                child for child in children if child != deferred_child
-            ]
-            if deferred_child is not None and deferred_child in children:
-                ordered_children.append(deferred_child)
-
-            for child_number, child in enumerate(ordered_children):
-                edge_err = _tree_truncate_edge_svd(self, node, child, edge_delta)
-                error_sq += edge_err * edge_err
-                child_needs_return = (
-                    restore_subtree or child_number + 1 < len(ordered_children)
-                )
-                child_err = _round(child, node, child_needs_return)
-                error_sq += child_err * child_err
-
-                if child_needs_return:
-                    _tree_qr_absorb_edge(self, child, node)
-
-            return float(np.sqrt(error_sq))
-
-        total_err = _round(root, None, False)
+        num_edges = self.network.number_of_edges()
+        absolute_tol = tol * np.linalg.norm(self.node_tensor(root).value)
+        edge_delta = (
+            absolute_tol / np.sqrt(num_edges)
+            if equal_error_distribution and num_edges > 0
+            else absolute_tol
+        )
+        total_err = _tree_round_edgewise_from_center(
+            self, root, edge_delta, path_successor
+        )
         return root, total_err
 
     def compress(self) -> None:
@@ -4283,6 +4254,79 @@ def _tree_truncate_edge_svd(
     return float(np.sqrt(discarded_sq))
 
 
+def _tree_round_edgewise_from_center(
+    tn: TensorNetwork,
+    center: NodeName,
+    edge_delta: float,
+    path_successor: Dict[NodeName, NodeName],
+    path_first: bool = False,
+) -> float:
+    """Truncate outward from an orthogonality center without a QR sweep."""
+
+    def _round(
+        node: NodeName,
+        parent: Optional[NodeName],
+        restore_subtree: bool,
+    ) -> float:
+        error_sq = 0.0
+        children = [
+            child for child in tn.network.neighbors(node) if child != parent
+        ]
+        if path_first:
+            children.reverse()
+        path_child = path_successor.get(node)
+        ordered_children = [
+            child for child in children if child != path_child
+        ]
+        if path_child in children:
+            if path_first:
+                ordered_children.insert(0, path_child)
+            else:
+                ordered_children.append(path_child)
+
+        for child_number, child in enumerate(ordered_children):
+            edge_err = _tree_truncate_edge_svd(tn, node, child, edge_delta)
+            error_sq += edge_err * edge_err
+            child_needs_return = (
+                restore_subtree or child_number + 1 < len(ordered_children)
+            )
+            child_err = _round(child, node, child_needs_return)
+            error_sq += child_err * child_err
+            if child_needs_return:
+                _tree_qr_absorb_edge(tn, child, node)
+
+        return float(np.sqrt(error_sq))
+
+    return _round(center, None, False)
+
+
+def _tree_postprocess_from_center(
+    tn: TensorNetwork,
+    center: NodeName,
+    original_root: NodeName,
+    tol: float,
+    traversal_mode: str,
+) -> float:
+    """Round the adaptive output from its final center back toward the root."""
+    num_edges = tn.network.number_of_edges()
+    if num_edges == 0:
+        return 0.0
+
+    edge_delta = (
+        tol * np.linalg.norm(tn.node_tensor(center).value)
+        / np.sqrt(num_edges)
+    )
+    path_successor: Dict[NodeName, NodeName] = {}
+    if traversal_mode == "end_to_end":
+        path = nx.shortest_path(tn.network, center, original_root)
+        path_successor = {
+            path[i]: path[i + 1] for i in range(len(path) - 1)
+        }
+    return _tree_round_edgewise_from_center(
+        tn, center, edge_delta, path_successor, path_first=True
+    )
+
+
 def _tree_absorb_factor(
     tn: TensorNetwork,
     node: NodeName,
@@ -4403,6 +4447,11 @@ def tree_adaptive_rand_round(
         )
         max_cols = min(node_mat.shape)
         if max_cols <= 1:
+            if postprocess:
+                _tree_qr_absorb_edge(res, node, parent_node)
+                _tree_invalidate_changed_sketches(
+                    res, all_sketches, {node, parent_node}
+                )
             continue
 
         init_b = max(int(np.floor(max_cols * init_f)), 1)
@@ -4497,9 +4546,11 @@ def tree_adaptive_rand_round(
             edge_index,
         )
         _tree_invalidate_changed_sketches(res, all_sketches, {node, parent_node})
-        
-    if postprocess: 
-        res.round_edgewise(postprocess_root, tol)
+
+    if postprocess:
+        _tree_postprocess_from_center(
+            res, postprocess_root, root, tol, traversal_mode
+        )
 
     res._adaptive_rounding_debug = {
         "initial_norm_estimate": norm_estimate,
@@ -4741,8 +4792,9 @@ def tree_sum_adaptive_rand_round(
     )
 
     if postprocess:
-        print("true")
-        result.round_edgewise(final_node, tol)
+        _tree_postprocess_from_center(
+            result, final_node, root, tol, traversal_mode
+        )
 
     result._adaptive_rounding_debug = {
         "initial_norm_estimate": norm_estimate,
