@@ -3542,10 +3542,19 @@ def _tree_pairwise_tensor_combine(
         if shared_random is None
         else shared_random.draw((sketch_dim,) * 3, factory)
     )
-    combined = np.einsum(
-        "ia,jb,abk->ijk", left, right, combine_tensor, optimize=True
+    # combined = np.einsum(
+    #     "ia,jb,abk->ijk", left, right, combine_tensor, optimize=True
+    # )
+    right_core = np.matmul(
+        right,
+        np.reshape(np.transpose(combine_tensor, (1, 0, 2)), (sketch_dim, -1)),
     )
-    return combined.reshape(left.shape[0] * right.shape[0], sketch_dim)
+    right_core = np.reshape(right_core, (right.shape[0], sketch_dim, sketch_dim))
+    combined = np.matmul(
+        left,
+        np.reshape(np.transpose(right_core, (1, 0, 2)), (sketch_dim, -1)),
+    )
+    return np.reshape(combined, (left.shape[0] * right.shape[0], sketch_dim))
 
 
 def _tree_random_tt_end_factor(index_size: int, sketch_dim: int) -> np.ndarray:
@@ -3605,8 +3614,11 @@ def _tree_tt_extend_end_factor(
         raise ValueError("Expected a 2D factor followed by a 3D factor.")
     if current.shape[1] != factor.shape[0]:
         raise ValueError("TT factor ranks do not match.")
-    combined = np.einsum("pa,adb->pdb", current, factor, optimize=True)
-    return combined.reshape(current.shape[0] * factor.shape[1], factor.shape[2])
+    # combined = np.einsum("pa,adb->pdb", current, factor, optimize=True)
+    combined = np.matmul(current, np.reshape(factor, (factor.shape[0], -1)))
+    return np.reshape(
+        combined, (current.shape[0] * factor.shape[1], factor.shape[2])
+    )
 
 
 def _tree_tt_extend_internal_factor(
@@ -3617,9 +3629,14 @@ def _tree_tt_extend_internal_factor(
         raise ValueError("Expected two 3D TT factors.")
     if current.shape[2] != factor.shape[0]:
         raise ValueError("TT factor ranks do not match.")
-    combined = np.einsum("apc,cdb->apdb", current, factor, optimize=True)
-    return combined.reshape(
-        current.shape[0], current.shape[1] * factor.shape[1], factor.shape[2]
+    # combined = np.einsum("apc,cdb->apdb", current, factor, optimize=True)
+    combined = np.matmul(
+        np.reshape(current, (-1, current.shape[2])),
+        np.reshape(factor, (factor.shape[0], -1)),
+    )
+    return np.reshape(
+        combined,
+        (current.shape[0], current.shape[1] * factor.shape[1], factor.shape[2]),
     )
 
 
@@ -3801,8 +3818,26 @@ def _tree_ensure_directional_tt_sketch_columns(
     if total_factor.ndim == 2:
         new_sketch = _tree_matmul(sketch_node_val, total_factor)
     else:
-        new_sketch = np.einsum(
-            "ep,apb->aeb", sketch_node_val, total_factor, optimize=True
+        # new_sketch = np.einsum(
+        #     "ep,apb->aeb", sketch_node_val, total_factor, optimize=True
+        # )
+        new_sketch = np.matmul(
+            sketch_node_val,
+            np.reshape(
+                np.transpose(total_factor, (1, 0, 2)),
+                (total_factor.shape[1], -1),
+            ),
+        )
+        new_sketch = np.transpose(
+            np.reshape(
+                new_sketch,
+                (
+                    sketch_node_val.shape[0],
+                    total_factor.shape[0],
+                    total_factor.shape[2],
+                ),
+            ),
+            (1, 0, 2),
         )
 
     _tree_append_sketch_columns(all_sketches, sketch_key, new_sketch)
