@@ -594,7 +594,7 @@ def svals_by_cross(
         inds = [ind.with_new_rng(range(ind.size)) for ind in target_inds]
         tt = rand_tt(inds, [1] * (len(inds) - 1))
         func = net.as_func(inds)
-        cross_config = CrossConfig(kickrank=100, max_iters=max_rank - 1)
+        cross_config = CrossConfig(kickrank=100, max_iters=max_rank)
         cross_engine = CrossApproximation(func, cross_config)
         cross_engine.cross(tt, tt.end_nodes()[0], eps=eps)
         res = tt.partition_node(indices)

@@ -1877,7 +1877,7 @@ class TensorNetwork:  # pylint: disable=R0904
 
             indices, node_free_indices = [], []
             up_indices = []
-            for ind in self.node_tensor(node).indices:
+            for ind in sorted(self.node_tensor(node).indices):
                 if ind in free_indices:
                     indices.append(ind)
                     node_free_indices.append(ind)
@@ -4339,36 +4339,10 @@ class IndexLayout:
 def _steiner_tree(graph: nx.Graph, nodes: Sequence[NodeName]) -> nx.Graph:
     """Minimal subtree of a tree connecting the given nodes."""
     keep = set(nodes)
-    for n1, n2 in itertools.combinations(nodes, 2):
-        keep.update(nx.shortest_path(graph, n1, n2))
+    paths = nx.single_source_shortest_path(graph, nodes[0])
+    for node in nodes[1:]:
+        keep.update(paths[node])
     return graph.subgraph(keep)
-
-
-def _expand_to_layout(
-    tensor: Optional[Tensor],
-    layout: Sequence[Index],
-    free_inds: Sequence[Index],
-) -> Tensor:
-    """Broadcast a (partial) core to the full index layout of a node.
-
-    Missing free indices become ones (outer product), missing bond indices
-    become size-1 bonds.  The result has the indices of `layout` in order.
-    """
-    if tensor is None:
-        tensor = Tensor(np.ones(()), [])
-
-    value = tensor.value
-    indices = list(tensor.indices)
-    present = {ind.name for ind in indices}
-    for ind in layout:
-        if ind.name in present:
-            continue
-        size = ind.size if ind in free_inds else 1
-        value = np.broadcast_to(value[..., np.newaxis], value.shape + (size,))
-        indices.append(Index(ind.name, size))
-
-    tensor = Tensor(np.ascontiguousarray(value), indices)
-    return tensor.permute_by_name([ind.name for ind in layout])
 
 
 def _separable_unsplit(
@@ -4394,7 +4368,8 @@ def _separable_unsplit(
             np.multiply.outer, vals
         ).reshape(-1)
 
-    result = copy.deepcopy(ref)
+    result = TensorNetwork()
+    result.network = ref.network.copy()
     for n in ref.network.nodes:
         indices = []
         value = np.ones(())
@@ -4442,64 +4417,160 @@ def separable_like(
     if all(len(layout.atom_indices(o.name)) == 1 for o in layout.originals):
         return _separable_unsplit(ref, layout, factors)
 
-    atomized = layout.atomize(ref)
-    graph = atomized.network
-    free_inds = atomized.free_indices()
-    node_layout = {n: list(atomized.node_tensor(n).indices) for n in graph}
-    leaf_of = {
-        ind.name: atomized.node_by_free_index(ind.name) for ind in free_inds
+    # Only the index metadata is needed; never copy/reshape reference values.
+    graph = ref.network
+    free_names = set(layout.free_to_atoms)
+    node_layout = {
+        n: [
+            atom
+            for ind in ref.node_tensor(n).indices
+            for atom in (
+                layout.atom_indices(ind.name)
+                if ind.name in free_names
+                else [ind]
+            )
+        ]
+        for n in graph
     }
+    atom_names = {ind.name for ind in layout.atoms}
+    leaf_of = {
+        ind.name: n
+        for n, inds in node_layout.items()
+        for ind in inds
+        if ind.name in atom_names
+    }
+    parts: Dict[NodeName, List[Tensor]] = {n: [] for n in graph}
+    scalar = 1.0
 
-    def decompose(
-        subtree: nx.Graph,
-        node: NodeName,
-        parent: Optional[NodeName],
-        cur: Tensor,
-    ) -> Dict[NodeName, Tensor]:
-        """Recursively SVD `cur` along the edges of the subtree."""
-        cores = {}
-        for child in subtree.neighbors(node):
-            if child == parent:
-                continue
-            # atoms of the factor that live in the child's branch
-            branch = nx.descendants(nx.bfs_tree(subtree, node), child)
-            branch.add(child)
-            below = [
-                i
-                for i, ind in enumerate(cur.indices)
-                if ind in free_inds and leaf_of[ind.name] in branch
-            ]
-            [u, s, v], _ = cur.svd(below, atol=tol)
-            bond = atomized.get_contraction_index(node, child)[0]
-            u = u.rename_indices({"r_split_l": bond.name})
-            cur = s.contract(v).rename_indices({"r_split_l": bond.name})
-            cores.update(decompose(subtree, child, node, u))
-        cores[node] = cur
-        return cores
-
-    result = copy.deepcopy(ref)
-    combined: Dict[NodeName, Tensor] = {}
     for orig in layout.originals:
         data = layout.reshape_vector(orig.name, factors[orig.name])
+        # Constant factors have an exact rank-one representation, even when
+        # their atoms span several nodes. Missing physical axes become ones.
+        if np.all(data.value == data.value.flat[0]):
+            scalar *= data.value.flat[0]
+            continue
         leaves = sorted({leaf_of[ind.name] for ind in data.indices}, key=str)
         if len(leaves) == 1:
-            cores = {leaves[0]: data}
-        else:
-            subtree = _steiner_tree(graph, leaves)
-            cores = decompose(subtree, leaves[0], None, data)
+            parts[leaves[0]].append(data)
+            continue
 
-        for n in graph:
-            core = _expand_to_layout(cores.get(n), node_layout[n], free_inds)
-            if n in combined:
-                core = combined[n].mult(core, free_inds)
-            combined[n] = core
+        subtree = _steiner_tree(graph, leaves)
+        root = leaves[0]
+        children = dict(nx.bfs_successors(subtree, root))
+        order = [root] + [
+            child for kids in children.values() for child in kids
+        ]
+        below = {
+            n: {ind.name for ind in data.indices if leaf_of[ind.name] == n}
+            for n in subtree
+        }
+        for n in reversed(order):
+            for child in children.get(n, []):
+                below[n].update(below[child])
 
-    for n, core in combined.items():
+        def decompose(node: NodeName, cur: Tensor) -> None:
+            kids = children.get(node, [])
+            # A transit node introduces no partition of this factor. Carry
+            # its incoming bond through an identity instead of another SVD.
+            if len(kids) == 1 and node not in leaves:
+                incoming = next(
+                    ind for ind in cur.indices if ind.name not in atom_names
+                )
+                outgoing = ref.get_contraction_index(node, kids[0])[0]
+                parts[node].append(
+                    Tensor(
+                        np.eye(incoming.size, dtype=cur.value.dtype),
+                        [incoming, outgoing.with_new_size(incoming.size)],
+                    )
+                )
+                decompose(
+                    kids[0], cur.rename_indices({incoming.name: outgoing.name})
+                )
+                return
+            for child in kids:
+                axes = [
+                    i
+                    for i, ind in enumerate(cur.indices)
+                    if ind.name in below[child]
+                ]
+                [u, singular, v], _ = cur.svd(axes, atol=tol)
+                bond = ref.get_contraction_index(node, child)[0]
+                u = u.rename_indices({"r_split_l": bond.name})
+                cur = singular.contract(v).rename_indices(
+                    {"r_split_l": bond.name}
+                )
+                decompose(child, u)
+            parts[node].append(cur)
+
+        decompose(root, data)
+
+    result = TensorNetwork()
+    result.network = graph.copy()
+    for n, inds in node_layout.items():
+        # Original factors have disjoint physical atoms. Their core product
+        # is an outer product, pairing bond axes in the same order at both
+        # endpoints. Singleton axes supply missing factors without expanding
+        # a full-size core for each original index.
+        value = np.ones([1] * len(inds))
+        positions = {ind.name: i for i, ind in enumerate(inds)}
+        for core in parts[n]:
+            perm = sorted(
+                range(len(core.indices)),
+                key=lambda i: positions[core.indices[i].name],
+            )
+            shape = [1] * len(inds)
+            for ind in core.indices:
+                shape[positions[ind.name]] = ind.size
+            rhs = core.value.transpose(perm).reshape(shape)
+            left_shape = tuple(k for size in value.shape for k in (size, 1))
+            right_shape = tuple(k for size in shape for k in (1, size))
+            product_shape = tuple(a * b for a, b in zip(value.shape, shape))
+            value = (
+                value.reshape(left_shape) * rhs.reshape(right_shape)
+            ).reshape(product_shape)
+        shape = [
+            ind.size if ind.name in atom_names else value.shape[i]
+            for i, ind in enumerate(inds)
+        ]
+        # Own writable data, including when every factor was constant.
+        value = np.array(np.broadcast_to(value, shape), copy=True)
+        core = Tensor(
+            value, [ind.with_new_size(size) for ind, size in zip(inds, shape)]
+        )
         core = layout.deatomize_tensor(core)
         names = [ind.name for ind in ref.node_tensor(n).indices]
         result.set_node_tensor(n, core.permute_by_name(names))
+    if scalar != 1:
+        core = result.node_tensor(next(iter(graph)))
+        core.update_val_size(core.value * scalar)
 
     return result
+
+
+def multiply_separable(
+    tn: TensorNetwork,
+    factors: Dict[IndexName, np.ndarray],
+    layout: Optional[IndexLayout] = None,
+    tol: float = 0.0,
+) -> TensorNetwork:
+    """Multiply by original-index factors, preserving input ownership.
+
+    Intact original indices use diagonal index operations. Reshaped indices
+    use the general same-tree decomposition, including split/merged atoms.
+    """
+    if layout is None:
+        layout = IndexLayout.identity(tn.free_indices())
+    layout.validate(tn)
+    if not layout.is_identity():
+        return tn * separable_like(tn, factors, layout, tol)
+    ops = {}
+    for ind in layout.originals:
+        values = np.asarray(factors[ind.name]).reshape(-1)
+        if values.size != ind.size:
+            raise ValueError(f"{ind.name}: expected {ind.size} values")
+        if not np.all(values == 1):
+            ops[ind.name] = lambda core, v=values: v[:, None] * core
+    return apply_index_ops(tn, ops)
 
 
 def constant_like(
@@ -4565,7 +4636,9 @@ def apply_index_ops_sum(
     scale: Optional[float] = None,
 ) -> TensorNetwork:
     """Apply a sum of rank-one index operators (see `apply_index_ops`)."""
-    out = tree_sum([apply_index_ops(tn, term) for term in terms])
+    evaluated = [apply_index_ops(tn, term) for term in terms]
+    # Each application already owns its output; do not copy a single term.
+    out = evaluated[0] if len(evaluated) == 1 else tree_sum(evaluated)
     if scale is not None:
         out.scale(scale)
     return out
@@ -4587,17 +4660,36 @@ def integrate_to_dense(
     """
     if layout is None:
         layout = IndexLayout.identity(tn.free_indices())
-    out = layout.atomize(tn)
-    for name, weight in weights.items():
-        wnet = TensorNetwork()
-        wnet.add_node(f"w_{name}", layout.reshape_vector(name, weight))
-        out = out.attach(wnet, rename=("", ""))
+    layout.validate(tn)
+    # Contraction only reads values. Copy index metadata, not the arrays,
+    # and attach all quadrature tensors without repeatedly copying a graph.
+    out = TensorNetwork()
+    out.network = tn.network.copy()
+    owner = {}
+    for node in tn.network:
+        tensor = tn.node_tensor(node)
+        atomized = layout.atomize_tensor(
+            Tensor(tensor.value, list(tensor.indices))
+        )
+        out.set_node_tensor(node, atomized)
+        owner.update((ind.name, node) for ind in atomized.indices)
+    for k, (name, weight) in enumerate(weights.items()):
+        tensor = layout.reshape_vector(name, weight)
+        node = f"_quadrature_{k}"
+        while node in out.network:
+            node += "_"
+        out.add_node(node, tensor)
+        for ind in tensor.indices:
+            out.add_edge(node, owner[ind.name])
 
     if order is None:
         order = [
             ind.name for ind in layout.originals if ind.name not in weights
         ]
-    return layout.original_order(out.contract(), order)
+    result = layout.original_order(out.contract(), order)
+    # With no contraction (e.g. one node and no weights), einsum may return
+    # a view of the input. Preserve the owned-result contract in that case.
+    return result if weights else result.copy()
 
 
 # --------------------------------------------------------------------------
@@ -4692,7 +4784,8 @@ def tree_sum(
         return copy.deepcopy(terms[0])
 
     tt = _TreeTerms(terms, root)
-    out = copy.deepcopy(terms[0])
+    out = TensorNetwork()
+    out.network = terms[0].network.copy()
     for n in tt.nodes:
         bonds = tt.bond_axes[n]
         shape = [ind.size for ind in tt.indices[n]]
@@ -4815,7 +4908,8 @@ def tree_sum_gramsvd_round(
             up_env[bond] = parent_side.T @ up @ parent_side
             projected.add(bond)
 
-    out = copy.deepcopy(terms[0])
+    out = TensorNetwork()
+    out.network = terms[0].network.copy()
     for n in tt.nodes:
         value = sum(cores[n][1:], cores[n][0])
         indices = [

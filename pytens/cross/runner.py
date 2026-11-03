@@ -2,23 +2,56 @@
 
 from abc import abstractmethod
 from typing import Optional
+import warnings
 
 import numpy as np
 
 from pytens.algs import TensorNetwork, rand_ht, rand_tt, rand_tucker
-from pytens.cross.cross import CrossApproximation, CrossConfig
+from pytens.cross.cross import CrossApproximation, CrossConfig, CrossResult
 from pytens.cross.func_interface import TensorFunc
+from pytens.types import NodeName
 
 
 class CrossRunner:
     """Base class for running cross approximation."""
+
+    def __init__(self, config: Optional[CrossConfig] = None):
+        self.config = config if config is not None else CrossConfig()
+        self.last_result: Optional[CrossResult] = None
+
+    def _cross(
+        self,
+        f: TensorFunc,
+        net: TensorNetwork,
+        root: NodeName,
+        eps: float,
+        kickrank: Optional[int],
+        validation: Optional[np.ndarray],
+    ) -> TensorNetwork:
+        config = self.config.model_copy()
+        if kickrank is not None:
+            # Revalidate overrides, including negative rank increments.
+            config = CrossConfig(
+                **{**config.model_dump(), "kickrank": kickrank}
+            )
+        self.last_result = CrossApproximation(f, config).cross(
+            net, root, validation, eps=eps
+        )
+        if not self.last_result.converged:
+            warnings.warn(
+                f"Cross approximation stopped: {self.last_result.stop_reason}; "
+                "validation tolerance was not met",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+        return net
 
     @abstractmethod
     def run(
         self,
         f: TensorFunc,
         eps: float,
-        kickrank: int = 2,
+        kickrank: Optional[int] = None,
         validation: Optional[np.ndarray] = None,
     ) -> TensorNetwork:
         """Run the cross approximation on the given function
@@ -34,17 +67,14 @@ class TTCrossRunner(CrossRunner):
         self,
         f: TensorFunc,
         eps: float,
-        kickrank: int = 2,
+        kickrank: Optional[int] = None,
         validation: Optional[np.ndarray] = None,
     ) -> TensorNetwork:
         indices = f.indices[:]
         net = rand_tt(indices, [1] * (len(indices) - 1))
-        cross_config = CrossConfig(kickrank=kickrank)
-        cross_engine = CrossApproximation(f, cross_config)
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=eps
+        return self._cross(
+            f, net, list(net.network.nodes)[0], eps, kickrank, validation
         )
-        return net
 
 
 class HTCrossRunner(CrossRunner):
@@ -54,16 +84,13 @@ class HTCrossRunner(CrossRunner):
         self,
         f: TensorFunc,
         eps: float,
-        kickrank: int = 2,
+        kickrank: Optional[int] = None,
         validation: Optional[np.ndarray] = None,
     ) -> TensorNetwork:
         net = rand_ht(f.indices, 1)
-        cross_config = CrossConfig(kickrank=kickrank)
-        cross_engine = CrossApproximation(f, cross_config)
-        cross_engine.cross(
-            net, list(net.network.nodes)[0], validation, eps=eps
+        return self._cross(
+            f, net, list(net.network.nodes)[0], eps, kickrank, validation
         )
-        return net
 
 
 class TuckerCrossRunner(CrossRunner):
@@ -73,11 +100,8 @@ class TuckerCrossRunner(CrossRunner):
         self,
         f: TensorFunc,
         eps: float,
-        kickrank: int = 2,
+        kickrank: Optional[int] = None,
         validation: Optional[np.ndarray] = None,
     ) -> TensorNetwork:
         tucker = rand_tucker(f.indices)
-        cross_config = CrossConfig(kickrank=kickrank)
-        cross_engine = CrossApproximation(f, cross_config)
-        cross_engine.cross(tucker, "root", validation, eps=eps)
-        return tucker
+        return self._cross(f, tucker, "root", eps, kickrank, validation)

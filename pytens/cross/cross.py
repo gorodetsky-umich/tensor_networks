@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 from enum import Enum, auto
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
+import networkx as nx
 import pydantic
 from scipy.linalg import qr as sp_qr
 
 import pytens.algs as pt
 from pytens.cross.func_interface import TensorFunc
+from pytens.cross.evaluation import CrossEvaluator, EvaluationStats
 from pytens.types import DimTreeNode, Index
 
 logger = logging.getLogger(__name__)
@@ -29,7 +32,8 @@ class CrossAlgo(Enum):
 class ConvergenceCheck(Enum):
     """Enumeration of convergence check methods."""
 
-    # check norm changes between iterations as the criteria for convergence
+    # Also compute the full iterate-change norm (a stagnation diagnostic).
+    # Accuracy is always checked against function values on validation points.
     NORM = auto()
     # use the error on a validation set as the criteria for convergence
     VALID_ERROR = auto()
@@ -44,24 +48,47 @@ class CrossConfig(pydantic.BaseModel):
     )
     kickrank: int = pydantic.Field(
         default=2,
+        ge=0,
         description="Configure the rank increment between iterations",
     )
     max_rank: Optional[int] = pydantic.Field(
         default=None,
+        ge=1,
         description="Configure the maximum rank that is used in cross",
     )
-    max_iters: Optional[int] = pydantic.Field(
-        default=None,
+    max_iters: int = pydantic.Field(
+        default=25,
+        ge=1,
         description="Limit the maximum number of sweeps over the entire tree",
     )
     validation_size: int = pydantic.Field(
         default=1000,
+        ge=1,
         description="Configure the number of validation points",
     )
     convergence: ConvergenceCheck = pydantic.Field(
-        default=ConvergenceCheck.NORM,
-        description="Configure how to check the algorithm convergence",
+        default=ConvergenceCheck.VALID_ERROR,
+        description="Validation stopping, optionally with full norm diagnostics",
     )
+    atol: float = pydantic.Field(default=0.0, ge=0, allow_inf_nan=False)
+    batch_size: int = pydantic.Field(default=8192, ge=1)
+    cache_size: int = pydantic.Field(
+        default=0,
+        ge=0,
+        description="LRU entries; opt in only for deterministic functions",
+    )
+    stagnation_patience: int = pydantic.Field(default=3, ge=1)
+
+
+class CrossSweep(pydantic.BaseModel):
+    """One complete sweep; ranks follow preorder, excluding the root."""
+
+    sweep: int
+    ranks: List[int]
+    validation_error: float
+    validation_rmse: float
+    norm_change: Optional[float] = None
+    evaluated: int
 
 
 class CrossResult(pydantic.BaseModel):
@@ -75,6 +102,12 @@ class CrossResult(pydantic.BaseModel):
     dim_tree: DimTreeNode
     # The ranks and corresponding errors info during the cross algo
     ranks_and_errors: Sequence[Tuple[int, float]]
+    converged: bool = False
+    stop_reason: str = "unknown"
+    history: List[CrossSweep] = pydantic.Field(default_factory=list)
+    evaluations: EvaluationStats = pydantic.Field(
+        default_factory=EvaluationStats
+    )
 
 
 def _py_maxvol(
@@ -91,8 +124,8 @@ def _py_maxvol(
     maximum absolute determinant.  The search is restricted to the first
     ``top_k_index`` rows; pass -1 (default) to search all rows.
 
-    The algorithm initialises with an LU-pivoted basis, then greedily swaps
-    rows using the Sherman-Morrison rank-1 update (BLAS *GER) until no swap
+    The algorithm initialises with a QR-pivoted basis, then greedily swaps
+    rows using a Sherman-Morrison rank-1 update until no swap
     improves the volume by more than ``tol``.
 
     Args:
@@ -107,7 +140,7 @@ def _py_maxvol(
         index: Integer array of shape (r,) containing the selected row
             indices into ``arr``.
         c: Coefficient matrix of shape (n, r) such that
-            ``arr ≈ arr[index] @ c[index]``.
+            ``arr ≈ c @ arr[index]``.
 
     This implementation is adapted from the
     tntorch library (https://github.com/rballester/tntorch).
@@ -219,12 +252,12 @@ def _cartesian_product_arrays(*arrays: np.ndarray) -> np.ndarray:
     resulting in shape (n1*n2*...*nk, d1 + d2 + ... + dk).
     """
     if len(arrays) == 0:
-        return np.array([[]])
+        return np.empty((1, 0), dtype=int)
 
     shapes = [arr.shape for arr in arrays]
     ns = [s[0] for s in shapes]
     ds = [s[1] for s in shapes]
-    total_n = np.prod(ns)
+    total_n = math.prod(ns)
 
     reshaped = []
     for i, arr in enumerate(arrays):
@@ -244,10 +277,13 @@ class CrossApproximation:
     """The engine for cross approximation run"""
 
     def __init__(
-        self, tensor_func: TensorFunc, config: CrossConfig = CrossConfig()
+        self, tensor_func: TensorFunc, config: Optional[CrossConfig] = None
     ):
-        self._config = config
+        self._config = config if config is not None else CrossConfig()
         self._tensor_func = tensor_func
+        self._evaluator = CrossEvaluator(
+            tensor_func, self._config.batch_size, self._config.cache_size
+        )
 
     def _construct_matrix(
         self,
@@ -260,14 +296,27 @@ class CrossApproximation:
         """
         row_idx, row_vals = rows
         col_idx, col_vals = cols
-        args = _cartesian_product_arrays(col_vals, row_vals).astype(
-            int, copy=False
-        )
-        indices = col_idx + row_idx
-        perm = [indices.index(ind) for ind in self._tensor_func.indices]
-        args = args[:, perm]
-        # print("constructing", len(args))
-        return self._tensor_func(args).reshape(len(col_vals), len(row_vals))
+        nrows, ncols = len(row_vals), len(col_vals)
+        positions = {ind: i for i, ind in enumerate(self._tensor_func.indices)}
+        row_positions = [positions[ind] for ind in row_idx]
+        col_positions = [positions[ind] for ind in col_idx]
+        result = None
+        # Only coordinate batches are materialized, not the full (n*r, d)
+        # Cartesian product and its permuted copy.
+        for start in range(0, nrows * ncols, self._config.batch_size):
+            flat = np.arange(
+                start, min(start + self._config.batch_size, nrows * ncols)
+            )
+            args = np.empty((len(flat), len(positions)), dtype=int)
+            args[:, row_positions] = row_vals[flat % nrows]
+            args[:, col_positions] = col_vals[flat // nrows]
+            values = self._evaluator(args)
+            if result is None:
+                result = np.empty(nrows * ncols, dtype=values.dtype)
+            result[start : start + len(flat)] = values
+        if result is None:
+            raise ValueError("Cross sample sets must be nonempty")
+        return result.reshape(ncols, nrows)
 
     def _select_indices(self, v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         if self._config.cross_algo == CrossAlgo.MAXVOL:
@@ -278,6 +327,22 @@ class CrossApproximation:
             raise ValueError(f"unsupported algo {self._config.cross_algo}")
 
         return ind, b
+
+    @staticmethod
+    def _update_tensor(
+        net: "pt.TensorNetwork", node: DimTreeNode, value: np.ndarray
+    ) -> None:
+        tensor = net.node_tensor(node.node)
+        old_indices = tensor.indices[:]
+        for axis, ind in enumerate(old_indices):
+            if ind in node.free_indices and value.shape[axis] != ind.size:
+                raise ValueError("Cross update changed a physical dimension")
+        tensor.update_val_size(value)
+        # update_val_size replaces Index objects. Preserve physical grids.
+        tensor.indices = [
+            old if old in node.free_indices else new
+            for old, new in zip(old_indices, tensor.indices)
+        ]
 
     def _root_to_leaves(self, node: DimTreeNode) -> None:
         """Update the indices by propagating info from root to leaves."""
@@ -334,8 +399,10 @@ class CrossApproximation:
         node.up_info.vals = up_vals[selected_inds, :]
         node.up_info.rank = len(selected_inds)
         # print("====>", node.values.up_vals)
-        net.node_tensor(node.node).update_val_size(
-            b.reshape(*up_sizes, -1).transpose(np.argsort(node.perm))
+        self._update_tensor(
+            net,
+            node,
+            b.reshape(*up_sizes, -1).transpose(np.argsort(node.perm)),
         )
 
     def _incr_ranks(
@@ -372,6 +439,8 @@ class CrossApproximation:
         tree.add_values(up_vals)
 
     def _create_validation_set(self) -> np.ndarray:
+        if not self._tensor_func.indices:
+            return np.empty((self._config.validation_size, 0), dtype=int)
         valid_list = []
         for ind in self._tensor_func.indices:
             valid_list.append(
@@ -419,9 +488,35 @@ class CrossApproximation:
             (tree.free_indices, f_vals),
             (c_indices, up_vals),
         )
-        return root_matrix.T.reshape(*f_sizes, *c_sizes).transpose(
-            np.argsort(tree.perm)
-        )
+        return root_matrix.T.reshape(
+            tuple(f_sizes) + tuple(c_sizes)
+        ).transpose(np.argsort(tree.perm))
+
+    def _check_points(self, points: np.ndarray, name: str) -> np.ndarray:
+        points = np.asarray(points)
+        sizes = np.array([ind.size for ind in self._tensor_func.indices])
+        if (
+            points.ndim != 2
+            or points.shape[1] != len(sizes)
+            or len(points) == 0
+        ):
+            raise ValueError(f"{name} must have nonempty shape (n, d)")
+        if (
+            not np.all(np.isfinite(points))
+            or np.any(points < 0)
+            or np.any(points >= sizes)
+            or np.any(points != np.floor(points))
+        ):
+            raise ValueError(f"{name} contains invalid discrete indices")
+        return points.astype(int, copy=False)
+
+    @staticmethod
+    def _rms(values: np.ndarray) -> float:
+        """Scale before squaring to avoid under/overflow in norm checks."""
+        scale = float(np.max(np.abs(values)))
+        if scale == 0:
+            return 0.0
+        return scale * float(np.sqrt(np.mean(np.abs(values / scale) ** 2)))
 
     def cross(  # pylint: disable=R0913,R0917
         self,
@@ -432,27 +527,64 @@ class CrossApproximation:
         initialization: Optional[np.ndarray] = None,
         known: Optional[np.ndarray] = None,
     ) -> CrossResult:
-        """Cross approximation for the given network structure."""
+        """Approximate a tree in place, returning measured convergence status.
+
+        All input point arrays use ``tensor_func.indices`` column order.
+        Accuracy uses validation RMSE <= atol + eps * target RMS, including
+        in NORM mode (which adds full iterate-change diagnostics). Validation
+        is sampled evidence, not a bound on unseen entries. ``max_iters`` is
+        a positive, exact sweep budget. Caching is opt-in and run-local.
+        """
+        if not np.isfinite(eps) or eps < 0:
+            raise ValueError("eps must be finite and nonnegative")
+        if len(net.network) == 0 or not nx.is_tree(net.network):
+            raise ValueError("Cross approximation requires a connected tree")
+        function_indices = self._tensor_func.indices
+        free = net.free_indices()
+        if len(set(function_indices)) != len(function_indices) or set(
+            free
+        ) != set(function_indices):
+            raise ValueError(
+                "Function indices must match network free indices"
+            )
+        for name in net.network:
+            tensor = net.node_tensor(name)
+            if len(set(tensor.indices)) != len(
+                tensor.indices
+            ) or tensor.value.shape != tuple(i.size for i in tensor.indices):
+                raise ValueError("Invalid tensor indices or dimensions")
+        for u, v in net.network.edges:
+            if len(net.get_contraction_index(u, v)) != 1:
+                raise ValueError("Each tree edge must have exactly one bond")
         if root is None:
             root = list(net.network.nodes)[0]
-
-        assert root is not None
+        if root not in net.network:
+            raise ValueError("Root is not a network node")
+        if validation is None:
+            validation = self._create_validation_set()
+        validation = self._check_points(validation, "validation")
+        if initialization is not None:
+            initialization = self._check_points(
+                initialization, "initialization"
+            )
+        if known is not None:
+            known = self._check_points(known, "known")
+        self._evaluator = CrossEvaluator(
+            self._tensor_func, self._config.batch_size, self._config.cache_size
+        )
+        real = self._evaluator(validation)
+        target_rms = self._rms(real)
         tree = net.dimension_tree(root)
+        tree_order = [function_indices.index(ind) for ind in tree.indices]
+        if known is not None:
+            known = known[:, tree_order]
         if initialization is None:
             tree.increment_ranks(1, self._config.max_rank)
             up_vals = [np.random.randint(0, ind.size) for ind in tree.indices]
             tree.add_values(np.asarray([up_vals]))
         else:
             tree.increment_ranks(len(initialization), self._config.max_rank)
-            tree.add_values(initialization)
-
-        converged = False
-
-        if self._config.convergence == ConvergenceCheck.VALID_ERROR:
-            if validation is None:
-                validation = self._create_validation_set()
-
-            real = self._tensor_func(validation)
+            tree.add_values(initialization[:, tree_order])
 
         f_sizes = [ind.size for ind in tree.free_indices]
         f_vals = _cartesian_product_arrays(
@@ -460,47 +592,90 @@ class CrossApproximation:
         )
 
         tree_nodes = tree.preorder()
-        ranks_and_errs = {}
-        trial = 0
-        while not converged:
-            old_net = copy.deepcopy(net)
+        history = []
+        previous_estimate = None
+        previous_ranks = None
+        stalled = 0
+        converged = False
+        stop_reason = "max_iters"
+        for trial in range(self._config.max_iters):
+            old_net = (
+                copy.deepcopy(net)
+                if self._config.convergence == ConvergenceCheck.NORM
+                else None
+            )
             self._iterate_tree_nodes(net, tree_nodes)
 
             # get the value for the root node
             root_val = self._get_root_value(tree, f_sizes, f_vals)
-            net.node_tensor(tree.node).update_val_size(root_val)
-
-            if self._config.convergence == ConvergenceCheck.NORM:
-                diff_net = net - old_net
-                err = diff_net.norm() / net.norm()
-
-            elif self._config.convergence == ConvergenceCheck.VALID_ERROR:
-                assert validation is not None
-                estimate = net.evaluate(
-                    self._tensor_func.indices, validation
-                ).reshape(-1)
-
-                err = float(
-                    np.linalg.norm(real - estimate) / np.linalg.norm(real)
-                )
-
-            else:
-                raise RuntimeError("unknown termination criteria")
-
-            ranks_and_errs[len(tree.up_info.vals)] = err
-            logger.debug("step: %s, error: %s", trial, err)
-            if err <= eps or (
-                self._config.max_iters is not None
-                and trial >= self._config.max_iters
+            self._update_tensor(net, tree, root_val)
+            # Bound validation contractions as well as oracle batches.
+            estimate = np.concatenate(
+                [
+                    net.evaluate(
+                        function_indices,
+                        validation[start : start + self._config.batch_size],
+                    ).reshape(-1)
+                    for start in range(
+                        0, len(validation), self._config.batch_size
+                    )
+                ]
+            )
+            if estimate.shape != real.shape or not np.all(
+                np.isfinite(estimate)
             ):
+                raise ValueError("Network evaluation is invalid")
+            rmse = self._rms(real - estimate)
+            err = rmse / target_rms if target_rms else rmse
+            norm_change = None
+            if old_net is not None:
+                diff_net = net - old_net
+                delta, norm = diff_net.norm(), net.norm()
+                norm_change = delta / norm if norm else delta
+            ranks = [n.up_info.rank for n in tree_nodes[1:]]
+            history.append(
+                CrossSweep(
+                    sweep=trial + 1,
+                    ranks=ranks,
+                    validation_error=err,
+                    validation_rmse=rmse,
+                    norm_change=norm_change,
+                    evaluated=self._evaluator.stats.evaluated,
+                )
+            )
+            logger.debug("step: %s, error: %s", trial, err)
+            if rmse <= self._config.atol + eps * target_rms:
+                converged = True
+                stop_reason = "validation"
                 break
+            if previous_estimate is not None and ranks == previous_ranks:
+                change = self._rms(estimate - previous_estimate)
+                stationary = change <= self._config.atol + 1e-12 * max(
+                    target_rms, self._rms(estimate)
+                )
+                stalled = stalled + 1 if stationary else 0
+            else:
+                stalled = 0
+            if stalled >= self._config.stagnation_patience:
+                stop_reason = (
+                    "rank_limit"
+                    if self._config.max_rank is not None
+                    and any(r >= self._config.max_rank for r in ranks)
+                    else "stagnated"
+                )
+                break
+            previous_estimate, previous_ranks = estimate, ranks
+            if trial + 1 < self._config.max_iters:
+                self._incr_ranks(tree, known=known)
 
-            trial += 1
-            self._incr_ranks(tree, known=known)
-
-        # print(net)
-        ranks_and_errs_list = list(sorted(list(ranks_and_errs.items())))
-        # print(ranks_and_errs)
         return CrossResult(
-            net=net, dim_tree=tree, ranks_and_errors=ranks_and_errs_list
+            net=net,
+            dim_tree=tree,
+            ranks_and_errors=[
+                (max(h.ranks, default=1), h.validation_error) for h in history
+            ],
+            converged=converged,
+            stop_reason=stop_reason,
+            history=history,
+            evaluations=self._evaluator.stats,
         )

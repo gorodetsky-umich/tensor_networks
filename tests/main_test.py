@@ -11,6 +11,7 @@ import networkx as nx
 import numpy as np
 
 from pytens.algs import *
+from pytens.algs import multiply_separable
 from pytens.cross.cross import (
     ConvergenceCheck,
     CrossAlgo,
@@ -1746,6 +1747,17 @@ class TestStructureAgnosticOps(unittest.TestCase):
                 [i.name for i in ref.node_tensor(n).indices],
             )
         dense_ref = self._dense(ref, layout)
+        scaled = multiply_separable(ref, self.factors, layout)
+        np.testing.assert_allclose(
+            self._dense(scaled, layout), dense_ref * self.expected
+        )
+        for node in ref.network:
+            self.assertFalse(
+                np.shares_memory(
+                    scaled.node_tensor(node).value, ref.node_tensor(node).value
+                )
+            )
+        np.testing.assert_array_equal(self._dense(ref, layout), dense_ref)
         self.assertTrue(np.allclose(self._dense(term, layout), self.expected))
         self.assertTrue(
             np.allclose(
